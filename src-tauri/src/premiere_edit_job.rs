@@ -531,6 +531,48 @@ pub fn expectation_for_scene(job:&Job,timeline:&Value,request:&SceneDetectionReq
     expected.validate()?;Ok(expected)
 }
 
+/// Detect an action receipt already recorded by a different Shuvi 40 edit job.
+/// Restrict the scan to this application's edit-job store; a damaged or
+/// interrupted sibling record blocks receipt advancement for owner recovery.
+/// The caller owns the existing native execution lease during this scan/save.
+pub fn require_unclaimed_action_in_store(
+    current_path:&Path,job_id:&str,action_id:&str
+)->Result<(),String>{
+    if action_id.is_empty() {return Err("Missing action receipt ID.".into());}
+    let folder=current_path.parent().ok_or("Edit-job state has no parent folder.")?;
+    let mut visited=0usize;
+    for entry in fs::read_dir(folder).map_err(|e|e.to_string())? {
+        let entry=entry.map_err(|e|e.to_string())?;
+        let name=entry.file_name();
+        let name=name.to_str().ok_or("Edit-job folder has an unrecognized file name.")?;
+        if name.ends_with(".json.tmp") || name.ends_with(".json.bak") {
+            return Err("Edit-job store has unresolved sibling update files; inspect recovery before recording receipts.".into());
+        }
+        if !name.ends_with(".json") {continue;}
+        visited+=1;
+        if visited>2048 {return Err("Edit-job receipt scan exceeds bounded store size.".into());}
+        let id=name.strip_suffix(".json").ok_or("Invalid edit-job store entry.")?;
+        uuid::Uuid::parse_str(id).map_err(|_|"Edit-job store has an invalid UUID filename.")?;
+        let path=entry.path();
+        let meta=fs::symlink_metadata(&path).map_err(|e|e.to_string())?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return Err("Edit-job store contains an unsafe JSON state file.".into());
+        }
+        if path==current_path {continue;}
+        let other=load(&path)?;
+        if other.job_id!=id {
+            return Err("Edit-job state ID differs from its durable filename.".into());
+        }
+        if other.job_id==job_id {
+            return Err("Edit-job store has a duplicate canonical job identity.".into());
+        }
+        if other.phases.iter().any(|phase|phase.action_id.as_deref()==Some(action_id)) {
+            return Err("The supplied approved action ID was already recorded by another Premiere edit job.".into());
+        }
+    }
+    Ok(())
+}
+
 pub fn save(path:&Path,job:&Job)->Result<(),String>{
     job.validate_state()?;
     let bytes=bounded(job)?;
@@ -763,6 +805,36 @@ mod tests{
         failed.phases[2].state="completed".into();
         failed.phases[2].action_id=Some("bypass".into());
         assert!(failed.validate_state().is_err());
+    }
+    #[test]fn edit_job_store_rejects_cross_job_action_receipt_replay(){
+        let folder=std::env::temp_dir().join(format!("shuvi40-receipts-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let id_a=uuid::Uuid::new_v4().to_string();
+        let id_b=uuid::Uuid::new_v4().to_string();
+        let path_a=folder.join(format!("{id_a}.json"));
+        let path_b=folder.join(format!("{id_b}.json"));
+        let mut a=Job::new(id_a.clone(),request(),"P",None,"S",100).unwrap();
+        a.issue_proposal("review",101).unwrap();
+        a.record("review","premiere_review_frames","used-approved-action",true,102).unwrap();
+        save(&path_a,&a).unwrap();
+        let b=Job::new(id_b.clone(),request(),"P",None,"S",100).unwrap();
+        save(&path_b,&b).unwrap();
+        assert!(require_unclaimed_action_in_store(&path_b,&id_b,"used-approved-action").is_err());
+        assert!(require_unclaimed_action_in_store(&path_b,&id_b,"fresh-approved-action").is_ok());
+        // A broken sibling must fail closed instead of being silently ignored.
+        fs::write(&path_a,b"{broken").unwrap();
+        assert!(require_unclaimed_action_in_store(&path_b,&id_b,"fresh-approved-action").is_err());
+        fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]fn edit_job_store_rejects_interrupted_sibling_updates(){
+        let folder=std::env::temp_dir().join(format!("shuvi40-inflight-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let id=uuid::Uuid::new_v4().to_string();
+        let path=folder.join(format!("{id}.json"));
+        save(&path,&Job::new(id.clone(),request(),"P",None,"S",100).unwrap()).unwrap();
+        fs::write(folder.join("sibling.json.bak"),b"interrupted").unwrap();
+        assert!(require_unclaimed_action_in_store(&path,&id,"fresh-action").is_err());
+        fs::remove_dir_all(folder).unwrap();
     }
     #[test]fn one_primary_delivery_only(){
         let value=json!({
