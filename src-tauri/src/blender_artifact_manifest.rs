@@ -295,6 +295,79 @@ mod tests {
         assert!(reverify(&source,&f.0).is_err());
     }
     #[test]
+    fn native_material_delivery_binds_real_source_sha_camera_light_and_session(){
+        let f=Fixture::new();
+        let source=f.0.join("shuvi41-proof-material.blend");
+        let bytes=b"BLENDER-v430material-proof-source";
+        fs::write(&source,bytes).unwrap();
+        let hash=format!("{:x}",Sha256::digest(bytes));
+        let source_path=source.to_str().unwrap();
+        let material_png=json!({"path":f.0.join("shuvi41-proof-material-render.png")
+            .to_str().unwrap(),"format":"PNG"});
+        let preflight=json!({
+            "schema_version":1,"verified":true,"read_only_preflight":true,
+            "session_id":SESSION,"source_scene_revision":"a".repeat(64),
+            "source_blend_path":source_path,"source_sha256":hash,
+            "source_bytes":bytes.len(),"mesh_name":"Shuvi41ProofMesh",
+            "material_slot_name":"Shuvi41ProofCopper",
+            "active_camera_name":"Shuvi41ProofCamera",
+            "key_light_name":"Shuvi41ProofKey",
+            "shader_parameters_independently_verified":false,
+            "render_completed_by_preflight":false,
+            "approval_reauthenticated_by_preflight":false
+        });
+        let proof=material_source_evidence(Some(&preflight),&material_png,Some(SESSION)).unwrap();
+        assert_eq!(proof["source_sha256"],hash);
+        assert_eq!(proof["native_source_sha256_verified_at_delivery"],true);
+        assert_eq!(proof["shader_parameters_independently_verified"],false);
+        let file=json!({"format":"PNG","absolute_path":material_png["path"]});
+        assert!(validate_historical_material_proof(
+            &json!({"material_render_source":proof}),&file).unwrap());
+        let mut altered=preflight.clone();
+        altered["source_bytes"]=json!(bytes.len()+1);
+        assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
+        altered=preflight.clone();
+        altered["source_sha256"]=json!("0".repeat(64));
+        assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
+        altered=preflight.clone();
+        altered["key_light_name"]=json!("Counterfeit");
+        assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
+        altered=preflight.clone();
+        altered["shader_parameters_independently_verified"]=json!(true);
+        assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
+        assert!(material_source_evidence(Some(&preflight),&material_png,None).is_err());
+        assert!(material_source_evidence(None,&material_png,Some(SESSION)).is_err());
+        let unrelated=json!({"path":"/approved/other.png","format":"PNG"});
+        assert!(material_source_evidence(Some(&preflight),&unrelated,Some(SESSION)).is_err());
+        fs::write(&source,b"BLENDER-v430tampered!!!").unwrap();
+        assert!(material_source_evidence(Some(&preflight),&material_png,Some(SESSION)).is_err());
+    }
+    #[test]
+    fn historical_material_evidence_is_non_authoritative_and_fail_closed(){
+        let file=json!({"format":"PNG","absolute_path":"/approved/shuvi41-proof-material-render.png"});
+        let mut proof=json!({
+            "schema_version":1,"source_blend_path":"/approved/shuvi41-proof-material.blend",
+            "source_sha256":"a".repeat(64),"source_scene_revision":"b".repeat(64),
+            "source_bytes":100,"source_session_id":SESSION,
+            "native_source_sha256_verified_at_delivery":true,
+            "read_only_preflight_verified_at_delivery":true,
+            "mesh_name":"Shuvi41ProofMesh","material_slot_name":"Shuvi41ProofCopper",
+            "active_camera_name":"Shuvi41ProofCamera","key_light_name":"Shuvi41ProofKey",
+            "shader_parameters_independently_verified":false,
+            "render_completed_by_preflight":false,
+            "approval_reauthenticated_by_preflight":false
+        });
+        assert!(validate_historical_material_proof(
+            &json!({"material_render_source":proof}),&file).unwrap());
+        proof["approval_reauthenticated_by_preflight"]=json!(true);
+        assert!(validate_historical_material_proof(
+            &json!({"material_render_source":proof}),&file).is_err());
+        let unrelated=json!({"format":"PNG","absolute_path":"/approved/unrelated.png"});
+        assert!(validate_historical_material_proof(
+            &json!({"material_render_source":proof}),&unrelated).is_err());
+        assert!(validate_historical_material_proof(&json!({}),&file).is_err());
+    }
+    #[test]
     fn incomplete_or_untrusted_worker_cannot_claim_handoff(){
         let f=Fixture::new();let (path,size,sha)=f.save("blend");
         let mut bad=proof(&path,size,&sha);

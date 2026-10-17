@@ -120,3 +120,14 @@ test("persistent Blender predispatch verifies reserved stage source and exact pl
   const dispatch=native.indexOf('request(session,state,"run_plan"');
   assert.ok(guard>0 && dispatch>guard);
 });
+
+test("authenticated material render broker evidence is bound to native startup source and exact session before handoff",()=>{
+  assert.ok(broker.includes('result["material_render_preflight"] = preflight'));
+  assert.ok(broker.includes('"shader_parameters_independently_verified": False'));
+  assert.ok(broker.includes('"approval_reauthenticated_by_preflight": False'));
+  assert.ok(native.includes('let material_claim=response.get("material_render_preflight")'));
+  assert.ok(native.includes('stage==Some("look_render")'));
+  assert.ok(native.includes('proof.get("source_scene_revision").and_then(Value::as_str)!=Some(expected_scene_revision)'));
+  assert.ok(native.includes('proof.get("source_sha256").and_then(Value::as_str)!=Some(source.sha256.as_str())'));
+  assert.ok(native.includes('return Err("Unrelated Blender plan cannot return material-render preflight."'));
+});

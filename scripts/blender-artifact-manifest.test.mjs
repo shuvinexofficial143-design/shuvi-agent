@@ -62,3 +62,17 @@ test("native unit cases cover valid lineage, missing proof, output tamper and de
     "downstream_rejects_changed_bytes_wrong_root_and_forged_lineage",
   ])assert.ok(rust.includes("fn "+caseName+"("),caseName);
 });
+
+test("materialized render delivery includes source-SHA-bound preflight, but reverify does not invent fresh source or shader attestation",()=>{
+  assert.ok(rust.includes('fn material_source_evidence('));
+  assert.ok(rust.includes("crate::blender_input_checkpoint::inspect(Some(source),Some(digest))?"));
+  assert.ok(rust.includes('"material_render_source":material'));
+  assert.ok(rust.includes('fn validate_historical_material_proof('));
+  assert.ok(rust.includes("material_source_preflight_reexecuted"));
+  assert.ok(rust.includes('"material_source_current_bytes_reverified":false'));
+  assert.ok(rust.includes('"shader_parameters_independently_verified":false'));
+  for(const caseName of [
+    "native_material_delivery_binds_real_source_sha_camera_light_and_session",
+    "historical_material_evidence_is_non_authoritative_and_fail_closed"
+  ])assert.ok(rust.includes("fn "+caseName+"("));
+});

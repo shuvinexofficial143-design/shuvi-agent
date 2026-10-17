@@ -537,6 +537,27 @@ pub(crate) fn plan(
             || response.get("destructive_allowed").and_then(Value::as_bool)!=Some(false) {
             return Err("Persistent Blender plan outcome is unknown; do not retry automatically.".into());
         }
+        // The owned broker may claim material preflight evidence only for
+        // its exact typed material PNG. Bind it to the original native
+        // session/source/scene identity, not merely the echoed proof filename.
+        let stage=plan_lineage.get("acceptance_stage").and_then(Value::as_str);
+        let material_claim=response.get("material_render_preflight")
+            .filter(|value|!value.is_null());
+        if stage==Some("look_render") {
+            let proof=material_claim.ok_or("Material render lacks independent broker source preflight.")?;
+            let source=session.source_checkpoint.as_ref()
+                .ok_or("Material render requires an approved SHA-pinned input checkpoint.")?;
+            if proof.get("verified").and_then(Value::as_bool)!=Some(true)
+                ||proof.get("session_id").and_then(Value::as_str)!=Some(id)
+                ||proof.get("source_scene_revision").and_then(Value::as_str)!=Some(expected_scene_revision)
+                ||proof.get("source_blend_path").and_then(Value::as_str)!=Some(source.canonical_path.as_str())
+                ||proof.get("source_sha256").and_then(Value::as_str)!=Some(source.sha256.as_str())
+                ||proof.get("source_bytes").and_then(Value::as_u64)!=Some(source.bytes){
+                return Err("Material render preflight is not bound to this native source, action and session.".into());
+            }
+        }else if material_claim.is_some(){
+            return Err("Unrelated Blender plan cannot return material-render preflight.".into());
+        }
         let manifest=crate::blender_artifact_manifest::build(
             &response,Path::new(&session.output_dir),action_id,Some(id))?;
         Ok(json!({"status":"verified","session_id":id,"full_plan_completed":true,

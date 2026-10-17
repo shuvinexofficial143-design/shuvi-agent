@@ -933,3 +933,43 @@ New Rust and Node tests cover all five reserved outputs, arbitrary
 unreserved plans, changed first steps/extra fields, absent or wrong
 source name, missing render permission and one-off bypass attempts.
 No actual app was launched or file in the user workspace changed.
+
+## Team-41 — material render source-evidence delivery (source-only)
+
+A new bounded **material-render preflight receipt** is assembled by the
+authenticated persistent Python broker *only after* its read-only inspection
+has verified the SHA-pinned material scene, named mesh/material slot, fixed
+active proof camera, fixed point light and stable scene revision. The receipt
+contains its session ID, source canonical path, SHA-256, byte count and
+pre-mutation scene revision, plus explicit `false` for independently
+verified shader parameters, completed render and approval reauthentication.
+
+The broker returns this receipt only alongside a separately completed,
+verified PNG PlanRunner output, never before render execution. The native
+persistent worker checks the receipt against the Rust-owned original source
+SHA/path/bytes, session UUID and caller's original scene revision. Wrong
+source, cross-session replay, or a material proof injected into an unrelated
+typed plan is rejected.
+
+The existing native typed artifact manifest now carries
+`evidence.material_render_source` only for the exact material-render PNG.
+Its constructor re-opens and re-hashes the actual **source .blend bytes**
+at delivery and rechecks the exact proof object/material/camera/light names
+while preserving the existing output PNG SHA-256 and structure verification.
+An absent material source receipt rejects materialized PNG delivery.
+Non-material artifacts cannot attach this evidence.
+
+Later `blender_verify_artifact_manifest` calls rehash the **current output
+file**, validate that the historical source record has well-formed,
+conservative fields and return flags explicitly stating
+`material_source_current_bytes_reverified=false` and
+`material_source_preflight_reexecuted=false`: the downstream review must
+not read an arbitrary source path merely because a user-supplied JSON
+manifest names it, or claim approval/image quality from historical evidence.
+
+Rust source tests reject wrong SHA, altered source bytes, wrong device name,
+missing session ID, exaggerated shader/approval claims, and material
+evidence on unrelated PNGs. Python tests prove exact source fields and
+read-only semantics; Node contract tests guard both native and broker wiring.
+**This is source-only testing, not a real Blender render.** Approval,
+Windows ownership, three-stage acceptance and old artifacts are unchanged.

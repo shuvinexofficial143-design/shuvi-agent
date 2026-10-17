@@ -173,6 +173,22 @@ def validate_material_render_source(controller, input_checkpoint: dict | None,
     if (final.get("revision") != revision or final.get("session_id") != session
             or final.get("camera_id") != camera_id):
         raise ValueError("Material render scene changed during preflight")
+    # Pre-mutation evidence only. This is NOT a render result, a shader-node
+    # attestation or the approval itself. Native Rust rechecks these fields.
+    return {
+        "schema_version": 1, "verified": True, "read_only_preflight": True,
+        "session_id": session, "source_scene_revision": revision,
+        "source_blend_path": input_checkpoint["path"],
+        "source_sha256": input_checkpoint["sha256"],
+        "source_bytes": input_checkpoint["bytes"],
+        "mesh_name": "Shuvi41ProofMesh",
+        "material_slot_name": "Shuvi41ProofCopper",
+        "active_camera_name": "Shuvi41ProofCamera",
+        "key_light_name": "Shuvi41ProofKey",
+        "shader_parameters_independently_verified": False,
+        "render_completed_by_preflight": False,
+        "approval_reauthenticated_by_preflight": False,
+    }
 
 
 def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
@@ -352,12 +368,17 @@ def serve(argv: list[str] | None = None) -> int:
                 if operation == "run_plan":
                     if request_allow_render and not args.allow_render:
                         raise ValueError("Action-level render approval exceeds session ceiling")
+                    preflight = None
                     if _is_material_render(payload):
-                        validate_material_render_source(
+                        preflight = validate_material_render_source(
                             controller, source_before, expected_revision, request_allow_render
                         )
                     result = checked_plan(controller, payload, args.output_dir,
                                           args.blender_exe, request_allow_render, expected_revision)
+                    # The evidence is emitted only AFTER an actual verified
+                    # output, never as a stand-alone or premature success.
+                    if preflight is not None:
+                        result["material_render_preflight"] = preflight
                     protocol({"version": 1, "session_id": session_id, **result})
                     continue
                 if operation == "objects":

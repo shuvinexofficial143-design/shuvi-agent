@@ -100,12 +100,35 @@ class MaterialRenderPreflightTests(unittest.TestCase):
         )
 
     def test_matching_sha_camera_light_and_copper_material_preflight(self):
-        self.assertIsNone(self.proof())
+        proof = self.proof()
+        self.assertTrue(proof["verified"])
+        self.assertTrue(proof["read_only_preflight"])
+        self.assertEqual(proof["schema_version"], 1)
+        self.assertEqual(proof["source_blend_path"], str(self.path))
+        self.assertEqual(proof["source_sha256"], self.digest)
+        self.assertEqual(proof["source_bytes"], len(self.path.read_bytes()))
+        self.assertEqual(proof["session_id"], SESSION)
+        self.assertEqual(proof["source_scene_revision"], REV)
+        self.assertEqual(proof["material_slot_name"], "Shuvi41ProofCopper")
+        self.assertEqual(proof["active_camera_name"], "Shuvi41ProofCamera")
+        self.assertEqual(proof["key_light_name"], "Shuvi41ProofKey")
+        self.assertFalse(proof["shader_parameters_independently_verified"])
+        self.assertFalse(proof["render_completed_by_preflight"])
+        self.assertFalse(proof["approval_reauthenticated_by_preflight"])
         self.assertEqual(self.ctrl.calls, ["scene.inspect", "objects.list",
                                            "objects.list", "objects.list",
                                            "scene.inspect"])
         self.assertFalse(any(x in self.ctrl.calls for x in
                              ("render.execute", "render.configure", "material.create_assign")))
+
+    def test_material_preflight_is_not_a_success_or_render_claim(self):
+        report = self.proof()
+        self.assertNotIn("artifact", report)
+        self.assertNotIn("render_sha256", report)
+        self.assertNotIn("action_approved", report)
+        self.assertFalse(report["render_completed_by_preflight"])
+        self.assertFalse(report["approval_reauthenticated_by_preflight"])
+        self.assertFalse(report["shader_parameters_independently_verified"])
 
     def test_missing_wrong_or_multiple_material_slots_fail_before_dispatch(self):
         mesh = self.ctrl.objects["MESH"]
