@@ -28,8 +28,8 @@ test("Desktop does not clear a terminal remote task when Rust server acknowledge
  const fail=source.indexOf("revokeTaskScope(closingScope)",check);
  const clear=source.indexOf("remoteTask=null;",fail);
  assert.ok(accepted>=0&&check>accepted&&fail>check&&clear>fail);
- assert.match(source,/if\(remoteTask!==closingTask\)return;/);
- assert.match(source,/if\(activePermissionScope!==closingScope\)return;/);
+ assert.match(source,/if\(remoteTask!==closingTask\)return false;/);
+ assert.match(source,/if\(activePermissionScope!==closingScope\)return false;/);
  assert.match(source,/cancelRequested=true;/);
  assert.match(source,/previous task held for owner review/);
 });

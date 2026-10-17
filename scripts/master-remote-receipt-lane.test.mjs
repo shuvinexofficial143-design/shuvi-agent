@@ -56,7 +56,7 @@ test("Desktop all mobile receipts use exact pinned task, and late finish does no
  const src=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
  assert.match(src,/const remoteReceiptLane=createMasterRemoteReceiptLane\(\)/);
  assert.match(src,/return remoteReceiptLane\.publish\(exactTask,/);
- assert.match(src,/if\(remoteTask!==closingTask\)return;/);
+ assert.match(src,/if\(remoteTask!==closingTask\)return false;/);
  assert.match(src,/const continuationRemote=remoteTask;/);
  assert.match(src,/remoteTask===continuationRemote;/);
  assert.match(src,/const stagingRemote=remoteTask;/);

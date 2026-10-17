@@ -1437,10 +1437,29 @@ async function continueAfterOutcome(): Promise<void> {
       "Last native delivery: "+nativeDelivery.steps.length+" audited steps, "+
       nativeDelivery.steps.filter(s=>s.artifact).length+" SHA-256 checked files.";
     renderMessages();
-    if(remoteTask)await closeRemoteTask(remoteTask.evidenceActionId&&!remoteTask.hadFailure
-      ?"succeeded":"outcome_unknown");
-    if(!continuationCurrent())return;
+    // A confirmed remote receipt intentionally retires remoteTask. The
+    // earlier continuationCurrent() fence therefore no longer applies;
+    // finalization needs a separately pinned POST-terminal owner fence.
+    const hadTerminalRemote=remoteTask!==null;
+    if(hadTerminalRemote){
+      const terminalStatus=remoteTask!.evidenceActionId&&!remoteTask!.hadFailure
+        ?"succeeded":"outcome_unknown";
+      if(!(await closeRemoteTask(terminalStatus)))return;
+    }
+    const terminalStillOwned=()=>activePermissionScope===continuationScope&&
+      orchestration.task_graph===continuationGraph&&
+      orchestration.owner_request===continuationOwner&&
+      remoteTask===null&&!cancelRequested&&
+      orchestration.recovery_mode!=="stopped";
+    if(!terminalStillOwned())return;
+    // The async Rust checkpoint clear may finish after another task begins.
     await clearActiveCheckpoint();
+    // clearActiveCheckpoint intentionally revokes the old scope; identity,
+    // graph and owner equality, not an unrevoked consent flag, guard UI reset.
+    if(activePermissionScope!==continuationScope||
+       orchestration.task_graph!==continuationGraph||
+       orchestration.owner_request!==continuationOwner||
+       remoteTask!==null)return;
     setBusy(false);
     return;
   }
@@ -3282,9 +3301,9 @@ async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={})
       receipt:{...remoteReceipt(status,exactTask,extras),revision}
     }),status);
 }
-async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<void>{
+async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<boolean>{
   const closingTask=remoteTask;
-  if(!closingTask)return;
+  if(!closingTask)return false;
   const closingScope=activePermissionScope;
   const extras= status==="succeeded" && closingTask.evidenceActionId
     ? {evidence:{kind:"native_audit",id:closingTask.evidenceActionId}} : {};
@@ -3295,8 +3314,8 @@ async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_un
     // A failed terminal receipt is UNKNOWN, not proof of server delivery.
   }
   // An old remote response may arrive after a newer inbox/local task.
-  if(remoteTask!==closingTask)return;
-  if(activePermissionScope!==closingScope)return;
+  if(remoteTask!==closingTask)return false;
+  if(activePermissionScope!==closingScope)return false;
   if(!terminalRemoteReceiptClearAllowed(closingTask,remoteTask,acknowledged)){
     // Retain old task identity: accepting a new inbox command now could
     // duplicate uncertain OS effects or lose the server-side revision.
@@ -3304,10 +3323,11 @@ async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_un
     revokeTaskScope(closingScope);
     remoteApproval=null;
     remoteStatusLabel("Remote terminal receipt unconfirmed; previous task held for owner review. No new task admitted.");
-    return;
+    return false;
   }
   remoteTask=null;
   remoteApproval=null;
+  return true;
 }
 async function tickRemoteAgent():Promise<void>{
   if(remotePolling)return;
