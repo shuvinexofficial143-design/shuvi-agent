@@ -12,7 +12,11 @@ test("persistent action audit redacts obvious secret-bearing details",()=>{
   assert.match(block,/PowerShell command omitted from persistent audit/);
   assert.match(block,/"launch_app"/);
   assert.match(block,/"open_url" \| "browser_start" \| "browser_navigate"/);
-  assert.match(block,/"inspect_screen" \| "premiere_inspect_frame" \| "premiere_review_frames"/);
+  // Premiere prompts stay redacted even though their approved argument SHA remains auditable.
+  assert.match(block,/"premiere_inspect_frame" \| "premiere_review_frames" =>/);
+  assert.match(block,/"inspect_screen" => "Vision prompt omitted from persistent audit\."/);
+  assert.match(block,/prefix\.strip_prefix\("premiere_args_sha256="\)/);
+  assert.match(block,/Vision prompt omitted from persistent audit\./);
   assert.match(block,/detail\.chars\(\)\.take\(4_000\)/);
 });
 
