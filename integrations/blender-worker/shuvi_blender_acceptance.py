@@ -4,8 +4,8 @@ This module NEVER launches Blender, imports bpy, invokes a subprocess, opens
 projects or edits files. It constructs fixed, bounded, real PlanRunner payloads
 for three separately owner-approved Shuvi native actions:
 
-  1. model1: create mesh, inspect it, translate vertices, save checkpoint.
-  2. model2: in SAME persistent session inspect saved mesh, edit and save again.
+  1. model1: create verified mesh, edit geometry, add active camera, save checkpoint.
+  2. model2: in SAME persistent session add key light, inspect mesh, edit and save.
   3. render: from a NEW approved session opened on stage2 saved .blend, render
      a bounded CPU still (requires a separate render-enabled session/action).
 
@@ -67,9 +67,6 @@ def _model1(revision: str) -> list:
             "name": MESH_NAME, "geometry": mesh, "transform": transform(),
             "expected_scene_revision": revision,
         }),
-        step("mesh_read", "mesh.inspect", {"object_id": "BOUND_FROM_CREATE"}, [
-            bind("create", ["data", "after", "object", "object_id"], ["object_id"]),
-        ]),
         step("shape", "mesh.translate_vertices", {
             "target": {"object_id": "BOUND_FROM_CREATE", "expected_name": MESH_NAME,
                        "expected_revision": "BOUND_FROM_CREATE"},
@@ -78,21 +75,36 @@ def _model1(revision: str) -> list:
         }, [
             bind("create", ["data", "after", "object", "object_id"], ["target", "object_id"]),
             bind("create", ["data", "after", "object", "revision"], ["target", "expected_revision"]),
-            bind("mesh_read", ["data", "geometry_revision"], ["expected_geometry_revision"]),
+            bind("create", ["data", "after", "geometry", "geometry_revision"], ["expected_geometry_revision"]),
         ]),
         step("post_edit_scene", "scene.inspect", {}),
+        step("camera", "device.create", {
+            "name": "Shuvi41ProofCamera", "kind": "CAMERA",
+            "transform": {"location": [4.0, -6.0, 4.0], "rotation_euler": [1.15, 0.0, 0.58], "scale": [1.0, 1.0, 1.0]},
+            "settings": {"lens": 50.0, "clip_start": 0.1, "clip_end": 100.0, "make_active": True},
+            "expected_scene_revision": "BOUND_FROM_SCENE",
+        }, [
+            bind("post_edit_scene", ["data", "revision"], ["expected_scene_revision"]),
+        ]),
+        step("post_camera_scene", "scene.inspect", {}),
         step("checkpoint", "file.checkpoint", {
             "name": STAGE1, "expected_scene_revision": "BOUND_FROM_SCENE",
         }, [
-            bind("post_edit_scene", ["data", "revision"], ["expected_scene_revision"]),
+            bind("post_camera_scene", ["data", "revision"], ["expected_scene_revision"]),
         ]),
     ]
 
 
-def _model2(_revision: str) -> list:
+def _model2(revision: str) -> list:
     # Exact target name prefix and MESH type. This stage is intentionally
     # designed to reuse the same live controller and its session-local IDs.
     return [
+        step("light", "device.create", {
+            "name": "Shuvi41ProofKey", "kind": "POINT",
+            "transform": {"location": [2.0, -3.0, 5.0], "rotation_euler": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "settings": {"energy": 950.0, "color": [1.0, 0.94, 0.85]},
+            "expected_scene_revision": revision,
+        }),
         step("locate", "objects.list", {
             "name_prefix": MESH_NAME, "object_type": "MESH",
             "offset": 0, "limit": 25,
@@ -120,8 +132,8 @@ def _model2(_revision: str) -> list:
 
 
 def _render(revision: str) -> list:
-    # Factory-startup scenes normally include an active camera. If the
-    # loaded .blend has none, the official render tool refuses to execute.
+    # Model1 saves an active camera and Model2 adds a key light.
+    # This stage loads their checkpoint via a new separately approved session.
     return [
         step("configure", "render.configure", {
             "width": 64, "height": 64, "samples": 1,
