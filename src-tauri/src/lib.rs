@@ -18981,6 +18981,90 @@ struct NativeApprovedParentStatus{
     process_liveness_verified:bool,
     safe_to_auto_retry:bool,
 }
+/// M56 restart inspection is only an evidence reconciliation; it cannot
+/// assert live PID, current app status or release a parent resource lock.
+#[tauri::command]
+fn native_approved_parent_recovery_status(
+    app:AppHandle
+)->Result<Vec<native_scheduler::background_os_workers::parent_queue::ParentRecoveryView>,String>{
+    #[cfg(windows)]{
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Parent recovery directory unavailable.")?;
+        if fs::symlink_metadata(&root)
+            .is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound){
+            return Ok(Vec::new());
+        }
+        native_scheduler::background_os_workers::parent_queue::recovery_snapshot_at(&root)
+    }
+    #[cfg(not(windows))]{
+        let _=app;
+        Err("Windows native parent recovery requires Windows.".into())
+    }
+}
+/// This owner review ONLY changes ADMITTED -> UNKNOWN, retains RAM/resource
+/// claims and never marks completed, replays an OS worker or kills any PID.
+/// Separate prior owner-approved read-only inspection is mandatory.
+#[tauri::command]
+fn review_native_approved_parent_uncertain(
+    parent_id:String,
+    inspection_action_id:String,
+    confirmation:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<bool,String>{
+    #[cfg(windows)]{
+        if confirmation!="REVIEW PARENT UNKNOWN"{
+            return Err("Exact owner confirmation REVIEW PARENT UNKNOWN is required.".into());
+        }
+        let valid=|id:&str|uuid::Uuid::parse_str(id)
+            .map(|u|u.to_string()==id).unwrap_or(false);
+        if !valid(&parent_id)||!valid(&inspection_action_id)
+            ||parent_id==inspection_action_id{
+            return Err("Owner recovery requires two distinct exact UUIDs.".into());
+        }
+        // A running native dispatcher is not part of a concluded recovery.
+        // Recovery must NOT claim a live OS process is stopped.
+        let _lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+        if !state.running_action_tools.lock()
+            .map_err(|_|"Recovery native running state poisoned.")?.is_empty()
+            ||!state.pending.lock()
+                .map_err(|_|"Unresolved owner approvals unavailable.")?.is_empty(){
+            return Err("Resolve current executing/pending actions before parent recovery review.".into());
+        }
+        let original=read_action_audit_receipt(&app,&parent_id)?
+            .ok_or("Approved parent enqueue audit UUID unavailable.")?;
+        if original.event!="executed"||!original.success
+            ||original.tool!="queue_readonly_sha_parent"{
+            return Err("Parent UUID lacks a separate successfully approved enqueue receipt.".into());
+        }
+        let inspection=read_action_audit_receipt(&app,&inspection_action_id)?
+            .ok_or("Separate owner-approved read-only inspection receipt unavailable.")?;
+        if inspection.event!="executed"||!inspection.success
+            ||inspection.timestamp_ms<=original.timestamp_ms
+            ||!matches!(inspection.tool.as_str(),
+                "list_processes"|"read_file"|"list_directory"|"workspace_scan"|
+                "search_text"|"git_status"|"git_diff"|"native_background_readonly_status"){
+            return Err("Later independent approved read-only inspection required.".into());
+        }
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Recovery journal root unavailable.")?;
+        let changed=native_scheduler::background_os_workers::parent_queue::
+            mark_owner_reviewed_uncertain_at(&root,&parent_id)?;
+        append_audit(&app,&AuditEntry{
+            timestamp_ms:now_ms(),
+            event:"native_parent_owner_reviewed_unknown".into(),
+            tool:"queue_readonly_sha_parent".into(),
+            detail:format!("Owner reviewed exact parent {} after separate read-only inspection. Durable resource remains HELD; PID termination, SHA success, auto-retry and unlock NOT granted.",parent_id),
+            success:false,
+            action_id:Some(parent_id),
+        })?;
+        Ok(changed)
+    }
+    #[cfg(not(windows))]{
+        let _=(parent_id,inspection_action_id,confirmation,state,app);
+        Err("Parent unknown recovery review requires Windows.".into())
+    }
+}
 #[tauri::command]
 fn native_approved_parent_queue_status(app:AppHandle)->Result<NativeApprovedParentQueueStatus,String>{
     #[cfg(windows)]{
@@ -20046,6 +20130,8 @@ pub fn run() {
             native_scheduler_status,
             native_background_readonly_status,
             native_approved_parent_queue_status,
+            native_approved_parent_recovery_status,
+            review_native_approved_parent_uncertain,
             review_native_scheduler_failure,
             reconcile_native_worker_job,
             prepare_tool,
