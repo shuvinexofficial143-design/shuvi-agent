@@ -77,6 +77,14 @@ foreach ($item in $sourcePieces){
   throw ('Native PowerShell syntax invalid in ' + $item.name + ' at ' + ($positions -join ', '))
  }
 }
+# CI parses but never launches the owner-only disposable fixture.
+$fixturePath = Join-Path $root 'scripts\shuvi39-local-uia-fixture.ps1'
+if (-not [IO.File]::Exists($fixturePath)) { throw 'Shuvi39 local UIA fixture missing.' }
+$fixtureTokens=$null; $fixtureErrors=$null
+[void][Management.Automation.Language.Parser]::ParseFile($fixturePath,[ref]$fixtureTokens,[ref]$fixtureErrors)
+if ($null -ne $fixtureErrors -and $fixtureErrors.Count -gt 0) {
+ throw 'Shuvi39 local UIA fixture PowerShell syntax invalid.'
+}
 # Load the same actual Windows UIAutomationClient assembly as the native
 # action. This verifies the expected .NET API types are present on Windows.
 Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
