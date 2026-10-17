@@ -76,11 +76,26 @@ fn check_bytes(raw:&[u8])->Result<(),String>{
     validate(&l)
 }
 fn read_at(path:&Path)->Result<Ledger,String>{
-    if !path.exists(){
-        if path.with_extension("json.bak").exists()||path.with_extension("json.tmp").exists(){
-            return Err("Interrupted background admission requires owner review.".into());
-        }
-        return Ok(Ledger{version:1,entries:Vec::new()});
+    // exists() follows links and returns false for dangling symlinks. Never
+    // mistake a redirected primary or interrupted .tmp/.bak for a fresh queue.
+    match fs::symlink_metadata(path){
+        Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()
+            && meta.file_attributes()&0x400==0=>{},
+        Ok(_)=>return Err("Background journal redirected or non-regular.".into()),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{
+            for suffix in ["json.bak","json.tmp"]{
+                match fs::symlink_metadata(path.with_extension(suffix)){
+                    Ok(_)=>return Err("Interrupted background admission requires owner review.".into()),
+                    Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Err("Background admission recovery file inaccessible.".into()),
+                }
+            }
+            return Ok(Ledger{version:1,entries:Vec::new()});
+        },
+        Err(_)=>return Err("Background admission primary inaccessible.".into()),
+    }
+    if fs::symlink_metadata(path.with_extension("json.tmp")).is_ok(){
+        return Err("Unresolved background journal temporary file needs owner review.".into());
     }
     let bytes=crate::read_file_bytes_bounded(path,MAX_BYTES,"background admission")?;
     check_bytes(&bytes)?;
@@ -118,6 +133,12 @@ fn checked_input(file:&Path)->Result<String,String>{
     let meta=fs::symlink_metadata(file).map_err(|_|"Background input inaccessible.")?;
     if !meta.is_file()||meta.file_type().is_symlink()||meta.file_attributes()&0x400!=0{
         return Err("Background input must be a regular non-reparse file.".into());
+    }
+    // A different hard-link path could otherwise evade a path-only
+    // read/resource claim while referring to precisely the same disk object.
+    // Non-NTFS/unknown link count fails closed until physical-ID support.
+    if meta.number_of_links()!=Some(1){
+        return Err("Background input with unknown/multiple hard links is not isolated.".into());
     }
     let canonical=fs::canonicalize(file).map_err(|_|"Cannot canonicalize background input.")?;
     Ok(canonical.to_string_lossy().to_lowercase())
@@ -245,6 +266,27 @@ mod tests {
         assert!(reserve_at(&p,A,&a,&hash()).is_err());
         fs::remove_file(&ledger).unwrap();
         fs::write(ledger.with_extension("json.bak"),b"{}").unwrap();
+        assert!(snapshot_at(&p).is_err());
+        fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn hard_link_alias_cannot_bypass_disjoint_input_claim(){
+        let p=temp();let (a,_,_)=inputs(&p);
+        let alias=p.join("same-file-alias.bin");
+        fs::hard_link(&a,&alias).unwrap();
+        assert!(reserve_at(&p,A,&a,&hash()).is_err());
+        assert!(reserve_at(&p,B,&alias,&hash()).is_err());
+        assert!(snapshot_at(&p).unwrap().is_empty());
+        fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn orphaned_temp_journal_and_forged_directory_are_not_read_as_fresh_queue(){
+        let p=temp();let (a,_,_)=inputs(&p);
+        let file=ledger_file(&p).unwrap();
+        fs::write(file.with_extension("json.tmp"),b"interrupted").unwrap();
+        assert!(reserve_at(&p,A,&a,&hash()).is_err());
+        fs::remove_file(file.with_extension("json.tmp")).unwrap();
+        fs::create_dir(&file).unwrap();
         assert!(snapshot_at(&p).is_err());
         fs::remove_dir_all(p).unwrap();
     }
