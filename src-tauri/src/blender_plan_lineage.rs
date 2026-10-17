@@ -178,7 +178,7 @@ mod tests{
             step("shape","mesh.translate_vertices",json!({"target":{"expected_name":"Shuvi41ProofMesh"},
                 "indices":[4],"delta":[0.0,0.0,0.25]}),json!([{"source_step":"mesh_read"}])),
             step("post_edit_scene","scene.inspect",json!({}),json!([])),
-            step("checkpoint","file.checkpoint",json!({"name":"shuvi41-proof-stage1.blend"}),checkpoint)
+            step("checkpoint","file.checkpoint",json!({"name":"shuvi41-proof-stage1.blend"}),checkpoint.clone())
         ]});
         assert_eq!(derive(&m1).unwrap()["acceptance_stage"],"model1");
         let mut altered=m1.clone();
