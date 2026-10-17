@@ -1496,6 +1496,7 @@ async function continueAfterOutcome(): Promise<void> {
     let host:NativeWorkerStatus;
     try {host=await invoke<NativeWorkerStatus>("native_worker_status");}
     catch {
+      if(readbackStale())return;
       await stopAgentForSafety("Native worker lease is unreadable before a deterministic readback; no provider or tool dispatched.");
       return;
     }
@@ -1507,6 +1508,7 @@ async function continueAfterOutcome(): Promise<void> {
     let native:NativeSchedule|null;
     try {native=await invoke<NativeSchedule|null>("native_scheduler_status");}
     catch {
+      if(readbackStale())return;
       await stopAgentForSafety("Native scheduler status unavailable before an audited readback. No tool or provider dispatched.");
       return;
     }
@@ -1533,6 +1535,12 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   // Check the durable task identity and every proposed graph/step BEFORE
   // touching Rust prepare_tool, approval UI or provider-driven continuation.
   const ownerBrief=orchestration.owner_request;
+  const proposalScope=activePermissionScope;
+  const proposalRemote=remoteTask;
+  const originalProposalTaskCurrent=()=>activePermissionScope===proposalScope&&
+    !proposalScope.revoked&&!cancelRequested&&
+    orchestration.owner_request===ownerBrief&&
+    remoteTask===proposalRemote;
   if(!ownerBrief){
     await stopAgentForSafety("Original owner brief is absent/oversized in the task checkpoint. No native action staged; start a new bounded task.");
     return;
@@ -1558,9 +1566,13 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   const decision = evaluateProposal(orchestration, proposal);
   if (!decision.allowed) {
     orchestration = recordProposalBlock(orchestration, proposal, decision);
+    const blockedProposalState=orchestration;
     await recordOrchestrationAudit("orchestration_blocked", decision.reason, proposal.tool);
-    if (orchestration.task_graph || proposal.task_graph != null)
+    if(!originalProposalTaskCurrent()||orchestration!==blockedProposalState)return;
+    if (orchestration.task_graph || proposal.task_graph != null){
       await recordOrchestrationAudit("task_dependency_blocked", decision.reason.slice(0, 1200), proposal.tool);
+      if(!originalProposalTaskCurrent()||orchestration!==blockedProposalState)return;
+    }
     messages.push(hiddenToolFailure(proposal, {
       orchestration_blocked: true,
       reason: decision.reason,
@@ -1573,7 +1585,12 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   masterEmptyToolReplies=0;
   const accepted = acceptProposalGraph(orchestration, proposal);
   orchestration = accepted.state;
-  if (accepted.event) await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
+  const acceptedProposalState=orchestration;
+  if (accepted.event){
+    await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
+    if(!originalProposalTaskCurrent()||orchestration!==acceptedProposalState)return;
+  }
+  if(!originalProposalTaskCurrent())return;
   orchestration = recordProposalStart(orchestration, proposal);
   // Ownership token + exact state identity prevent a slow native prepare reply
   // from staging a different task after Stop, Resume, or a new instruction.
