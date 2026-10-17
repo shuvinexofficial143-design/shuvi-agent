@@ -101,7 +101,9 @@ test("Vision targets the observed application rather than Shuvi when permission 
   const capture=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
   assert.match(stage,/arg_string\(&proposal\.arguments, "window"\)/);
   assert.match(stage,/Targeted capture of/);
-  assert.match(exec,/target_window_capture::capture_window_png\(&window\)/);
+  assert.match(exec,/target_window_capture::capture_window_png\(&window,capture_target\.as_ref\(\)\)/);
+  assert.match(src,/target_window_capture::prepare_window_capture\(window\)/);
+  assert.match(src,/target_window_capture::expired_capture_binding\(/);
   assert.match(exec,/window\.eq_ignore_ascii_case\("desktop"\)/);
   assert.match(capture,/ui_root_script\(Some\(window\)\)/);
   assert.match(capture,/GetWindowThreadProcessId/);

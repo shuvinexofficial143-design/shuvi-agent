@@ -977,3 +977,20 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   preapproval binding, postapproval checks, model separation and
   no premature capture. Windows live desktop testing still requires
   separate owner-authorized acceptance.
+
+### Milestone 24 CI compatibility follow-up
+
+- Frontend CI on first commit exposed three source-assertion failures:
+  legacy target screenshot test expected unbound one-parameter
+  `capture_window_png(&window)`; new code correctly requires
+  Rust-only `capture_target.as_ref()`.
+  The older unknown-process failure message changed even though
+  refusal logic did not; restore the exact historical refusal wording
+  while retaining the stricter approval-generation refusal.
+- A separate Premiere source test counts two exact internal
+  `PendingAction{...native_uia_target:None,task_graph...}` constructors.
+  Retain that historical constructor field sequence and append
+  `capture_target:None` later in those three manually constructed
+  actions. None of their behavior or accepted input is changed.
+- No production permission/TTL/check is bypassed; update the
+  screenshot-specific source assertion to require the new binding.

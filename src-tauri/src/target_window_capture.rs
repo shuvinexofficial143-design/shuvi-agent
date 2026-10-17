@@ -182,7 +182,7 @@ try {
 }
 if ($shuviCaptureStartTicks -le 0 -or
     $shuviCaptureStartTicks -ne $shuviExpectedCaptureStartTicks) {
-    throw 'Approved app process generation changed before screenshot. No image sent.'
+    throw 'Invalid app process generation; no screenshot sent. Approved app process generation changed before screenshot.'
 }
 function Assert-ShuviCaptureProcessGeneration {
     try {
