@@ -9,10 +9,10 @@ import shuvi_blender_acceptance as scenario
 
 REV = "d" * 64
 EXPECTED_OPS = {
-    "model1": ["mesh.create", "mesh.inspect", "mesh.translate_vertices",
-               "scene.inspect", "file.checkpoint"],
-    "model2": ["objects.list", "mesh.inspect", "mesh.translate_vertices",
-               "scene.inspect", "file.checkpoint"],
+    "model1": ["mesh.create", "mesh.translate_vertices", "scene.inspect",
+               "device.create", "scene.inspect", "file.checkpoint"],
+    "model2": ["device.create", "objects.list", "mesh.inspect",
+               "mesh.translate_vertices", "scene.inspect", "file.checkpoint"],
     "render": ["render.configure", "scene.inspect", "render.execute"],
 }
 
@@ -76,12 +76,12 @@ class AcceptanceRecipeTests(unittest.TestCase):
         for face in faces:
             self.assertTrue(all(0 <= n < len(vertices) for n in face))
             self.assertEqual(len(set(face)), len(face))
-        self.assertEqual(steps[2]["request"]["payload"]["indices"], [4])
-        self.assertEqual(steps[2]["request"]["payload"]["delta"], [0.0, 0.0, 0.25])
+        self.assertEqual(steps[1]["request"]["payload"]["indices"], [4])
+        self.assertEqual(steps[1]["request"]["payload"]["delta"], [0.0, 0.0, 0.25])
 
     def test_moving_mesh_binds_live_identity_and_geometry_revision(self):
         steps = scenario.build("model1", REV)["steps"]
-        refs = steps[2]["bindings"]
+        refs = steps[1]["bindings"]
         dests = [tuple(b["target_path"]) for b in refs]
         self.assertEqual(dests, [("target", "object_id"),
                                  ("target", "expected_revision"),
@@ -89,10 +89,10 @@ class AcceptanceRecipeTests(unittest.TestCase):
         outputs = {
             "create": {"data": {"after": {"object": {
                 "object_id": "session:object-1", "revision": "c" * 64,
-            }}}},
+            }, "geometry": {"geometry_revision": "b" * 64}}}},
             "mesh_read": {"data": {"geometry_revision": "b" * 64}},
         }
-        payload = json.loads(json.dumps(steps[2]["request"]["payload"]))
+        payload = json.loads(json.dumps(steps[1]["request"]["payload"]))
         for binding in refs:
             assign(payload, binding["target_path"],
                    lookup(outputs[binding["source_step"]], binding["source_path"]))
@@ -102,11 +102,11 @@ class AcceptanceRecipeTests(unittest.TestCase):
 
     def test_second_plan_finds_exact_named_target_and_edits_same_session(self):
         steps = scenario.build("model2", REV)["steps"]
-        self.assertEqual(steps[0]["request"]["payload"]["name_prefix"], scenario.MESH_NAME)
-        self.assertEqual(steps[0]["request"]["payload"]["object_type"], "MESH")
-        self.assertEqual(steps[2]["request"]["payload"]["target"]["expected_name"],
+        self.assertEqual(steps[1]["request"]["payload"]["name_prefix"], scenario.MESH_NAME)
+        self.assertEqual(steps[1]["request"]["payload"]["object_type"], "MESH")
+        self.assertEqual(steps[3]["request"]["payload"]["target"]["expected_name"],
                          scenario.MESH_NAME)
-        self.assertEqual(steps[2]["request"]["payload"]["delta"], [0.0, 0.0, 0.5])
+        self.assertEqual(steps[3]["request"]["payload"]["delta"], [0.0, 0.0, 0.5])
         self.assertEqual(steps[-1]["request"]["payload"]["name"], scenario.STAGE2)
 
     def test_checkpoint_always_binds_post_mutation_scene_revision(self):
@@ -114,10 +114,25 @@ class AcceptanceRecipeTests(unittest.TestCase):
             steps = scenario.build(stage, REV)["steps"]
             self.assertEqual(steps[-2]["request"]["operation"], "scene.inspect")
             self.assertEqual(steps[-1]["bindings"], [
-                {"source_step": "post_edit_scene", "source_path": ["data", "revision"],
-                 "target_path": ["expected_scene_revision"]}
+                {"source_step": "post_camera_scene" if stage == "model1" else "post_edit_scene",
+                 "source_path": ["data", "revision"], "target_path": ["expected_scene_revision"]}
             ])
             self.assertTrue(steps[-1]["request"]["payload"]["name"].endswith(".blend"))
+
+    def test_camera_and_lamp_have_explicit_safe_typed_properties(self):
+        m1 = scenario.build("model1", REV)["steps"]
+        camera = m1[3]["request"]["payload"]
+        self.assertEqual(camera["kind"], "CAMERA")
+        self.assertTrue(camera["settings"]["make_active"])
+        self.assertEqual(camera["expected_scene_revision"], "BOUND_FROM_SCENE")
+        self.assertEqual(m1[3]["bindings"][0]["source_step"], "post_edit_scene")
+        self.assertEqual(m1[5]["bindings"][0]["source_step"], "post_camera_scene")
+        m2 = scenario.build("model2", REV)["steps"]
+        lamp = m2[0]["request"]["payload"]
+        self.assertEqual(lamp["kind"], "POINT")
+        self.assertEqual(lamp["name"], "Shuvi41ProofKey")
+        self.assertEqual(lamp["expected_scene_revision"], REV)
+        self.assertEqual(lamp["settings"]["energy"], 950.0)
 
     def test_render_uses_small_cpu_budget_and_fresh_configured_revision(self):
         steps = scenario.build("render", REV)["steps"]
