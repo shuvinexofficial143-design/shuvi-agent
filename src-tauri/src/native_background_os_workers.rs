@@ -15,6 +15,8 @@ use std::{
 use serde::{Serialize,Deserialize};
 #[path = "native_windows_job.rs"]
 mod contained;
+#[path = "native_background_admission.rs"]
+mod admission;
 use contained::OwnedChild;
 
 const MAX_BACKGROUND_WORKERS:usize=2;
@@ -132,13 +134,15 @@ impl Slot{
 /// one Windows Job Object; it is never allowed to release the slot merely
 /// because the launcher parent exited while descendants remain alive.
 pub(super) struct BackgroundOwned{
-    _slot:Slot,
+    // Closing/terminating the Job Object must precede OS-slot release.
     child:OwnedChild,
+    _slot:Option<Slot>,
     id:String,
     receipt:Receipt,
     path:PathBuf,
     start:Instant,
     terminal:bool,
+    admitted:bool,
 }
 /// Trusted backend-only launch seam. Production approval/typed tool binding
 /// is intentionally not connected: there is no new Tauri IPC or model launch.
@@ -171,8 +175,27 @@ pub(super) fn spawn_internal_readonly(
         app_verified:false,
     };
     publish(&path,&receipt)?;
-    Ok(BackgroundOwned{_slot,child,id:id.into(),receipt,path,
-        start:Instant::now(),terminal:false})
+    Ok(BackgroundOwned{child,_slot:Some(_slot),id:id.into(),receipt,path,
+        start:Instant::now(),terminal:false,admitted:false})
+}
+/// Internal trusted Rust-only integration seam. Authoritative owner approval
+/// and fixed allowlisted worker executable must be checked BEFORE this call.
+/// A reserved UUID/input is durable BEFORE the child can be spawned; if the
+/// launch or PID journal fails, the claim stays quarantined for review.
+#[allow(dead_code)]
+pub(super) fn spawn_admitted_readonly(
+    root:&Path,id:&str,input:&Path,expected_sha256:&str,
+    exe:&Path,args:&[OsString],cwd:&Path
+)->Result<BackgroundOwned,String>{
+    admission::reserve_at(root,id,input,expected_sha256)?;
+    let mut owned=spawn_internal_readonly(root,id,exe,args,cwd)?;
+    admission::started_at(root,id,owned.child.id())?;
+    owned.admitted=true;
+    Ok(owned)
+}
+#[allow(dead_code)]
+pub(super) fn read_admissions(root:&Path)->Result<Vec<(String,String)>,String>{
+    admission::snapshot_at(root)
 }
 #[allow(dead_code)]
 impl BackgroundOwned{
@@ -184,6 +207,10 @@ impl BackgroundOwned{
         record.phase=phase.into();
         record.exit_code=Some(code);
         publish(&self.path,&record)?;
+        if self.admitted {
+            let root=self.path.parent().ok_or("Background receipt root unavailable.")?;
+            admission::terminal_at(root,&self.id,self.child.id(),phase,code)?;
+        }
         self.receipt=record;
         self.terminal=true;
         Ok(())
@@ -228,9 +255,20 @@ impl Drop for BackgroundOwned{
     fn drop(&mut self){
         // A dropped live worker is never a successful audit. Job Object
         // KILL_ON_JOB_CLOSE still contains descendants if explicit stop fails.
-        if !self.terminal{
-            if let Ok(Some(code))=self.child.terminate_tree(){
-                let _=self.finish("os_cancelled_unverified",code);
+        if !self.terminal {
+            match self.child.terminate_tree(){
+                Ok(Some(code)) if self.child.active_processes().ok()==Some(0)=>{
+                    if self.finish("os_cancelled_unverified",code).is_err(){
+                        // Missing durable terminal confirmation: reserve the
+                        // kernel slot for the rest of this Shuvi process.
+                        if let Some(slot)=self._slot.take(){std::mem::forget(slot);}
+                    }
+                },
+                _=>{
+                    // Never hand a slot to a third worker if descendant
+                    // termination could not be verified.
+                    if let Some(slot)=self._slot.take(){std::mem::forget(slot);}
+                }
             }
         }
     }
