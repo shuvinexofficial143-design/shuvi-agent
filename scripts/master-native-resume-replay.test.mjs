@@ -64,3 +64,61 @@ test("native replay classifier has no OS write, Rust grant or billed-provider au
  const src=readFileSync(new URL("../src/master-native-resume-replay.mjs",import.meta.url),"utf8");
  assert.doesNotMatch(src,/execute_action|prepare_tool|invoke\(|grantTaskRead\(|fetch\(/);
 });
+
+// The replay block must remain active even if a prior receipt has plausible
+// Rust UUIDs but a different file path/hash than this task's saved evidence.
+test("native replay display does not misreport a foreign or mutated Blender artifact",()=>{
+ const g=graph();
+ g.objective="Render Blender";
+ g.steps[0].expected_tool="blender_run_plan";
+ g.steps[0].evidence[0].tool="blender_run_plan";
+ g.steps[0].evidence[0].artifact={
+  kind:"blender_artifact",producer_action_id:A,path:"C:/render/owner.blend",
+  sha256:"a".repeat(64),bytes:8192
+ };
+ const d=delivery();d.objective=g.objective;
+ d.steps[0].tool="blender_run_plan";
+ d.steps[0].artifact={kind:"blender_artifact",path:"C:/render/owner.blend",
+  sha256:"a".repeat(64),bytes:8192};
+ assert.equal(classify(g,d).delivered,true);
+ for(const mutate of [
+  x=>x.steps[0].artifact.path="C:/render/foreign.blend",
+  x=>x.steps[0].artifact.sha256="b".repeat(64),
+  x=>x.steps[0].artifact.bytes=8193,
+  x=>x.steps[0].artifact=null,
+  x=>x.steps[1].artifact={kind:"blender_artifact",
+   path:"C:/render/owner.blend",sha256:"a".repeat(64),bytes:8192}
+ ]){
+  const changed=structuredClone(d);mutate(changed);
+  const result=classify(g,changed);
+  assert.equal(result.blocked,true);
+  assert.equal(result.delivered,false);
+ }
+});
+test("premiere project replay report requires project file and dependent audited reopen",()=>{
+ const g=graph();
+ g.objective="Premiere me naya project banao";
+ g.steps[0].expected_tool="premiere_create_project";
+ g.steps[0].evidence[0].tool="premiere_create_project";
+ g.steps[1].expected_tool="premiere_open_project";
+ g.steps[1].evidence[0].tool="premiere_open_project";
+ const d=delivery();d.objective=g.objective;
+ d.steps[0].tool="premiere_create_project";
+ d.steps[1].tool="premiere_open_project";
+ d.steps[0].artifact={kind:"premiere_project",path:"C:/Projects/owner.prproj",
+  sha256:"a".repeat(64),bytes:8192};
+ assert.equal(classify(g,d).delivered,true);
+ for(const change of [
+  x=>x.d.steps[0].artifact=null,
+  x=>x.d.steps[0].artifact.sha256="bad",
+  x=>x.d.steps[0].artifact.path="C:/Projects/owner.mp4",
+  x=>x.g.steps[1].depends_on=[],
+  x=>x.g.steps[1].evidence[0].orchestration_step=1
+ ]){
+  const x={g:structuredClone(g),d:structuredClone(d)};change(x);
+  const result=classify(x.g,x.d);
+  assert.equal(result.delivered,false);
+  // Already completed or otherwise unverified tasks must never be re-run.
+  if(result.blocked)assert.match(result.reason,/Inspect|Review/i);
+ }
+});
