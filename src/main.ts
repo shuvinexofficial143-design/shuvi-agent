@@ -997,8 +997,15 @@ async function loadRecoveryCheckpoint(): Promise<void> {
     resumeBanner.classList.remove("hidden");
   } catch {
     if(!stillReading())return;
+    // Rust read/unlock or CAS revision mismatch is not an absent checkpoint.
+    // Do not silently suppress the original owner recovery warning: a stale
+    // Desktop must not infer that another process's task can be discarded.
     savedCheckpoint = null;
-    resumeBanner.classList.add("hidden");
+    resumeSummary.textContent =
+      "Recovery blocked: native checkpoint unavailable or changed in another "+
+      "Shuvi process. Saved task not loaded. Inspect the original Windows "+
+      "session and Rust audit before resuming or clearing any work.";
+    resumeBanner.classList.remove("hidden");
   }
 }
 
