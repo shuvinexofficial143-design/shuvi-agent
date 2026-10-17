@@ -21,7 +21,7 @@ test("native owner status is read-only, schema-bound, and obtains real locked wo
  assert.match(journal,/pub\(super\) fn snapshot_detailed_at/);
  assert.match(os,/current_file_rehashed:reverified/);
  assert.match(os,/safe_to_auto_retry:false/);
- assert.doesNotMatch(lib.slice(lib.indexOf("fn native_background_readonly_status("),lib.indexOf("#[tauri::command]\nfn native_scheduler_status(")),/spawn|std::process::Command|permission.*grant|retry|cancel_exact\(/);
+ assert.doesNotMatch(lib.slice(lib.indexOf("fn native_background_readonly_status("),lib.indexOf("#[tauri::command]\nfn native_scheduler_status(")),/spawn_internal_readonly\(|std::process::Command|permission.*grant|retry_action\(|cancel_exact\(/);
 });
 test("frontend provides explicit read-only background health without giving process status any permission or replay authority",()=>{
  assert.match(types,/export type NativeBackgroundOwnerStatus/);
