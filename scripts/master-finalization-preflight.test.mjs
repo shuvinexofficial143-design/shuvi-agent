@@ -69,7 +69,7 @@ test("claim injection, forged .prproj artifact and swapped audited action fail c
  const f=fixture(),original=nativeTaskDeliveryClaims(f.graph,f.schedule);
  assert.ok(original);
  const injected=structuredClone(original);
- injected[0].artifact={kind:"premiere_project",path:PATH,sha256:SHA,bytes:8192};
+ injected[0].artifact={kind:"premiere_project",path:"C:\\Unrelated\\forged.prproj",sha256:"b".repeat(64),bytes:8192};
  assert.equal(check(f,OWNER,injected).allowed,false);
  const swapped=structuredClone(original);
  swapped[1].actionId=CREATE;
