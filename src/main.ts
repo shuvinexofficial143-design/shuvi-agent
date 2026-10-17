@@ -18,6 +18,7 @@ import {assessPremiereProjectProofProgress} from "./master-project-proof-progres
 import {assessPremiereProjectDeliveryContract} from "./master-project-delivery-contract.mjs";
 import {assessNativeFinalizationPreflight} from "./master-finalization-preflight.mjs";
 import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from "./master-project-proof-fence.mjs";
+import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./master-native-action-ownership.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -1698,6 +1699,17 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     return;
   }
   const permissionTaskId=activePermissionScope.taskId;
+  // Every native action, not only Premiere projects, requires an exact live
+  // owner-task lease across execute, audit and cancellation IPC awaits.
+  const actionOwnership=captureNativeActionOwnership(activePermissionScope,
+    orchestration.task_graph,orchestration.owner_request,actionId);
+  const nativeActionCurrent=(ownership:ReturnType<typeof captureNativeActionOwnership>)=>
+    isNativeActionOwnershipCurrent(ownership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    });
+  if(!nativeActionCurrent(actionOwnership))return;
   const protectProjectProof=proposal.tool==="premiere_create_project"||
     proposal.tool==="premiere_open_project";
   const actionProofFence=protectProjectProof
@@ -1744,6 +1756,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     const receipt = await readActionAuditReceipt(actionId);
     const receiptMatches = verifiedNativeActionResult(proposal.tool, actionId, result, receipt);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
+    if(!nativeActionCurrent(actionOwnership))return;
     if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
     if (!cancelledByUser && result.success) {
       if (proposal.tool === "browser_start") {
@@ -1770,7 +1783,12 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       actionId,
       receipt
     );
+    // Tool outcome updates the DAG. Capture that NEW exact graph before the
+    // asynchronous Rust audit-log publication, and reject a rotated task.
+    const postOutcomeOwnership=captureNativeActionOwnership(activePermissionScope,
+      orchestration.task_graph,orchestration.owner_request,actionId);
     await auditGraphOutcome(proposal);
+    if(!nativeActionCurrent(postOutcomeOwnership))return;
     // A successful audit legitimately replaces the DAG; pin its new identity
     // for separately awaited SHA create/reopen success AND failure responses.
     const postAuditProofFence=protectProjectProof
@@ -1888,11 +1906,20 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     messages.push(toolResultMessage(result));
     await continueAfterOutcome();
   } catch (error) {
+    // A delayed failed IPC call is not evidence against another user task.
+    if(!nativeActionCurrent(actionOwnership))return;
     if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
     revokeTaskScope(activePermissionScope);
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     const confirmedFailure = confirmedNativeActionFailure(proposal.tool, actionId, receipt);
+    // Revocation here is intentional fail-closed and must remain valid for
+    // this task's failure classification, but NEVER for a replacement scope.
+    if(!isNativeActionOwnershipCurrent(actionOwnership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    },true))return;
     if(protectProjectProof&&
       (activePermissionScope!==actionProofFence?.scope||
        activePermissionScope.taskId!==permissionTaskId||cancelRequested||
@@ -1908,7 +1935,14 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       actionId,
       receipt
     );
+    const failedOutcomeOwnership=captureNativeActionOwnership(activePermissionScope,
+      orchestration.task_graph,orchestration.owner_request,actionId,true);
     await auditGraphOutcome(proposal);
+    if(!isNativeActionOwnershipCurrent(failedOutcomeOwnership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    },true))return;
     // Native IPC can throw AFTER a Windows action has executed. Without a
     // matching failed receipt, neither success nor failure is established.
     messages.push(hiddenToolFailure(proposal, {
@@ -2881,7 +2915,9 @@ el<HTMLButtonElement>("#revokeTaskReadGrants").addEventListener("click",async()=
 });
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
-  const stoppingReadTaskId=activePermissionScope.taskId;
+  const stoppingScope=activePermissionScope;
+  const stoppingReadTaskId=stoppingScope.taskId;
+  const stillStopping=()=>activePermissionScope===stoppingScope&&cancelRequested;
   revokeTaskScope(activePermissionScope);
   nativeReadGrantIds.clear();
   openingWindowObservation=null;
@@ -2890,6 +2926,7 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   projectReopenEvidence=null;
   renderPremiereProjectProofProgress();
   await revokeNativeTaskReads(stoppingReadTaskId);
+  if(!stillStopping())return;
 
   if (pendingAction && pendingChatProposal) {
     const actionId = pendingAction.id;
@@ -2914,6 +2951,7 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
       // If Rust cannot confirm denial, keep the graph conservative: the bound
       // prepared action is failed locally and will still require replan/recovery.
     }
+    if(!stillStopping())return;
 
     orchestration = recordToolOutcome(
       orchestration,
@@ -2925,7 +2963,9 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
       receipt
     );
     await auditGraphOutcome(proposal);
+    if(!stillStopping())return;
     await saveActiveCheckpoint();
+    if(!stillStopping())return;
 
     // No provider/tool request is active while waiting for permission.
     await runAgentStep();
