@@ -7,6 +7,115 @@ use uuid::Uuid;
 
 use crate::blender_plan_worker::verify_output;
 
+/// Optional material-still proof is a historical read-only preflight
+/// from the *owned persistent* broker, never an image-quality or current
+/// host-approval claim. Verify the actual source bytes during delivery and
+/// reject any incomplete or contradictory claimed fields.
+fn material_source_evidence(
+    preflight:Option<&Value>,artifact:&Value,session:Option<&str>
+)->Result<Value,String>{
+    let is_material=artifact.get("format").and_then(Value::as_str)==Some("PNG")
+        && artifact.get("path").and_then(Value::as_str)
+            .and_then(|p|Path::new(p).file_name())
+            .and_then(|p|p.to_str())==Some("shuvi41-proof-material-render.png");
+    if !is_material {
+        if preflight.is_some_and(|v|!v.is_null()){
+            return Err("Unrelated Blender output cannot claim material-render preflight.".into());
+        }
+        return Ok(Value::Null);
+    }
+    let claim=preflight.filter(|v|v.is_object())
+        .ok_or("Material PNG is missing its authenticated read-only source preflight.")?;
+    let owner=session.ok_or("Material PNG requires persistent Blender session identity.")?;
+    if claim.get("schema_version").and_then(Value::as_u64)!=Some(1)
+        ||claim.get("verified").and_then(Value::as_bool)!=Some(true)
+        ||claim.get("read_only_preflight").and_then(Value::as_bool)!=Some(true)
+        ||claim.get("session_id").and_then(Value::as_str)!=Some(owner)
+        ||claim.get("mesh_name").and_then(Value::as_str)!=Some("Shuvi41ProofMesh")
+        ||claim.get("material_slot_name").and_then(Value::as_str)!=Some("Shuvi41ProofCopper")
+        ||claim.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
+        ||claim.get("key_light_name").and_then(Value::as_str)!=Some("Shuvi41ProofKey")
+        ||claim.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(false)
+        ||claim.get("render_completed_by_preflight").and_then(Value::as_bool)!=Some(false)
+        ||claim.get("approval_reauthenticated_by_preflight").and_then(Value::as_bool)!=Some(false){
+        return Err("Material render source preflight claims are missing or overstated.".into());
+    }
+    let revision=claim.get("source_scene_revision").and_then(Value::as_str)
+        .ok_or("Material source preflight revision missing.")?;
+    if revision.len()!=64 || !revision.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()){
+        return Err("Material source preflight revision is invalid.".into());
+    }
+    let source=claim.get("source_blend_path").and_then(Value::as_str)
+        .ok_or("Material source path missing.")?;
+    if Path::new(source).file_name().and_then(|v|v.to_str())!=Some("shuvi41-proof-material.blend"){
+        return Err("Material render must be sourced from the fixed material .blend.".into());
+    }
+    let digest=claim.get("source_sha256").and_then(Value::as_str)
+        .ok_or("Material source SHA-256 missing.")?;
+    let checked=crate::blender_input_checkpoint::inspect(Some(source),Some(digest))?
+        .ok_or("Material source bytes are not available.")?;
+    if checked.canonical_path!=source
+        ||claim.get("source_bytes").and_then(Value::as_u64)!=Some(checked.bytes) {
+        return Err("Material source preflight does not match native source bytes.".into());
+    }
+    Ok(json!({
+        "schema_version":1,"source_blend_path":source,"source_sha256":digest,
+        "source_bytes":checked.bytes,"source_scene_revision":revision,
+        "source_session_id":owner,"mesh_name":"Shuvi41ProofMesh",
+        "material_slot_name":"Shuvi41ProofCopper",
+        "active_camera_name":"Shuvi41ProofCamera","key_light_name":"Shuvi41ProofKey",
+        "native_source_sha256_verified_at_delivery":true,
+        "read_only_preflight_verified_at_delivery":true,
+        "shader_parameters_independently_verified":false,
+        "render_completed_by_preflight":false,
+        "approval_reauthenticated_by_preflight":false,
+    }))
+}
+
+/// Verify the structure of HISTORICAL material proof in a user-supplied
+/// manifest; do not re-read arbitrary unapproved source paths here.
+fn validate_historical_material_proof(evidence:&Value,artifact:&Value)->Result<bool,String>{
+    let is_material=artifact.get("format").and_then(Value::as_str)==Some("PNG")
+        && artifact.get("absolute_path").and_then(Value::as_str)
+            .and_then(|p|Path::new(p).file_name())
+            .and_then(|p|p.to_str())==Some("shuvi41-proof-material-render.png");
+    if !is_material{
+        if evidence.get("material_render_source").is_some_and(|v|!v.is_null()){
+            return Err("Unrelated Blender output has injected material evidence.".into());
+        }
+        return Ok(false);
+    }
+    let proof=evidence.get("material_render_source").filter(|v|v.is_object())
+        .ok_or("Material PNG has no historic source evidence.")?;
+    let sha=proof.get("source_sha256").and_then(Value::as_str)
+        .ok_or("Material history source hash missing.")?;
+    let rev=proof.get("source_scene_revision").and_then(Value::as_str)
+        .ok_or("Material history scene revision missing.")?;
+    for hash in [sha,rev]{
+        if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()){
+            return Err("Malformed historical material source identity.".into());
+        }
+    }
+    if proof.get("schema_version").and_then(Value::as_u64)!=Some(1)
+        ||proof.get("native_source_sha256_verified_at_delivery").and_then(Value::as_bool)!=Some(true)
+        ||proof.get("read_only_preflight_verified_at_delivery").and_then(Value::as_bool)!=Some(true)
+        ||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(false)
+        ||proof.get("render_completed_by_preflight").and_then(Value::as_bool)!=Some(false)
+        ||proof.get("approval_reauthenticated_by_preflight").and_then(Value::as_bool)!=Some(false)
+        ||proof.get("source_blend_path").and_then(Value::as_str)
+            .and_then(|p|Path::new(p).file_name()).and_then(|p|p.to_str())!=Some("shuvi41-proof-material.blend")
+        ||!Path::new(proof.get("source_blend_path").and_then(Value::as_str).unwrap_or("")).is_absolute()
+        ||proof.get("source_bytes").and_then(Value::as_u64).is_none_or(|n|n<12 || n>128*1024*1024)
+        ||proof.get("source_session_id").and_then(Value::as_str).is_none_or(|s|Uuid::parse_str(s).is_err())
+        ||proof.get("mesh_name").and_then(Value::as_str)!=Some("Shuvi41ProofMesh")
+        ||proof.get("material_slot_name").and_then(Value::as_str)!=Some("Shuvi41ProofCopper")
+        ||proof.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
+        ||proof.get("key_light_name").and_then(Value::as_str)!=Some("Shuvi41ProofKey"){
+        return Err("Invalid or exaggerated historical material evidence.".into());
+    }
+    Ok(true)
+}
+
 /// Verify the ON-DISK bytes inside the approved root and build a bounded,
 /// action-lineage-bound typed manifest. No files or applications are changed.
 pub(crate) fn build(
@@ -64,6 +173,9 @@ pub(crate) fn build(
     if rendered && proof.is_some_and(|v|!v.is_null()){
         return Err("A PNG may not carry unrelated scene-reopen evidence.".into());
     }
+    let material=material_source_evidence(
+        output.get("material_render_preflight"),artifact,session.as_deref()
+    )?;
     let visual_size=if rendered {
         json!({"width":artifact["width"],"height":artifact["height"],
             "color_mode":"RGBA","bit_depth":8})
@@ -87,6 +199,7 @@ pub(crate) fn build(
             "scene_fingerprint":if saved {proof.unwrap()["fingerprint"].clone()}else{Value::Null},
             "object_count":if saved {proof.unwrap()["object_count"].clone()}else{Value::Null},
             "mesh_geometry_verified":saved,
+            "material_render_source":material,
             "active_camera_name":if saved {proof.unwrap()["active_camera_name"].clone()}else{Value::Null},
             "proof_camera_verified":if saved {proof.unwrap()["proof_camera_verified"].clone()}else{Value::Null},
             "proof_key_light_verified":if saved {proof.unwrap()["proof_key_light_verified"].clone()}else{Value::Null},
@@ -183,6 +296,9 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
         },
         _=>return Err("Unsupported Blender handoff artifact format.".into())
     };
+    let material_proof_was_valid=validate_historical_material_proof(
+        manifest.get("evidence").ok_or("Blender handoff evidence missing.")?,artifact
+    )?;
     // This native readback re-hashes the actual current file and checks it
     // remains confined within an explicitly selected existing root.
     verify_output(&receipt,approved_root)?;
@@ -194,6 +310,9 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
         "bytes":len,
         "sha256":hash,
         "current_file_integrity_verified":true,
+        "historical_material_render_source_record_well_formed":material_proof_was_valid,
+        "material_source_current_bytes_reverified":false,
+        "material_source_preflight_reexecuted":false,
         "source_action_approval_reverified":false,
         "original_blender_reopen_reexecuted":false,
         "import_performed":false,
