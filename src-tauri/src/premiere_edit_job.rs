@@ -187,6 +187,9 @@ impl Job {
         now_ms:u64,
     )->Result<Self,String>{
         request.validate()?;
+        if request.caption_graphics.is_some() && project_path.is_none_or(str::is_empty) {
+            return Err("Caption graphics edit job needs a previously saved exact .prproj path before approved native insertion/save.".into());
+        }
         if project_guid.is_empty()||project_guid.len()>240||sequence_guid.is_empty()||sequence_guid.len()>240 {
             return Err("Edit job requires live project and sequence identity.".into());
         }
@@ -521,6 +524,7 @@ mod tests{
             "export":{"output":"C:/out.mp4","overwrite":false}
         });
         let request:Request=serde_json::from_value(value).unwrap();
+        assert!(Job::new("no-project".into(),request.clone(),"P",None,"S",1).is_err());
         let mut job=Job::new("captions".into(),request,"P",Some("C:/edit.prproj"),"S",1).unwrap();
         assert_eq!(job.phases.iter().map(|p|p.tool.as_str()).collect::<Vec<_>>(),vec![
             "premiere_plan_caption_graphics","premiere_apply_caption_graphics",
