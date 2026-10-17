@@ -14,6 +14,7 @@
     "test": "node --test scripts/*.test.mjs",
     "verify:frontend": "node scripts/run-attested.mjs --scope frontend",
     "verify:rust": "node scripts/run-attested.mjs --scope rust",
+    "prepare:sha-sidecar": "node scripts/prepare-native-sha-sidecar.mjs",
     "verify:full": "node scripts/run-attested.mjs --scope full"
   },
   "dependencies": {
