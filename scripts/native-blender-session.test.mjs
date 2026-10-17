@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 19 tests/);
+  assert.match(run.stderr,/Ran 21 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -130,4 +130,10 @@ test("authenticated material render broker evidence is bound to native startup s
   assert.ok(native.includes('proof.get("source_scene_revision").and_then(Value::as_str)!=Some(expected_scene_revision)'));
   assert.ok(native.includes('proof.get("source_sha256").and_then(Value::as_str)!=Some(source.sha256.as_str())'));
   assert.ok(native.includes('return Err("Unrelated Blender plan cannot return material-render preflight."'));
+});
+
+test("persistent Blender response cannot promote a differently named PNG or BLEND as the expected approved artifact",()=>{
+  assert.ok(broker.includes("actual.name != expected_name"));
+  assert.ok(broker.includes('final_step.request.payload.get("name")'));
+  assert.ok(native.includes("crate::blender_plan_lineage::verify_final_artifact_binding(plan,&response)?"));
 });

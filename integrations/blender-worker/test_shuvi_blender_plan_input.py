@@ -27,7 +27,7 @@ class DummyPlan:
 
     class Step:
         name = "output"
-        request = types.SimpleNamespace(operation="render.execute")
+        request = types.SimpleNamespace(operation="render.execute", payload={"name": "safe-render.png"})
 
     steps = [Step()]
 
@@ -165,6 +165,23 @@ class OneOffInputTests(unittest.TestCase):
         self.assertEqual(self.entered, 1)
         self.assertEqual(self.executed, 1)
         self.assertEqual(self.closed, 1)
+
+    def test_correct_hash_and_folder_but_wrong_filename_never_verify(self):
+        with patch.object(DummyPlan.Step.request, "payload", {"name": "different-render.png"}):
+            code, output = self.invoke()
+        self.assertEqual(code, 4)
+        self.assertEqual(output["status"], "outcome_unknown")
+        self.assertFalse(output["retry_automatically"])
+        self.assertEqual(self.executed, 1)
+        self.assertEqual(self.closed, 1)
+
+    def test_nested_and_mismatched_output_extensions_denied(self):
+        for filename in ["nested/safe-render.png", "safe-render.blend", ""]:
+            with self.subTest(filename=filename):
+                with patch.object(DummyPlan.Step.request, "payload", {"name": filename}):
+                    code, output = self.invoke()
+                self.assertEqual(code, 4)
+                self.assertEqual(output["status"], "outcome_unknown")
 
     def test_wrong_hash_denied_before_authentication_or_blender_launch(self):
         code, output = self.invoke(sha="0" * 64)

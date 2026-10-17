@@ -225,9 +225,19 @@ def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
     receipt = last.data["after"]
     kind = "BLEND" if final_step.request.operation == "file.checkpoint" else "PNG"
     extension = ".blend" if kind == "BLEND" else ".png"
+    # A verified file in the right directory is insufficient when its name
+    # differs from the already-approved PlanRunner typed destination.
+    expected_name = final_step.request.payload.get("name")
+    if (not isinstance(expected_name, str) or not expected_name
+            or Path(expected_name).name != expected_name
+            or "/" in expected_name or "\\" in expected_name
+            or not expected_name.lower().endswith(extension)):
+        raise ValueError("Approved persistent plan output filename is invalid")
     actual = Path(receipt["path"]).resolve(strict=True)
-    if actual.suffix.lower() != extension or actual.parent != output_dir.resolve(strict=True):
-        raise ValueError("Plan output escaped approved directory")
+    if (actual.name != expected_name
+            or actual.suffix.lower() != extension
+            or actual.parent != output_dir.resolve(strict=True)):
+        raise ValueError("Blender output file does not match approved plan destination")
     checked = read_output(actual, kind)
     if checked["sha256"] != receipt.get("sha256"):
         raise ValueError("Checkpoint or render changed after plan")

@@ -228,6 +228,43 @@ pub(crate) fn receipt_matches(receipt:&Value,stage:&str)->Result<(),String>{
     }
     Ok(())
 }
+/// Compare the actual artifact name and output type to the *last approved
+/// typed step*, not merely to the output folder or SHA-256 file bytes. A
+/// correctly hashed but wrong-named artifact must never reach the handoff.
+/// This is a pure contract check; it does not access a file or run Blender.
+pub(crate) fn verify_final_artifact_binding(plan:&Value,output:&Value)->Result<(),String>{
+    let steps=plan.get("steps").and_then(Value::as_array)
+        .filter(|steps|!steps.is_empty() && steps.len()<=6)
+        .ok_or("Approved Blender plan has no bounded final step.")?;
+    let final_step=steps.last().ok_or("Approved Blender plan is empty.")?;
+    let operation=final_step.pointer("/request/operation").and_then(Value::as_str)
+        .ok_or("Approved Blender final operation missing.")?;
+    let kind=match operation{
+        "file.checkpoint"=>"BLEND",
+        "render.execute"=>"PNG",
+        _=>return Err("Approved Blender plan does not end in a supported output.".into()),
+    };
+    let expected_name=final_step.pointer("/request/payload/name").and_then(Value::as_str)
+        .filter(|name|!name.is_empty() && name.len()<=128)
+        .ok_or("Approved Blender output filename missing or oversized.")?;
+    if std::path::Path::new(expected_name).file_name().and_then(|s|s.to_str())!=Some(expected_name)
+        ||(expected_name.contains('/') || expected_name.contains('\\'))
+        ||!expected_name.to_ascii_lowercase().ends_with(if kind=="BLEND"{".blend"}else{".png"}){
+        return Err("Approved Blender output filename must be a plain typed filename.".into());
+    }
+    let artifact=output.get("artifact").ok_or("Blender artifact missing from worker output.")?;
+    let actual_name=artifact.get("path").and_then(Value::as_str)
+        .and_then(|name|std::path::Path::new(name).file_name()).and_then(|s|s.to_str())
+        .ok_or("Verified Blender output has no filename.")?;
+    if actual_name!=expected_name || artifact.get("format").and_then(Value::as_str)!=Some(kind) {
+        return Err("Verified Blender artifact differs from the approved final step's exact filename or format.".into());
+    }
+    if output.get("final_operation").is_some_and(|v|!v.is_null() && v.as_str()!=Some(operation)){
+        return Err("Blender worker final operation differs from approved typed plan.".into());
+    }
+    Ok(())
+}
+
 /// Native fail-closed dispatch policy for the five example workflow file
 /// names. The matched output *must* come from the exact typed recipe, not an
 /// unrelated plan whose last step writes an identical filename. The one-off
@@ -399,6 +436,45 @@ mod tests{
         assert_eq!(derive(&wrong).unwrap()["acceptance_stage"],"other");
         assert!(receipt_matches(&json!({"approved_plan_lineage":derive(&plan).unwrap()}),"render").is_err());
     }
+    #[test]
+    fn final_artifact_binding_rejects_correct_hash_wrong_filename_and_format(){
+        let revision="d".repeat(64);
+        for stage in ["model1","model2","render","look","look_render"]{
+            let plan=crate::blender_acceptance_recipe::expected_plan(stage,&revision).unwrap();
+            let last=plan["steps"].as_array().unwrap().last().unwrap();
+            let operation=last["request"]["operation"].as_str().unwrap();
+            let output_name=last["request"]["payload"]["name"].as_str().unwrap();
+            let kind=if operation=="render.execute"{"PNG"}else{"BLEND"};
+            let good=json!({"artifact":{"path":format!("/approved/outputs/{output_name}"),"format":kind},
+                            "final_operation":operation});
+            verify_final_artifact_binding(&plan,&good).unwrap();
+            let swapped_name=json!({"artifact":{"path":"/approved/outputs/unrelated.png","format":kind},
+                                    "final_operation":operation});
+            assert!(verify_final_artifact_binding(&plan,&swapped_name).is_err());
+            let wrong_format=json!({"artifact":{"path":format!("/approved/outputs/{output_name}"),
+                                                 "format":if kind=="PNG"{"BLEND"}else{"PNG"}},
+                                    "final_operation":operation});
+            assert!(verify_final_artifact_binding(&plan,&wrong_format).is_err());
+            let wrong_operation=json!({"artifact":{"path":format!("/approved/outputs/{output_name}"),"format":kind},
+                                       "final_operation":"unapproved.operation"});
+            assert!(verify_final_artifact_binding(&plan,&wrong_operation).is_err());
+            let bare=json!({"artifact":{"path":output_name,"format":kind}});
+            verify_final_artifact_binding(&plan,&bare).unwrap();
+        }
+    }
+    #[test]
+    fn final_artifact_binding_denies_nested_windows_and_alternative_destinations(){
+        let mut p=crate::blender_acceptance_recipe::expected_plan("render",&"c".repeat(64)).unwrap();
+        let mut output=json!({"artifact":{"path":"/approved/outputs/shuvi41-proof-render.png","format":"PNG"}});
+        for forged in ["nested/shuvi41-proof-render.png","nested\\\\shuvi41-proof-render.png","wrong.blend",""]{
+            p["steps"][2]["request"]["payload"]["name"]=json!(forged);
+            assert!(verify_final_artifact_binding(&p,&output).is_err());
+        }
+        p["steps"][2]["request"]["payload"]["name"]=json!("shuvi41-proof-render.png");
+        output["artifact"]["path"]=json!("/approved/outputs/shuvi41-proof-stage2.blend");
+        assert!(verify_final_artifact_binding(&p,&output).is_err());
+    }
+
     #[test]
     fn reserved_outputs_reject_forged_steps_and_wrong_sha_pinned_source(){
         let rev="c".repeat(64);

@@ -420,7 +420,10 @@ mod tests {
         let bytes=b"BLENDER-v430material-proof-source";
         fs::write(&source,bytes).unwrap();
         let hash=format!("{:x}",Sha256::digest(bytes));
-        let source_path=source.to_str().unwrap();
+        // Production receipts use canonical Rust-resolved paths. Temp
+        // directories may contain Windows path aliases; normalize fixture.
+        let canonical=source.canonicalize().unwrap();
+        let source_path=canonical.to_str().unwrap();
         let material_png=json!({"path":f.0.join("shuvi41-proof-material-render.png")
             .to_str().unwrap(),"format":"PNG"});
         let preflight=json!({
@@ -463,9 +466,12 @@ mod tests {
     }
     #[test]
     fn historical_material_evidence_is_non_authoritative_and_fail_closed(){
-        let file=json!({"format":"PNG","absolute_path":"/approved/shuvi41-proof-material-render.png"});
+        let f=Fixture::new();
+        let material_file=f.0.join("shuvi41-proof-material.blend");
+        let render_file=f.0.join("shuvi41-proof-material-render.png");
+        let file=json!({"format":"PNG","absolute_path":render_file.to_str().unwrap()});
         let mut proof=json!({
-            "schema_version":1,"source_blend_path":"/approved/shuvi41-proof-material.blend",
+            "schema_version":1,"source_blend_path":material_file.to_str().unwrap(),
             "source_sha256":"a".repeat(64),"source_scene_revision":"b".repeat(64),
             "source_bytes":100,"source_session_id":SESSION,
             "native_source_sha256_verified_at_delivery":true,
@@ -481,7 +487,8 @@ mod tests {
         proof["approval_reauthenticated_by_preflight"]=json!(true);
         assert!(validate_historical_material_proof(
             &json!({"material_render_source":proof}),&file).is_err());
-        let unrelated=json!({"format":"PNG","absolute_path":"/approved/unrelated.png"});
+        let unrelated=json!({"format":"PNG",
+            "absolute_path":f.0.join("unrelated.png").to_str().unwrap()});
         assert!(validate_historical_material_proof(
             &json!({"material_render_source":proof}),&unrelated).is_err());
         assert!(validate_historical_material_proof(&json!({}),&file).is_err());

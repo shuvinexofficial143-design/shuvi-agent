@@ -88,7 +88,7 @@ const python=candidates.find(parts=>{
   const [exe,...args]=parts;
   return spawnSync(exe,[...args,"-c","import ast"],{timeout:5000}).status===0;
 });
-test("one-off input source checked before launch, authenticated load and post-plan: six Python regressions",{
+test("one-off source and exact output name tested with eight Python regressions",{
   skip:python?false:"Python interpreter unavailable on runner"
 },()=>{
   const [exe,...args]=python;
@@ -96,11 +96,17 @@ test("one-off input source checked before launch, authenticated load and post-pl
     "-s","integrations/blender-worker","-p","test_shuvi_blender_plan_input.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 6 tests/);
+  assert.match(run.stderr,/Ran 8 tests/);
 });
 
 test("one-off Blender worker refuses reserved material render lacking the persistent scene/material safety preflight",()=>{
   assert.ok(exec.includes("crate::blender_plan_lineage::reserved_output_policy("));
   assert.ok(exec.includes("input_proof.as_ref().map(|x|x.canonical_path.as_str())"));
   assert.ok(exec.includes("allow_render,false"));
+});
+
+test("one-off Blender delivery binds the exact plan-requested artifact basename and native Rust independently checks it",()=>{
+  assert.ok(py.includes("actual.name != expected_name"));
+  assert.ok(py.includes("final_step.request.payload.get(\"name\")"));
+  assert.ok(exec.includes("crate::blender_plan_lineage::verify_final_artifact_binding(plan,&value)?"));
 });

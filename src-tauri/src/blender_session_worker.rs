@@ -558,6 +558,9 @@ pub(crate) fn plan(
         }else if material_claim.is_some(){
             return Err("Unrelated Blender plan cannot return material-render preflight.".into());
         }
+        // Do not promote an authenticated response carrying the wrong output
+        // filename, even if its bytes were verified inside the approved folder.
+        crate::blender_plan_lineage::verify_final_artifact_binding(plan,&response)?;
         let manifest=crate::blender_artifact_manifest::build(
             &response,Path::new(&session.output_dir),action_id,Some(id))?;
         Ok(json!({"status":"verified","session_id":id,"full_plan_completed":true,

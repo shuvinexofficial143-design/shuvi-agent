@@ -66,3 +66,14 @@ test("reserved example output names enforce matching typed plan and SHA-pinned i
     "generic_unreserved_model_plans_retain_normal_native_approval_flow"
   ])assert.ok(lineage.includes("fn "+caseName+"("));
 });
+
+test("all native output handoffs verify actual on-disk filename against the final typed plan step, not solely its hash",()=>{
+  assert.ok(lineage.includes("fn verify_final_artifact_binding(plan:&Value,output:&Value)"));
+  assert.ok(lineage.includes("if actual_name!=expected_name"));
+  assert.ok(lineage.includes('artifact.get("format").and_then(Value::as_str)!=Some(kind)'));
+  assert.ok(lineage.includes('output.get("final_operation")'));
+  assert.ok(session.includes("verify_final_artifact_binding(plan,&response)?"));
+  assert.ok(oneOff.includes("verify_final_artifact_binding(plan,&value)?"));
+  assert.ok(lineage.includes("fn final_artifact_binding_rejects_correct_hash_wrong_filename_and_format("));
+  assert.ok(lineage.includes("fn final_artifact_binding_denies_nested_windows_and_alternative_destinations("));
+});

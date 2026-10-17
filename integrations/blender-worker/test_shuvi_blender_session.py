@@ -264,6 +264,103 @@ class PersistentSessionTests(unittest.TestCase):
                                     self.output, self.blender, False, "e" * 64)
         self.assertEqual(executed, [])
 
+    def test_verified_persistent_png_requires_exact_approved_output_filename(self):
+        requested = self.output / "expected.png"
+        returned = self.output / "wrong.png"
+        requested.write_bytes(b"png fixture: expected")
+        returned.write_bytes(b"png fixture: wrong")
+        import hashlib as _hashlib
+        fake = {
+            "shuvi_blender_agent.plans": types.ModuleType("shuvi_blender_agent.plans"),
+            "shuvi_blender_agent.files": types.ModuleType("shuvi_blender_agent.files"),
+            "shuvi_blender_agent.contracts": types.ModuleType("shuvi_blender_agent.contracts"),
+        }
+        class Step:
+            name = "render"
+            request = types.SimpleNamespace(
+                operation="render.execute", payload={"name": "expected.png"})
+        class Plan:
+            steps = [Step()]
+            timeout_ms = 10_000
+            @staticmethod
+            def from_dict(_):
+                return Plan()
+        delivered = {"path": str(requested)}
+        calls = []
+        class PlanRunner:
+            def __init__(self, _):
+                pass
+            def run(self, _):
+                calls.append("render")
+                path = Path(delivered["path"])
+                digest = _hashlib.sha256(path.read_bytes()).hexdigest()
+                return types.SimpleNamespace(
+                    completed=True,
+                    results={"render": FakeResult("verified",
+                        {"after": {"path": str(path), "sha256": digest}})})
+        def read_output(path, kind):
+            self.assertEqual(kind, "PNG")
+            return {"path": str(path), "sha256": _hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                    "format": "PNG", "bytes": Path(path).stat().st_size}
+        fake["shuvi_blender_agent.plans"].Plan = Plan
+        fake["shuvi_blender_agent.plans"].PlanRunner = PlanRunner
+        fake["shuvi_blender_agent.files"].read_output = read_output
+        fake["shuvi_blender_agent.contracts"].Request = FakeRequest
+        fake["shuvi_blender_agent.contracts"].Status = types.SimpleNamespace(
+            SUCCEEDED="succeeded", VERIFIED="verified")
+        with patch.dict(sys.modules, fake):
+            for wrong in [str(returned), str(self.output / "nested.png")]:
+                if not Path(wrong).exists():
+                    Path(wrong).write_bytes(b"simulated different output")
+                delivered["path"] = wrong
+                with self.subTest(wrong=wrong):
+                    with self.assertRaisesRegex(ValueError, "does not match approved plan destination"):
+                        worker.checked_plan(FakeController(object()), {"steps": [1]},
+                                            self.output, self.blender, True, "f" * 64)
+            delivered["path"] = str(requested)
+            accepted = worker.checked_plan(FakeController(object()), {"steps": [1]},
+                                           self.output, self.blender, True, "f" * 64)
+        self.assertEqual(accepted["status"], "verified")
+        self.assertEqual(accepted["artifact"]["path"], str(requested))
+        self.assertEqual(len(calls), 3)
+
+    def test_persistent_png_final_plan_filename_must_not_be_nested_or_wrong_extension(self):
+        fake = {
+            "shuvi_blender_agent.plans": types.ModuleType("shuvi_blender_agent.plans"),
+            "shuvi_blender_agent.files": types.ModuleType("shuvi_blender_agent.files"),
+            "shuvi_blender_agent.contracts": types.ModuleType("shuvi_blender_agent.contracts"),
+        }
+        requested = self.output / "correct.png"
+        requested.write_bytes(b"fixture data")
+        class Step:
+            name = "render"
+            request = types.SimpleNamespace(operation="render.execute", payload={"name": "correct.png"})
+        class Plan:
+            steps = [Step()]
+            timeout_ms = 10_000
+            @staticmethod
+            def from_dict(_):
+                return Plan()
+        class Runner:
+            def __init__(self, _):
+                pass
+            def run(self, _):
+                return types.SimpleNamespace(completed=True,
+                    results={"render": FakeResult("verified",
+                        {"after": {"path": str(requested), "sha256": "0"*64}})})
+        fake["shuvi_blender_agent.plans"].Plan = Plan
+        fake["shuvi_blender_agent.plans"].PlanRunner = Runner
+        fake["shuvi_blender_agent.files"].read_output = lambda *_: None
+        fake["shuvi_blender_agent.contracts"].Request = FakeRequest
+        fake["shuvi_blender_agent.contracts"].Status = types.SimpleNamespace(
+            SUCCEEDED="succeeded", VERIFIED="verified")
+        with patch.dict(sys.modules, fake):
+            for name in ["nested/correct.png", "wrong.blend", ""]:
+                with self.subTest(name=name), patch.object(Step.request, "payload", {"name": name}):
+                    with self.assertRaisesRegex(ValueError, "Approved persistent plan output filename"):
+                        worker.checked_plan(FakeController(object()), {"steps": [1]},
+                                            self.output, self.blender, True, "f" * 64)
+
     def test_approved_source_is_hash_checked_and_loaded_in_authenticated_blender(self):
         path = self.root / "source.blend"
         data = b"BLENDER-v430" + b"safe-checkpoint" * 5

@@ -232,6 +232,9 @@ pub(crate) fn execute(
     if let Some(ref input)=input_proof{
         blender_input_checkpoint::still_current(input)?;
     }
+    // Independent, final Rust attestation: the output basename AND format
+    // must equal the final approved typed step, not just hash/approved root.
+    crate::blender_plan_lineage::verify_final_artifact_binding(plan,&value)?;
     let manifest=crate::blender_artifact_manifest::build(&value,Path::new(output_dir),action_id,None)?;
     drop(guard);
     Ok(json!({"status":"verified","worker":"blender","full_plan_completed":true,

@@ -100,9 +100,19 @@ def run(argv: list[str] | None = None) -> int:
             extension = ".blend" if final_step.request.operation == "file.checkpoint" else ".png"
             if not isinstance(saved, str) or not isinstance(digest, str) or len(digest) != 64:
                 raise ValueError("Final output path/hash evidence missing")
+            # Prove the exact output selected in the approved typed plan,
+            # not just any correctly-hashed file in the approved directory.
+            expected_name = final_step.request.payload.get("name")
+            if (not isinstance(expected_name, str) or not expected_name
+                    or Path(expected_name).name != expected_name
+                    or "/" in expected_name or "\\" in expected_name
+                    or not expected_name.lower().endswith(extension)):
+                raise ValueError("Approved plan output filename is invalid")
             actual = Path(saved).resolve(strict=True)
-            if actual.parent != args.output_dir.resolve(strict=True) or actual.suffix.lower() != extension:
-                raise ValueError("Final output is outside the approved output directory")
+            if (actual.name != expected_name
+                    or actual.parent != args.output_dir.resolve(strict=True)
+                    or actual.suffix.lower() != extension):
+                raise ValueError("Actual artifact differs from approved plan output name or directory")
             # Capture only read-only, bounded, session-local observable state
             # after the approved save; launch a DIFFERENT process for reopen.
             if extension == ".blend":

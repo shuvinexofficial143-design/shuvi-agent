@@ -973,3 +973,36 @@ evidence on unrelated PNGs. Python tests prove exact source fields and
 read-only semantics; Node contract tests guard both native and broker wiring.
 **This is source-only testing, not a real Blender render.** Approval,
 Windows ownership, three-stage acceptance and old artifacts are unchanged.
+
+## Team-41 — end-to-end exact output destination proof
+
+Another real gap was discovered after the material delivery gate: an
+otherwise well-formed, SHA-256-matching output inside the explicitly
+approved directory was not independently compared with the **exact filename
+of the last approved typed PlanRunner step**.
+
+Both Python execution adapters (persistent and one-off) now refuse a
+completed plan if the actual canonical output basename differs from
+`final_step.request.payload.name`, if its extension is inappropriate,
+or if the name is nested/invalid. The original output-root and independent
+artifact SHA checks remain. The native Rust worker additionally
+rechecks the actual worker artifact filename, format and (when present)
+final operation against the *approved* typed plan **before** building any
+consumable artifact manifest. This is a separate check from plan lineage,
+file-byte verification, output-root containment, source-file SHA and
+owner approval. A correctly hashed but wrong-named file is not a verified
+delivery; never automatically replay a partially mutated plan.
+
+New Python fake-runner tests reject mismatched, nested and wrong-extension
+file outputs in the two execution modes. New Rust tests reject wrong
+filename, switched BLEND/PNG type, contradictory final-operation claims
+and Windows-style separator bypasses. Source Node checks make sure both
+runtime paths have independent output-name proofs. This does not prove
+actual Blender editing, rendering quality or host acceptance.
+
+Previous Rust CI on commit `16aa4f9` found two cross-platform test
+fixture errors in the new material-source evidence tests: Linux-only
+absolute paths and an uncanonicalized temp path on Windows. The material
+SHA/path production gate remains strict; the regression fixtures now use
+canonical source paths and platform-native absolute temporary paths.
+No real host data or live Blender/Adobe processes are involved.
