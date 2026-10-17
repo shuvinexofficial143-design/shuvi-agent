@@ -41,10 +41,7 @@ $captureScript=$captureMatch.Groups['script'].Value
 # executing the real capture. In this read-only CI parser, replace with
 # harmless positive literals so PowerShell sees the final syntax. Do NOT
 # invoke the script or enumerate any windows on the CI host.
-$captureSyntaxOnly=$captureScript.Replace('__SHUVI_APPROVED_HWND__','1').
- Replace('__SHUVI_APPROVED_PID__','1').
- Replace('__SHUVI_APPROVED_BIRTH__','1').
- Replace('__SHUVI_APPROVED_TITLE__','CI synthetic window')
+$captureSyntaxOnly=$captureScript.Replace('__SHUVI_APPROVED_HWND__','1').Replace('__SHUVI_APPROVED_PID__','1').Replace('__SHUVI_APPROVED_BIRTH__','1').Replace('__SHUVI_APPROVED_TITLE__','CI synthetic window')
 # Compile only the embedded C# interop DECLARATIONS from the real capture
 # source. Never execute its UIA traversal, focus switch or CopyFromScreen.
 # A PowerShell parser can accept the here-string even if its C# is broken.
