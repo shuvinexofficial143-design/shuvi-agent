@@ -241,3 +241,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 35 source terminology compatibility
 - Updated the recovery UI source-contract test to the more accurate archival evidence label: signed HMAC was verified before Rust recorded the stage, but a persisted JSON stage is **not** cryptographically re-authenticated on a future status read. No automation or liveness assertion is derived.
+
+## Milestone 36 — OS-backed serialized NativeJob transactions across Shuvi instances
+- Added durable native-worker journal exclusion on **all** begin, supervisor heartbeat/tick, final audit, owner reconciliation and status read operations. In addition to the existing Rust mutex, every transaction takes an exclusive OS file-handle lock beside the existing `native-worker-job.json`: Windows zero-share/reparse-safe handle and Unix nonblocking flock. No TTL releases, stale overwrite or automatic retry.
+- An OS process crash drops only the kernel lock; the last on-disk `running`, `audit_verified` or `owner_reviewed_unknown` state remains intact and is independently validated before dispatch. Lock contention/corruption is an error, never an empty/idle journal.
+- Added real Rust tests for cross-instance lock contention on every transition, competing begin attempts, concurrent tick/final audit, and forged directory at lock path; new Node contract verifies production seam ordering. No change to existing native desktop OS lease, approval checks, worker PID ownership, or Windows app live validation.
