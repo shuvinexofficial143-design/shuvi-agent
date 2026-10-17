@@ -95,3 +95,16 @@ test("Windows CI compiles the real target-capture Win32 C# interop without execu
  assert.doesNotMatch(ps,/\[ShuviTargetCaptureWin32\]::GetAncestor\(/);
  assert.doesNotMatch(ps,/\[ShuviTargetCaptureWin32\]::SetForegroundWindow\(/);
 });
+
+test("Windows capture syntax parser substitutes safe numeric fixtures for Rust-bound placeholders",()=>{
+ const ps=readFileSync(new URL("./shuvi39-synthetic-windows-uia-smoke.ps1",import.meta.url),"utf8");
+ const bound=ps.indexOf("$captureSyntaxOnly=$captureScript.Replace(");
+ assert.ok(bound>0);
+ for(const field of ["__SHUVI_APPROVED_HWND__","__SHUVI_APPROVED_PID__",
+   "__SHUVI_APPROVED_BIRTH__","__SHUVI_APPROVED_TITLE__"]){
+   assert.ok(ps.slice(bound,bound+450).includes(field),field);
+ }
+ assert.match(ps,/native_target_window_capture_syntax_only';source=\$captureSyntaxOnly/);
+ assert.doesNotMatch(ps,/Invoke-Expression\s+\$captureSyntaxOnly/);
+ assert.doesNotMatch(ps,/\[scriptblock\]::Create\(\$captureSyntaxOnly\)\.Invoke/);
+});

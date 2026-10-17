@@ -994,3 +994,18 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   actions. None of their behavior or accepted input is changed.
 - No production permission/TTL/check is bypassed; update the
   screenshot-specific source assertion to require the new binding.
+
+### Milestone 24 Windows CI Parser compatibility
+
+- The first GitHub Windows Rust workflow on the new screenshot-binding
+  branch failed at the **read-only parser step**, before Rust compilation:
+  the capture source now has native Rust-only substitution placeholders
+  for approved HWND, PID, process birth ticks and title. The raw template
+  is not itself executable PowerShell until placeholders are substituted.
+- In the Windows synthetic CI parser only, materialize those placeholder
+  types with innocuous numeric `1` and a test-only window title before
+  passing the text to PowerShell Parser. The real capture still obtains
+  its values exclusively from the previously OS-bound Rust PendingAction.
+- No WindowFromPoint/GetAncestor call, foreground activation,
+  screenshot, model request or mutation is executed in CI. The existing
+  Windows parser and C# P/Invoke compilation remain mandatory.
