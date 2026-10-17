@@ -32,8 +32,8 @@ test("last receipt survives clearing chat progress and supports read-only reinsp
 
 test("Rust delivery independently requires an audited dependent Premiere reopen, not just CREATE SHA",()=>{
  assert.match(m,/one audited create followed by one distinct reopen/);
- assert.match(m,/schedule\\.jobs\\[opens\\[0\\]\\.0\\]\\.depends_on\\.contains/);
- assert.match(m,/receipts\\[open_index\\]\\.timestamp_ms<receipts\\[create_index\\]\\.timestamp_ms/);
+ assert.ok(m.includes("schedule.jobs[opens[0].0].depends_on.contains"));
+ assert.ok(m.includes("receipts[open_index].timestamp_ms<receipts[create_index].timestamp_ms"));
  assert.match(m,/create_only/);
  assert.match(m,/without_dependency/);
  assert.match(m,/wrong_dependency/);
