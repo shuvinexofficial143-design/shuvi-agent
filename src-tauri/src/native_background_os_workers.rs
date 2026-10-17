@@ -71,6 +71,58 @@ fn regular_root(dir:&Path)->Result<(),String>{
 fn receipt_path(dir:&Path,id:&str)->PathBuf{
     dir.join(format!("native-bg-readonly-{id}.json"))
 }
+#[derive(Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct StopIntent {
+    version:u32,
+    action_id:String,
+    request:String,
+}
+fn stop_intent_path(root:&Path,id:&str)->PathBuf{
+    root.join(format!("native-bg-stop-{id}.json"))
+}
+fn inspect_stop_intent(root:&Path,id:&str)->Result<bool,String>{
+    if !valid_uuid(id){return Err("Invalid exact background Stop UUID.".into());}
+    let path=stop_intent_path(root,id);
+    match fs::symlink_metadata(&path){
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(false),
+        Err(_)=>return Err("Cannot inspect background Stop request.".into()),
+        Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()
+            && meta.file_attributes()&0x400==0 && meta.len()>0 &&meta.len()<=256=>{},
+        Ok(_)=>return Err("Background Stop request redirected or malformed.".into()),
+    };
+    let raw=crate::read_file_bytes_bounded(&path,256,"background Stop request")?;
+    let record:StopIntent=serde_json::from_slice(&raw)
+        .map_err(|_|"Background Stop request JSON malformed.")?;
+    if record.version!=1||record.action_id!=id||record.request!="owner_stop"{
+        return Err("Background Stop request does not match exact UUID.".into());
+    }
+    Ok(true)
+}
+/// Only called by the already authorized owner-facing cancel_running_action
+/// after checking that parent UUID is actively executing the SHA pair.
+/// Durable create-new request is NOT proof of process termination.
+pub(crate) fn request_stop_for_child(root:&Path,id:&str)->Result<bool,String>{
+    regular_root(root)?;
+    if !valid_uuid(id){return Err("Background stop requires exact worker UUID.".into());}
+    let claims=admission::snapshot_detailed_at(root)?;
+    let matched=claims.iter().find(|x|x.action_id==id)
+        .ok_or("No owned background worker admission for Stop UUID.")?;
+    if matched.phase!="os_running"{
+        return Ok(false); // Terminal/reserved/unknown is not a live stop target.
+    }
+    if inspect_stop_intent(root,id)?{return Ok(true);}
+    let payload=serde_json::to_vec(&StopIntent{
+        version:1,action_id:id.into(),request:"owner_stop".into(),
+    }).map_err(|_|"Cannot encode durable background Stop request.")?;
+    let path=stop_intent_path(root,id);
+    let mut file=OpenOptions::new().write(true).create_new(true)
+        .custom_flags(OPEN_REPARSE_POINT).open(&path)
+        .map_err(|_|"Cannot atomically record exact background Stop request.")?;
+    file.write_all(&payload).and_then(|_|file.sync_all())
+        .map_err(|_|"Cannot flush background Stop request to disk.")?;
+    Ok(true)
+}
 /// A launch intent is irreversible without an explicit future owner-review
 /// path. No TTL unlock, overwrite, or same-UUID automatic retry.
 fn create_intent(path:&Path,id:&str)->Result<(),String>{
@@ -209,6 +261,7 @@ pub(crate) struct ReadOnlyWorkerHealth{
     pub evidence_health:String,
     pub current_file_rehashed:bool,
     pub safe_to_auto_retry:bool,
+    pub stop_requested:bool,
 }
 fn inspect_receipt(root:&Path,id:&str)->Result<Option<Receipt>,String>{
     let path=receipt_path(root,id);
@@ -283,6 +336,7 @@ pub(crate) fn inspect_readonly_health(root:&Path)->Result<Vec<ReadOnlyWorkerHeal
             action_id:claim.action_id,recorded_phase:claim.phase,
             evidence_health:health.into(),current_file_rehashed:reverified,
             safe_to_auto_retry:false,
+            stop_requested:inspect_stop_intent(root,&claim.action_id)?,
         });
     }
     Ok(observed)
@@ -427,6 +481,20 @@ impl BackgroundOwned{
         where F:FnMut()->Result<bool,String>{
         loop{
             if self.terminal{return Err("Read-only worker already finished.".into());}
+            let root=self.path.parent().ok_or("Owned read-only worker root unavailable.")?;
+            // A forged/malformed stop marker is also a fail-closed condition.
+            // Termination is performed only by this exact owned Job Object.
+            match inspect_stop_intent(root,&self.id){
+                Ok(false)=>{},
+                Ok(true)=>{
+                    self.cancel_exact(&self.id.clone())?;
+                    return Err("Owner Stop request terminated owned SHA process; output unverified.".into());
+                },
+                Err(_)=>{
+                    self.cancel_exact(&self.id.clone())?;
+                    return Err("Background Stop identity corrupted; owned process terminated for review.".into());
+                }
+            }
             match over_hard_limit(){
                 Ok(false)=>{},
                 Ok(true)=>{self.cancel_exact(&self.id.clone())?;
@@ -676,6 +744,26 @@ mod tests{
         assert!(!stale[0].current_file_rehashed);
         assert!(stale[0].evidence_health.contains("owner_review_required"));
         assert!(!stale[0].safe_to_auto_retry);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn stop_marker_exact_uuid_idempotent_and_never_stops_foreign_or_terminal(){
+        let dir=root();let f=dir.join("a.bin");let g=dir.join("b.bin");
+        fs::write(&f,b"alpha").unwrap();fs::write(&g,b"beta").unwrap();
+        admission::reserve_at(&dir,A,&f,&"a".repeat(64)).unwrap();
+        admission::reserve_at(&dir,B,&g,&"b".repeat(64)).unwrap();
+        assert!(!request_stop_for_child(&dir,A).unwrap()); // reserved != OS live
+        admission::started_at(&dir,A,444).unwrap();
+        assert!(request_stop_for_child(&dir,A).unwrap());
+        assert!(request_stop_for_child(&dir,A).unwrap());
+        assert!(inspect_stop_intent(&dir,A).unwrap());
+        assert!(!inspect_stop_intent(&dir,B).unwrap());
+        assert!(!request_stop_for_child(&dir,B).unwrap());
+        let path=stop_intent_path(&dir,A);
+        fs::write(&path,serde_json::json!({
+            "version":1,"actionId":B,"request":"owner_stop"
+        }).to_string()).unwrap();
+        assert!(inspect_stop_intent(&dir,A).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
