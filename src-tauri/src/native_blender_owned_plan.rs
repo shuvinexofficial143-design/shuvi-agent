@@ -183,6 +183,10 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
         args.push(OsString::from(file));
     }
     if render{args.push(OsString::from("--allow-render"));}
+    // Persist exact project/output ownership before any Blender OS launch.
+    // Crash/interrupted audit never automatically frees the output resource.
+    crate::native_scheduler::resource_lanes::reserve_blender_plan(
+        app,action_id,blend_file,output_dir)?;
     let lease=slot.take().ok_or("Original native desktop lease not held by approved Blender plan.")?;
     let mut child=crate::native_scheduler::owned_process::spawn_for_active_action(
         app,lease,action_id,"blender_run_plan",&python,&args,cwd,Duration::from_secs(120))?;

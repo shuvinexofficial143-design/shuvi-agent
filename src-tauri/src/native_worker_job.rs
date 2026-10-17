@@ -173,10 +173,25 @@ pub(crate) fn reconcile(
     reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)
 }
 pub(crate) fn begin(app:&AppHandle,id:&str,tool:&str,now:u64)->Result<(),String>{
+    // Recover a prior fully audited+artifact-verified output reservation if
+    // the host crashed between durable audit and normal resource release.
+    // An unknown/failed external effect MUST keep its exclusive reservation.
+    if let Some(prior)=read(app)?{
+        if prior.phase=="audit_verified"&&prior.audit_success==Some(true){
+            crate::native_scheduler::resource_lanes::release_after_verified_audit(
+                app,&prior.action_id)?;
+        }
+    }
     begin_at(&journal_path(app)?,id,tool,now).map(|_|())
 }
 pub(crate) fn audit(app:&AppHandle,id:&str,success:bool,now:u64)->Result<(),String>{
-    audited_at(&journal_path(app)?,id,success,now)
+    audited_at(&journal_path(app)?,id,success,now)?;
+    // The audited exact UUID plus independently rehashed final certificate
+    // is the sole automatic release condition. Failed actions remain held.
+    if success {
+        crate::native_scheduler::resource_lanes::release_after_verified_audit(app,id)?;
+    }
+    Ok(())
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<NativeJob>,String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;

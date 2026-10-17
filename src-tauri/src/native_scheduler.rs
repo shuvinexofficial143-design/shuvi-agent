@@ -12,6 +12,8 @@ use tauri::{AppHandle,Manager};
 pub(crate) mod owned_process;
 #[path = "native_worker_progress.rs"]
 pub(crate) mod worker_progress;
+#[path = "native_resource_lanes.rs"]
+pub(crate) mod resource_lanes;
 const MAX_JOBS:usize=48;
 const MAX_BYTES:usize=32768;
 static LOCK:Mutex<()>=Mutex::new(());
