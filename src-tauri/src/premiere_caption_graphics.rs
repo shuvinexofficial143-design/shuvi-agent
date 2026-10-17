@@ -130,6 +130,58 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
         "retry_automatically":false
     }))
 }
+/// Validate a previously returned, separately approved native graphics batch
+/// receipt before performing any read-only host rescan. A caller-provided
+/// receipt alone never proves a native origin; independent host re-inspection
+/// establishes only the current state, not who originally inserted the clip.
+pub fn validate_audit_receipt(batch:&premiere_graphics::Batch,receipt:&Value,source_sha:&str)
+    ->Result<(),String>{
+    batch.validate()?;
+    let bytes=serde_json::to_vec(receipt).map_err(|e|e.to_string())?;
+    if bytes.len()>128*1024 || !source_sha.eq_ignore_ascii_case(
+        receipt.get("source_srt_sha256").and_then(Value::as_str).unwrap_or("")) {
+        return Err("Caption graphics receipt is oversized or source SHA256 changed.".into());
+    }
+    let native=receipt.get("batch").ok_or("Missing prior native caption batch receipt.")?;
+    if native.get("complete").and_then(Value::as_bool)!=Some(true)
+        ||native.get("cancelled").and_then(Value::as_bool)!=Some(false)
+        ||native.get("uncertain").and_then(Value::as_bool)!=Some(false)
+        ||native.get("requested").and_then(Value::as_u64)!=Some(batch.items.len() as u64)
+        ||native.get("applied").and_then(Value::as_u64)!=Some(batch.items.len() as u64)
+        ||receipt.get("native_caption_graphics_complete_receipts").and_then(Value::as_bool)!=Some(true)
+    {
+        return Err("Prior caption batch was cancelled, partial, uncertain or did not finish all items.".into());
+    }
+    let rows=native.get("items").and_then(Value::as_array)
+        .filter(|rows|rows.len()==batch.items.len())
+        .ok_or("Prior caption batch must contain one exact native receipt per selected cue.")?;
+    for (index,(row,item)) in rows.iter().zip(batch.items.iter()).enumerate(){
+        let result=row.get("result").ok_or("Missing original native caption insertion result.")?;
+        let expected=result.get("expected").ok_or("Native caption receipt is missing its exact clip identity.")?;
+        let clips=expected.get("clips").and_then(Value::as_array)
+            .filter(|clips|clips.len()==1).ok_or("Native caption receipt must target exactly one clip.")?;
+        let clip=&clips[0];
+        if row.get("index").and_then(Value::as_u64)!=Some(index as u64)
+            ||result.get("status").and_then(Value::as_str)!=Some("applied")
+            ||result.get("inserted").and_then(Value::as_bool)!=Some(true)
+            ||result.get("populated").and_then(Value::as_bool)!=Some(true)
+            ||result.get("uncertain").and_then(Value::as_bool)!=Some(false)
+            ||clip.get("kind").and_then(Value::as_str)!=Some("video")
+            ||clip.get("track").and_then(Value::as_u64)!=Some(batch.video_track as u64)
+            ||clip.get("signature").and_then(Value::as_str)
+                .is_none_or(|sig|sig.is_empty()||sig.len()>4096)
+            ||clip.get("clip_index").and_then(Value::as_u64).is_none_or(|v|v>10000)
+            ||!result.get("start_seconds").and_then(Value::as_f64).is_some_and(|v|
+                v.is_finite()&&(v-item.seconds).abs()<=0.001)
+            ||!result.get("end_seconds").and_then(Value::as_f64).is_some_and(|v|
+                v.is_finite()&&item.duration_seconds.is_some_and(|duration|
+                    (v-(item.seconds+duration)).abs()<=0.001)){
+            return Err(format!("Native caption receipt at item {index} is mismatched, incomplete or stale."));
+        }
+    }
+    Ok(())
+}
+
 /// Read-only, fail-closed occupancy check against an exact native Premiere
 /// timeline snapshot. It eliminates known collisions BEFORE starting a batch,
 /// but does not guarantee that a later Adobe write cannot race this snapshot.
@@ -298,6 +350,33 @@ pub fn preflight_timeline(
         let mut no_times=base;
         no_times["videoTracks"][0]["items"]=json!([{"startSeconds":1.0,"endSeconds":null}]);
         assert!(preflight_timeline(&batch,&no_times,"P",Some("C:/edit.prproj"),"S").is_err());
+        fs::remove_file(path).unwrap();
+    }
+    #[test] fn audit_receipt_rejects_partial_or_stale_native_caption_edits(){
+        let (request,path)=fixture();
+        let planned=plan(&request,&mapping()).unwrap();
+        let batch:premiere_graphics::Batch=serde_json::from_value(
+            planned["generated_batch"].clone()).unwrap();
+        let items:Vec<Value>=batch.items.iter().enumerate().map(|(index,item)|
+            json!({"index":index,"result":{
+                "status":"applied","inserted":true,"populated":true,"uncertain":false,
+                "start_seconds":item.seconds,"end_seconds":item.seconds+item.duration_seconds.unwrap(),
+                "expected":{"project_guid":"P","project_path":"C:/edit.prproj",
+                    "sequence_guid":"S","clips":[{"kind":"video","track":2,"clip_index":index,
+                        "signature":"[\"P\",\"C:/edit.prproj\",\"S\",\"video\",2,0,\"asset\",\"Clip\",\"1\",\"2\",\"3\",\"4\"]"}]}
+            }})).collect();
+        let mut receipt=json!({"native_caption_graphics_complete_receipts":true,
+            "source_srt_sha256":request.expected_srt_sha256,
+            "batch":{"complete":true,"cancelled":false,"uncertain":false,"requested":2,"applied":2,"items":items}});
+        assert!(validate_audit_receipt(&batch,&receipt,&request.expected_srt_sha256).is_ok());
+        receipt["batch"]["items"][1]["result"]["status"]=json!("uncertain");
+        assert!(validate_audit_receipt(&batch,&receipt,&request.expected_srt_sha256).is_err());
+        receipt["batch"]["items"][1]["result"]["status"]=json!("applied");
+        receipt["batch"]["items"][0]["result"]["end_seconds"]=json!(100.0);
+        assert!(validate_audit_receipt(&batch,&receipt,&request.expected_srt_sha256).is_err());
+        receipt["batch"]["items"][0]["result"]["end_seconds"]=json!(1.5);
+        receipt["source_srt_sha256"]=json!("0".repeat(64));
+        assert!(validate_audit_receipt(&batch,&receipt,&request.expected_srt_sha256).is_err());
         fs::remove_file(path).unwrap();
     }
     #[test] fn missing_caption_role_bad_static_field_and_too_many_cues_fail(){
