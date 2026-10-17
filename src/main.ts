@@ -12,6 +12,7 @@ import type {
   ProviderDescriptor,
   RuntimeStatus,
   NativeWorkerStatus,
+  NativeBackgroundOwnerStatus,
   NativeJobHistory,
   NativeSchedule,
   NativeTaskDelivery,
@@ -67,6 +68,7 @@ let nativeHostStatus: NativeWorkerStatus | null = null;
 let nativeHostStatusUnavailable = true;
 let nativeHostReadPending = false;
 let nativeHistoryReadPending = false;
+let nativeBackgroundReadPending = false;
 let nativeSchedulerReadPending = false;
 let failedSchedulerStep: {stepId:string;actionId:string}|null = null;
 let masterEmptyToolReplies = 0;
@@ -168,6 +170,11 @@ root.innerHTML = `
       <details id="nativeResourceClaims" class="ram-children">
         <summary id="nativeResourceClaimsSummary">Reserved outputs: not checked</summary>
         <div id="nativeResourceClaimsList">Waiting for trusted Rust ownership status.</div>
+      </details>
+      <details id="nativeBackgroundHealth" class="ram-children">
+        <summary id="nativeBackgroundHealthSummary">Background SHA workers: not checked</summary>
+        <button id="refreshNativeBackgroundHealth" type="button">Recheck SHA evidence</button>
+        <div id="nativeBackgroundHealthList">Waiting for exact Rust journal readback.</div>
       </details>
       <details id="nativeActionHistory" class="ram-children">
         <summary>Native action history</summary>
@@ -750,6 +757,74 @@ async function refreshNativeWorkerStatus(): Promise<void> {
   }
 }
 
+// Local Windows-only SHA status. Never equate a journal phase to live PID,
+// application progress, owner permission, a recovered completed task or a
+// license to retry. All worker labels are textContent, not HTML markup.
+async function refreshNativeBackgroundHealth(): Promise<void> {
+  if(nativeBackgroundReadPending)return;
+  nativeBackgroundReadPending=true;
+  const summary=el<HTMLElement>("#nativeBackgroundHealthSummary");
+  const list=el<HTMLElement>("#nativeBackgroundHealthList");
+  const button=el<HTMLButtonElement>("#refreshNativeBackgroundHealth");
+  button.disabled=true;
+  try{
+    const result=await invoke<NativeBackgroundOwnerStatus>("native_background_readonly_status");
+    const allowedPhases=new Set([
+      "reserved","os_running","os_exited_unverified",
+      "os_cancelled_unverified","os_timed_out_unverified",
+      "sha256_verified","owner_reviewed_unknown"
+    ]);
+    const allowedHealth=new Set([
+      "independent_current_sha_verified",
+      "sha_artifact_missing_or_changed_owner_review_required",
+      "journal_receipt_mismatch_owner_review_required",
+      "work_or_crash_liveness_not_authenticated",
+      "unverified_os_outcome_requires_owner_review"
+    ]);
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    if(result.schemaVersion!==1||result.processLivenessVerified!==false
+       ||result.applicationVerified!==false||result.safeToAutoRetry!==false
+       ||!Array.isArray(result.workers)||result.workers.length>48
+       ||result.workers.some(x=>!uuid.test(x.actionId)
+         ||!allowedPhases.has(x.recordedPhase)
+         ||!allowedHealth.has(x.evidenceHealth)
+         ||typeof x.currentFileRehashed!=="boolean"
+         ||x.safeToAutoRetry!==false
+         ||(x.currentFileRehashed && (
+           x.recordedPhase!=="sha256_verified"
+           ||x.evidenceHealth!=="independent_current_sha_verified")))){
+      throw Error("Background journal observation is invalid");
+    }
+    list.replaceChildren();
+    summary.textContent="Background SHA workers: "+result.workers.length+" recorded";
+    if(!result.workers.length){
+      list.textContent="No recorded SHA workers. No app result is implied.";
+      return;
+    }
+    for(const worker of result.workers.slice(-8).reverse()){
+      const row=document.createElement("div");
+      row.className="native-resource-row";
+      const label=document.createElement("strong");
+      label.textContent="SHA worker "+worker.actionId.slice(0,8)+" · "+worker.recordedPhase.replaceAll("_"," ");
+      const detail=document.createElement("small");
+      detail.textContent=worker.currentFileRehashed
+        ?"Current file SHA-256 independently reverified; not an application completion."
+        :worker.evidenceHealth.replaceAll("_"," ")+"; owner review may be required.";
+      row.append(label,detail);
+      list.append(row);
+    }
+    const note=document.createElement("small");
+    note.textContent="OS journal is historical only. No live PID probe, automatic retry, or app progress is claimed.";
+    list.append(note);
+  }catch{
+    summary.textContent="Background SHA workers: unavailable";
+    list.textContent="Native background evidence unavailable. Do not assume that a job completed, stopped or can be retried.";
+  }finally{
+    button.disabled=false;
+    nativeBackgroundReadPending=false;
+  }
+}
+
 // Read-only display of UUID-bound Rust action history; no approval authority.
 async function refreshNativeWorkerHistory(): Promise<void> {
   if (nativeHistoryReadPending) return;
@@ -1036,6 +1111,7 @@ async function boot(): Promise<void> {
     renderOrchestrationStatus();
     await refreshNativeWorkerStatus();
     await refreshNativeWorkerHistory();
+    await refreshNativeBackgroundHealth();
     await refreshNativeSchedule();
     await refreshRam();
     await refreshAudit();
@@ -1045,11 +1121,15 @@ async function boot(): Promise<void> {
     window.setInterval(() => void refreshRam(), 5000);
     window.setInterval(() => void refreshNativeWorkerStatus(), 4000);
     window.setInterval(() => void refreshNativeWorkerHistory(), 8000);
+    window.setInterval(() => void refreshNativeBackgroundHealth(), 20000);
     window.setInterval(() => void refreshNativeSchedule(), 8000);
   } catch (error) {
     settingsStatus.textContent = String(error);
   }
 }
+
+el<HTMLButtonElement>("#refreshNativeBackgroundHealth").addEventListener("click",
+  () => void refreshNativeBackgroundHealth());
 
 function isHiddenToolMessage(message: ChatMessage): boolean {
   return message.content.startsWith("[SHUVI_TOOL_RESULT]");
