@@ -607,14 +607,16 @@ mod tests{
     fn scheduler_kernel_lock_rejects_other_instance_start_audit_review_and_status(){
         let p=file();
         let proposed=graph(1);
+        let step=proposed["steps"][0]["step_id"].as_str().unwrap();
+        let tool=proposed["steps"][0]["expected_tool"].as_str().unwrap();
+        assert!(preflight_at(&p,Some(&proposed),step,tool,A).is_ok(),
+            "valid prepared DAG must admit the first step before locking");
         let other=SchedulerOsLock::take(&p).unwrap();
-        assert!(begin_at(&p,Some(&proposed),"capture","blender_inspect",A).is_err());
-        assert!(preflight_at(&p,Some(&proposed),"capture","blender_inspect",A).is_err());
+        assert!(begin_at(&p,Some(&proposed),step,tool,A).is_err());
+        assert!(preflight_at(&p,Some(&proposed),step,tool,A).is_err());
         assert!(read_locked_at(&p).is_err());
         assert!(!p.exists());
         drop(other);
-        let step=proposed["steps"][0]["step_id"].as_str().unwrap();
-        let tool=proposed["steps"][0]["expected_tool"].as_str().unwrap();
         begin_at(&p,Some(&proposed),step,tool,A).unwrap();
         let other=SchedulerOsLock::take(&p).unwrap();
         assert!(finish_at(&p,A,tool,Some(true)).is_err());
@@ -649,9 +651,15 @@ mod tests{
     #[test]
     fn forged_scheduler_lock_directory_fails_without_creating_a_queue(){
         let p=file();let lock=p.with_extension("json.oslock");
+        let valid=graph(1);
+        let step=valid["steps"][0]["step_id"].as_str().unwrap();
+        let tool=valid["steps"][0]["expected_tool"].as_str().unwrap();
         fs::create_dir(&lock).unwrap();
-        assert!(begin_at(&p,Some(&graph(1)),"capture","blender_inspect",A).is_err());
+        assert!(begin_at(&p,Some(&valid),step,tool,A).is_err());
         assert!(!p.exists());fs::remove_dir(lock).unwrap();
+        begin_at(&p,Some(&valid),step,tool,A).unwrap();
+        cleanup(&p);
+        let _=fs::remove_file(lock);
     }
     #[test]
     fn omitted_initial_revision_defaults_to_one_but_invalid_revision_fails(){
