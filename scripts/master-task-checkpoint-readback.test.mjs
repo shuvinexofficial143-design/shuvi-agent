@@ -64,7 +64,8 @@ test("required provider reservation, native prepared approval and continuation r
  assert.match(ui,/expectedRevision:nativeCheckpointRevision/);
  assert.match(ui,/const reloaded=await invoke<NativeCheckpointSnapshot>\("session_checkpoint_snapshot"\)/);
  assert.match(ui,/assessNativeCheckpointReadback\(checkpoint,reloaded\.checkpoint\)/);
- assert.match(ui,/const verified=assessNativeCheckpointReadback\(checkpoint,reloaded\)/);
+ assert.match(ui,/const verified=assessNativeCheckpointReadback\(checkpoint,reloaded\.checkpoint\)/);
+ assert.match(ui,/reloaded\.revision!==nativeCheckpointRevision/);
  assert.ok((ui.match(/await guardedSaveNativeCheckpoint\(true\)/g)||[]).length>=4);
  assert.match(ui,/const stillReading=\(\)=>readingScope===activePermissionScope/);
  assert.match(ui,/if\(savedCheckpoint!==checkpoint\|\|busy\)return;/);
