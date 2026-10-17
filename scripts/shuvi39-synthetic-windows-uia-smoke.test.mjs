@@ -81,3 +81,17 @@ test("native screenshot reattests HWND, PID, root, geometry, foreground and pixe
  const returnImage=rust.indexOf("result.map(|identity| (path, identity))",receipt);
  assert.ok(returnImage>receipt);
 });
+
+test("Windows CI compiles the real target-capture Win32 C# interop without executing screenshot",()=>{
+ const ps=readFileSync(new URL("./shuvi39-synthetic-windows-uia-smoke.ps1",import.meta.url),"utf8");
+ const extract=ps.indexOf("$csharpStartMarker");
+ const compile=ps.indexOf("Add-Type -TypeDefinition $csharpSource",extract);
+ const signature=ps.indexOf("[ShuviTargetCaptureWin32].GetMethod('GetAncestor')",compile);
+ const checks=ps.indexOf("$ancestor.ReturnType -ne [IntPtr]",signature);
+ assert.ok(extract>0&&compile>extract&&signature>compile&&checks>signature);
+ assert.match(ps,/\$parameters\[0\]\.ParameterType -ne \[IntPtr\]/);
+ assert.match(ps,/\$parameters\[1\]\.ParameterType -ne \[uint32\]/);
+ // CI is still read-only and must not call GetAncestor or copy an app image.
+ assert.doesNotMatch(ps,/\[ShuviTargetCaptureWin32\]::GetAncestor\(/);
+ assert.doesNotMatch(ps,/\[ShuviTargetCaptureWin32\]::SetForegroundWindow\(/);
+});

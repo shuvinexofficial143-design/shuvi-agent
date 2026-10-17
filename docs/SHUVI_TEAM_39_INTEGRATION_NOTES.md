@@ -931,3 +931,19 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - Regression test asserts the final attestation occurs strictly after
   Bitmap.Save and before any receipt or screenshot path can be published.
   Real Windows desktop/modal behavior remains untested until authorized.
+
+## Milestone 23 — Compile actual capture Win32 declarations in Windows CI
+
+- The existing Windows synthetic smoke parses native capture PowerShell
+  without running it, but parser acceptance cannot catch a malformed C#
+  P/Invoke declaration embedded in Add-Type -TypeDefinition.
+- The Windows CI smoke now extracts the real C# here-string from
+  target_window_capture.rs and compiles its Win32 declarations via Add-Type.
+  It asserts the reflection signature GetAncestor(IntPtr,uint32):IntPtr
+  that the screenshot now relies on for same-process popup isolation.
+- This deliberately does not call GetAncestor, enumerate HWNDs, activate
+  a user app, move the pointer or capture/send any pixels. A failed C#
+  compile or changed declaration now fails CI instead of silently
+  reaching owners as a runtime capture crash.
+- Dedicated Node regression tests lock the extraction/compile/signature
+  ordering and prohibition on real desktop invocation.

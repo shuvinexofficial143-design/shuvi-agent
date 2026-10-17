@@ -37,6 +37,26 @@ $captureMatch = [regex]::Match($captureRust.Substring($captureAt),
  [Text.RegularExpressions.RegexOptions]::Singleline)
 if (-not $captureMatch.Success) { throw 'Target capture PowerShell raw string unavailable.' }
 $captureScript=$captureMatch.Groups['script'].Value
+# Compile only the embedded C# interop DECLARATIONS from the real capture
+# source. Never execute its UIA traversal, focus switch or CopyFromScreen.
+# A PowerShell parser can accept the here-string even if its C# is broken.
+$csharpStartMarker = "Add-Type -TypeDefinition @'"
+$csharpStart = $captureScript.IndexOf($csharpStartMarker,[StringComparison]::Ordinal)
+if ($csharpStart -lt 0) { throw 'Target capture Win32 interop declarations missing.' }
+$csharpStart += $csharpStartMarker.Length
+$csharpEnd = $captureScript.IndexOf("'@ -ErrorAction Stop",$csharpStart,[StringComparison]::Ordinal)
+if ($csharpEnd -le $csharpStart) { throw 'Target capture C# here-string terminator missing.' }
+$csharpSource = $captureScript.Substring($csharpStart,$csharpEnd-$csharpStart).Trim()
+Add-Type -TypeDefinition $csharpSource -ErrorAction Stop
+$ancestor = [ShuviTargetCaptureWin32].GetMethod('GetAncestor')
+if ($null -eq $ancestor) { throw 'Win32 GetAncestor signature not compiled.' }
+$parameters = @($ancestor.GetParameters())
+if ($parameters.Count -ne 2 -or
+    $parameters[0].ParameterType -ne [IntPtr] -or
+    $parameters[1].ParameterType -ne [uint32] -or
+    $ancestor.ReturnType -ne [IntPtr]) {
+ throw 'Capture GetAncestor signature is not IntPtr (IntPtr, uint32).'
+}
 $sourcePieces = @(
  @{name='win32_attestation';source=$win32},
  @{name='native_prepare';source=$prepared},
