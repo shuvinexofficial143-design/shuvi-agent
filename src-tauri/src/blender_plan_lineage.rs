@@ -30,42 +30,55 @@ fn binds_from(step:&Value,source:&str)->bool{
         bindings.iter().any(|b|b.get("source_step").and_then(Value::as_str)==Some(source))
     )
 }
+fn has_binding(step:&Value,source:&str,source_path:Value,target_path:Value)->bool{
+    step.get("bindings").and_then(Value::as_array).is_some_and(|items|items.iter().any(|v|v==&json!({
+        "source_step":source,"source_path":source_path,"target_path":target_path
+    })))
+}
 fn valid_stage(steps:&[&Value],ops:&[String])->&'static str{
     match ops.iter().map(String::as_str).collect::<Vec<_>>().as_slice(){
-        ["mesh.create","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]=>{
-            let create=payload(steps,0);
-            let shape=payload(steps,2);
-            let checkpoint=payload(steps,4);
+        ["mesh.create","mesh.translate_vertices","scene.inspect","device.create","scene.inspect","file.checkpoint"]=>{
+            let create=payload(steps,0);let shape=payload(steps,1);
+            let camera=payload(steps,3);let checkpoint=payload(steps,5);
             if create.get("name").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
                 && create.pointer("/geometry/vertices").and_then(Value::as_array).is_some_and(|a|a.len()==5)
                 && create.pointer("/geometry/faces").and_then(Value::as_array).is_some_and(|a|a.len()==5)
                 && shape.get("indices")==Some(&json!([4]))
                 && shape.get("delta")==Some(&json!([0.0,0.0,0.25]))
                 && shape.pointer("/target/expected_name").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
+                && has_binding(steps[1],"create",json!(["data","after","object","object_id"]),json!(["target","object_id"]))
+                && has_binding(steps[1],"create",json!(["data","after","object","revision"]),json!(["target","expected_revision"]))
+                && has_binding(steps[1],"create",json!(["data","after","geometry","geometry_revision"]),json!(["expected_geometry_revision"]))
+                && name(steps[2]).ok()==Some("post_edit_scene")
+                && camera.get("name").and_then(Value::as_str)==Some("Shuvi41ProofCamera")
+                && camera.get("kind").and_then(Value::as_str)==Some("CAMERA")
+                && camera.get("settings")==Some(&json!({"lens":50.0,"clip_start":0.1,"clip_end":100.0,"make_active":true}))
+                && camera.get("transform")==Some(&json!({"location":[4.0,-6.0,4.0],"rotation_euler":[1.15,0.0,0.58],"scale":[1.0,1.0,1.0]}))
+                && camera.get("expected_scene_revision").and_then(Value::as_str)==Some("BOUND_FROM_SCENE")
+                && checkpoint_binding(steps[3],"post_edit_scene")
+                && name(steps[4]).ok()==Some("post_camera_scene")
                 && checkpoint.get("name").and_then(Value::as_str)==Some("shuvi41-proof-stage1.blend")
-                && name(steps[3]).ok()==Some("post_edit_scene")
-                && checkpoint_binding(steps[4],"post_edit_scene")
-                && binds_from(steps[1],"create")
-                && binds_from(steps[2],"mesh_read"){
-                "model1"
-            }else{"other"}
+                && checkpoint_binding(steps[5],"post_camera_scene"){"model1"}else{"other"}
         },
-        ["objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]=>{
-            let locate=payload(steps,0);
-            let shape=payload(steps,2);
-            if locate.get("name_prefix").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
+        ["device.create","objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]=>{
+            let light=payload(steps,0);let locate=payload(steps,1);
+            let shape=payload(steps,3);
+            if light.get("name").and_then(Value::as_str)==Some("Shuvi41ProofKey")
+                && light.get("kind").and_then(Value::as_str)==Some("POINT")
+                && light.get("settings")==Some(&json!({"energy":950.0,"color":[1.0,0.94,0.85]}))
+                && light.get("transform")==Some(&json!({"location":[2.0,-3.0,5.0],"rotation_euler":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0]}))
+                && light.get("expected_scene_revision").and_then(Value::as_str).is_some_and(|v|v.len()==64&&v.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase()))
+                && locate.get("name_prefix").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
                 && locate.get("object_type").and_then(Value::as_str)==Some("MESH")
                 && locate.get("offset").and_then(Value::as_u64)==Some(0)
                 && shape.get("indices")==Some(&json!([4]))
                 && shape.get("delta")==Some(&json!([0.0,0.0,0.5]))
                 && shape.pointer("/target/expected_name").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
-                && payload(steps,4).get("name").and_then(Value::as_str)==Some("shuvi41-proof-stage2.blend")
-                && name(steps[3]).ok()==Some("post_edit_scene")
-                && checkpoint_binding(steps[4],"post_edit_scene")
-                && binds_from(steps[1],"locate")
-                && binds_from(steps[2],"mesh_read"){
-                "model2"
-            }else{"other"}
+                && payload(steps,5).get("name").and_then(Value::as_str)==Some("shuvi41-proof-stage2.blend")
+                && name(steps[4]).ok()==Some("post_edit_scene")
+                && checkpoint_binding(steps[5],"post_edit_scene")
+                && binds_from(steps[2],"locate")
+                && binds_from(steps[3],"mesh_read"){"model2"}else{"other"}
         },
         ["render.configure","scene.inspect","render.execute"]=>{
             let config=payload(steps,0);
@@ -112,7 +125,7 @@ pub(crate) fn receipt_matches(receipt:&Value,stage:&str)->Result<(),String>{
     if lineage.get("schema_version").and_then(Value::as_u64)!=Some(1)
         ||lineage.get("acceptance_stage").and_then(Value::as_str)!=Some(stage)
         ||lineage.get("typed_steps").and_then(Value::as_u64)!=Some(
-            if stage=="render"{3}else{5}
+            if stage=="render"{3}else{6}
         ) {
         return Err("Blender acceptance stage is not the approved typed plan recipe.".into());
     }
@@ -126,8 +139,8 @@ pub(crate) fn receipt_matches(receipt:&Value,stage:&str)->Result<(),String>{
         return Err("Blender plan digest must not imply independent approval or execution.".into());
     }
     let expected:Vec<&str>=match stage{
-        "model1"=>vec!["mesh.create","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"],
-        "model2"=>vec!["objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"],
+        "model1"=>vec!["mesh.create","mesh.translate_vertices","scene.inspect","device.create","scene.inspect","file.checkpoint"],
+        "model2"=>vec!["device.create","objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"],
         "render"=>vec!["render.configure","scene.inspect","render.execute"],
         _=>return Err("Unexpected acceptance stage.".into())
     };
@@ -163,42 +176,24 @@ mod tests{
         assert!(receipt_matches(&json!({"approved_plan_lineage":forged}),"render").is_err());
     }
     #[test]
-    fn model1_and_model2_are_recognized_only_with_safe_named_mesh_and_revision_bindings(){
-        let checkpoint=json!([{"source_step":"post_edit_scene",
-            "source_path":["data","revision"],"target_path":["expected_scene_revision"]}]);
-        let mesh_source=json!([{"source_step":"create",
-            "source_path":["data","after","object","object_id"],"target_path":["object_id"]}]);
-        let locate_source=json!([{"source_step":"locate",
-            "source_path":["data","items",0,"object_id"],"target_path":["object_id"]}]);
-        let geometry=json!({"vertices":[[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1]],
-            "faces":[[0,1,2,3],[0,1,4],[1,2,4],[2,3,4],[3,0,4]]});
-        let m1=json!({"steps":[
-            step("create","mesh.create",json!({"name":"Shuvi41ProofMesh","geometry":geometry}),json!([])),
-            step("mesh_read","mesh.inspect",json!({"object_id":"BOUND"}),mesh_source),
-            step("shape","mesh.translate_vertices",json!({"target":{"expected_name":"Shuvi41ProofMesh"},
-                "indices":[4],"delta":[0.0,0.0,0.25]}),json!([{"source_step":"mesh_read"}])),
-            step("post_edit_scene","scene.inspect",json!({}),json!([])),
-            step("checkpoint","file.checkpoint",json!({"name":"shuvi41-proof-stage1.blend"}),checkpoint.clone())
-        ]});
-        assert_eq!(derive(&m1).unwrap()["acceptance_stage"],"model1");
-        let mut altered=m1.clone();
-        altered["steps"][2]["request"]["payload"]["delta"]=json!([5,0,0]);
-        assert_eq!(derive(&altered).unwrap()["acceptance_stage"],"other");
-        let m2=json!({"steps":[
-            step("locate","objects.list",json!({"name_prefix":"Shuvi41ProofMesh",
-                "object_type":"MESH","offset":0}),json!([])),
-            step("mesh_read","mesh.inspect",json!({"object_id":"BOUND"}),locate_source),
-            step("shape_again","mesh.translate_vertices",json!({"target":{"expected_name":"Shuvi41ProofMesh"},
-                "indices":[4],"delta":[0.0,0.0,0.5]}),json!([{"source_step":"mesh_read"}])),
-            step("post_edit_scene","scene.inspect",json!({}),json!([])),
-            step("checkpoint","file.checkpoint",json!({"name":"shuvi41-proof-stage2.blend"}),checkpoint)
-        ]});
-        assert_eq!(derive(&m2).unwrap()["acceptance_stage"],"model2");
-        let mut switched=m2.clone();
-        switched["steps"][4]["request"]["payload"]["name"]=json!("different-output.blend");
-        assert_eq!(derive(&switched).unwrap()["acceptance_stage"],"other");
+    fn approved_camera_light_stage_needs_exact_devices_bindings_and_shape(){
+        for stage in ["model1","model2"]{
+            let plan=crate::blender_acceptance_recipe::build(stage,&"a".repeat(64)).unwrap()["plan"].clone();
+            assert_eq!(derive(&plan).unwrap()["acceptance_stage"],stage);
+            receipt_matches(&json!({"approved_plan_lineage":derive(&plan).unwrap()}),stage).unwrap();
+            let mut bad=plan.clone();
+            let device_index=if stage=="model1"{3}else{0};
+            bad["steps"][device_index]["request"]["payload"]["settings"]=json!({});
+            assert_eq!(derive(&bad).unwrap()["acceptance_stage"],"other");
+            let mut bad_shape=plan.clone();
+            let shape_index=if stage=="model1"{1}else{3};
+            bad_shape["steps"][shape_index]["request"]["payload"]["delta"]=json!([1,0,0]);
+            assert_eq!(derive(&bad_shape).unwrap()["acceptance_stage"],"other");
+        }
+        let mut no_camera_binding=crate::blender_acceptance_recipe::build("model1",&"a".repeat(64)).unwrap()["plan"].clone();
+        no_camera_binding["steps"][3]["bindings"]=json!([]);
+        assert_eq!(derive(&no_camera_binding).unwrap()["acceptance_stage"],"other");
     }
-
     #[test]
     fn duplicate_steps_malformed_receipts_and_zero_steps_denied(){
         assert!(derive(&json!({"steps":[]})).is_err());
