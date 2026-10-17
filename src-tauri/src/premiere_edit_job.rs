@@ -421,7 +421,9 @@ impl Job {
                 }
             }
             if phase.tool=="premiere_review_session_start" {
-                if phase.action_id.is_some() || (completed && phase.review_session_id.as_deref().is_none_or(str::is_empty)) {
+                if phase.action_id.is_some()
+                    || (completed && phase.review_session_id.as_deref().is_none_or(str::is_empty))
+                    || (!completed && phase.review_session_id.is_some()) {
                     return Err("Iterative review requires a completed session instead of a single action receipt.".into());
                 }
             } else if phase.review_session_id.is_some() ||
@@ -738,10 +740,13 @@ mod tests{
         let mut repeat=good.clone();
         repeat.phases[1].action_id=Some("same-id".into());
         assert!(repeat.validate_state().is_err());
-        let mut following=good.clone();
+        let mut following=Job::new("future-proposal".into(),request(),"P",None,"S",100).unwrap();
         following.phases[2].proposal_issued_at_ms=Some(105);
         following.updated_at_ms=105;
         assert!(following.validate_state().is_err());
+        let mut premature_review=Job::new("review-session".into(),request(),"P",None,"S",100).unwrap();
+        premature_review.phases[0].review_session_id=Some("not-an-iterative-review".into());
+        assert!(premature_review.validate_state().is_err());
         good.issue_proposal("export_dispatch",106).unwrap();
         good.record("export_dispatch","premiere_export_sequence","final-id",true,107).unwrap();
         assert_eq!(good.status,"export_dispatched");
