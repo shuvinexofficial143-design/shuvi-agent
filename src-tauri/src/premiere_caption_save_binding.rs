@@ -202,9 +202,9 @@ mod tests {
         let after=snapshot(path.to_str().unwrap()).unwrap();
         let receipt=make_save(&before,&after,path.to_str().unwrap());
         let saved=saved_after(&receipt,"P",path.to_str().unwrap()).unwrap();
-        let mut native=native();
-        native["verified_count"]=json!(1);
-        assert_eq!(assess(&saved,&after,&after,true,&native,2)
+        let mut invalid_host=native();
+        invalid_host["verified_count"]=json!(1);
+        assert_eq!(assess(&saved,&after,&after,true,&invalid_host,2)
             ["current_host_and_project_save_evidence_consistent"],false);
         assert_eq!(assess(&saved,&after,&after,false,&native(),2)
             ["current_host_and_project_save_evidence_consistent"],false);
