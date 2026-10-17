@@ -20,7 +20,9 @@ test("Rust executes screenshot only for its original approved prepared native ta
  assert.match(exec,/let capture_target = action.capture_target.clone\(\)/);
  assert.match(exec,/target_window_capture::capture_window_png\(&window,capture_target\.as_ref\(\)\)/);
  assert.match(rust,/Screenshot action was not bound to a Windows HWND\/PID before approval/);
- assert.match(rust,/target\.title != window/);
+ assert.match(rust,/target\.title\.is_empty\(\)/);
+ assert.match(rust,/\$title -cne \$shuviExpectedCaptureTitle/);
+ assert.match(rust,/parse_prepared_capture\(proof,"Premiere"\)\.is_ok\(\)/);
  assert.match(rust,/Window target changed after owner approval/);
  assert.match(rust,/Approved app process generation changed before screenshot/);
 });

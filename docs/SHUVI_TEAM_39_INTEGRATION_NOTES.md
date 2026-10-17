@@ -1009,3 +1009,21 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - No WindowFromPoint/GetAncestor call, foreground activation,
   screenshot, model request or mutation is executed in CI. The existing
   Windows parser and C# P/Invoke compilation remain mandatory.
+
+### Milestone 24 unique-equivalent Windows title compatibility
+
+- The existing `ui_root_script` resolves one exact title **or**, when
+  uniquely unambiguous, a documented normalized product/edition/process
+  alias. The first screenshot identity parser mistakenly required that
+  OS-reported exact caption equal the AI's abbreviated selector, rejecting
+  legitimate unique-equivalent windows before asking for approval.
+- Preserve original native root-selection uniqueness as the authority:
+  validate the requested selector syntax, store the actual OS-resolved
+  window title and HWND/PID/generation, and compare those **exact original
+  OS values** at execution. This is not a second, unbound title lookup.
+- An ambiguous selector still fails inside `ui_root_script` before
+  approval, and a newly opened same-title app with another HWND/PID or
+  process birth tick still fails closed. PowerShell checks exact title
+  case when comparing prepared and executed OS roots.
+- Add Rust regression for an abbreviated unique target alias while
+  retaining rejection of padded/malformed selectors.

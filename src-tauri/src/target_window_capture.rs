@@ -47,7 +47,10 @@ fn parse_prepared_capture(output: &str, expected_title: &str)
         .and_then(Value::as_i64).unwrap_or(0);
     let title = value.get("title").and_then(Value::as_str).unwrap_or("");
     if hwnd <= 0 || pid == 0 || pid > u32::MAX as u64
-        || process_start_ticks <= 0 || title != expected_title
+        || process_start_ticks <= 0
+        || expected_title.is_empty() || expected_title.chars().count() > 180
+        || expected_title.trim() != expected_title
+        || expected_title.chars().any(char::is_control)
         || title.is_empty() || title.chars().count() > 180
         || title.trim() != title || title.chars().any(char::is_control)
     {
@@ -106,7 +109,10 @@ pub(super) fn capture_window_png(
     let target = expected.ok_or_else(||
         "Screenshot action was not bound to a Windows HWND/PID before approval.".to_string())?;
     if target.hwnd <= 0 || target.pid == 0 || target.process_start_ticks <= 0 ||
-       target.title != window || window.trim() != window {
+       target.title.is_empty() || target.title.chars().count() > 180 ||
+       target.title.trim() != target.title || target.title.chars().any(char::is_control) ||
+       window.is_empty() || window.chars().count() > 180 ||
+       window.chars().any(char::is_control) || window.trim() != window {
         return Err("Approved screenshot target identity is malformed or replaced.".into());
     }
     let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
@@ -614,7 +620,10 @@ mod tests {
         let parsed = parse_prepared_capture(proof,"Adobe Premiere Pro").unwrap();
         assert_eq!((parsed.hwnd,parsed.pid,parsed.process_start_ticks),
             (7711,123,638962980000000000));
-        assert!(parse_prepared_capture(proof,"Blender").is_err());
+        // The canonical OS caption can differ from the requested unique
+        // application alias. Root resolver already enforces uniqueness.
+        assert!(parse_prepared_capture(proof,"Premiere").is_ok());
+        assert!(parse_prepared_capture(proof," Blender ").is_err());
         for bad in ["{}", "[]", "not json",
             r#"{"hwnd":7711,"pid":123,"process_start_ticks":0,"title":"Adobe Premiere Pro"}"#,
             r#"{"hwnd":7711,"pid":0,"process_start_ticks":123,"title":"Adobe Premiere Pro"}"#,
