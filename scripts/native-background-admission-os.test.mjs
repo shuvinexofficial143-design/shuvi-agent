@@ -32,7 +32,9 @@ test("admission rejects forged UUID, unsupported class, overlap, third worker an
   assert.match(journal,/crash_pending_claim_is_not_auto_unlocked_or_reused/);
   assert.match(journal,/corrupt_or_orphaned_ledger_cannot_invent_idle_queue/);
   assert.match(journal,/hard_link_alias_cannot_bypass_disjoint_input_claim/);
-  assert.match(journal,/number_of_links\(\)!=Some\(1\)/);
+  assert.match(journal,/GetFileInformationByHandle/);
+  assert.match(journal,/info\.links!=1/);
+  assert.match(journal,/share_mode\(1\)/);
   assert.match(journal,/orphaned_temp_journal_and_forged_directory_are_not_read_as_fresh_queue/);
   assert.match(journal,/symlink_metadata\(path\)/);
   assert.doesNotMatch(journal,/tauri::command|Command::new|taskkill|safe_to_auto_retry\s*=\s*true/);
