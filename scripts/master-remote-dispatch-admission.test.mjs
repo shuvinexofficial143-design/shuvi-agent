@@ -31,5 +31,6 @@ test("no dangling old Master editor import, and remote closure reports unknown i
  assert.doesNotMatch(ui,/\bimport \{\s*editingMasterContext/);
  assert.match(ui,/Remote terminal receipt unconfirmed; previous task held for owner review/);
  assert.match(ui,/terminalRemoteReceiptClearAllowed\(closingTask,remoteTask,acknowledged\)/);
- assert.match(ui,/if\(remoteTask!==closingTask\)return;/);
+ assert.match(ui,/if\(remoteTask!==closingTask\)return false;/);
+ assert.match(ui,/if\(activePermissionScope!==closingScope\)return false;/);
 });

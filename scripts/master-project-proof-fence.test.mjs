@@ -50,7 +50,8 @@ test("Desktop gates SHA completion/failure and final delivery by live task ident
  assert.match(src,/const actionProofFence=protectProjectProof/);
  assert.match(src,/const postAuditProofFence=protectProjectProof/);
  assert.ok((src.match(/if\(proofFenceCurrent\(postAuditProofFence\)&&/g)||[]).length>=4);
- assert.match(src,/const continuationCurrent=\(\)=>continuationScope===activePermissionScope/);
+ assert.match(src,/const continuationOwnerCurrent=\(\)=>continuationScope===activePermissionScope/);
+ assert.match(src,/const continuationCurrent=\(\)=>continuationOwnerCurrent\(\)&&/);
  assert.ok((src.match(/if\(!continuationCurrent\(\)\)return;/g)||[]).length>=4);
  assert.match(src,/await stopAgentForSafety\(summarizeMasterMissingProof\(finalOutcome\)\)/);
 });
