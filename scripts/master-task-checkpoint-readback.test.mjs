@@ -60,7 +60,10 @@ test("checkpoint content comparison never logs credentials or other sensitive pa
 test("required provider reservation, native prepared approval and continuation require SAVE followed by readback before native/paid IPC",()=>{
  const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
  assert.match(ui,/guardedSaveNativeCheckpoint\(verifyReadback=false\)/);
- assert.match(ui,/await invoke\("save_session_checkpoint",\{checkpoint\}\);[\s\S]*const reloaded=await invoke<SessionCheckpoint\|null>\("load_session_checkpoint"\)/);
+ assert.match(ui,/save_session_checkpoint_if_revision/);
+ assert.match(ui,/expectedRevision:nativeCheckpointRevision/);
+ assert.match(ui,/const reloaded=await invoke<NativeCheckpointSnapshot>\("session_checkpoint_snapshot"\)/);
+ assert.match(ui,/assessNativeCheckpointReadback\(checkpoint,reloaded\.checkpoint\)/);
  assert.match(ui,/const verified=assessNativeCheckpointReadback\(checkpoint,reloaded\)/);
  assert.ok((ui.match(/await guardedSaveNativeCheckpoint\(true\)/g)||[]).length>=4);
  assert.match(ui,/const stillReading=\(\)=>readingScope===activePermissionScope/);

@@ -65,7 +65,7 @@ test("Desktop source queues every task checkpoint write and clear, no direct con
  assert.match(writer,/const reloaded=await invoke<NativeCheckpointSnapshot>\("session_checkpoint_snapshot"\)/);
  assert.match(clearer,/taskCheckpointLane\.enqueue\(/);
  assert.match(clearer,/clear_session_checkpoint_if_revision/);
- assert.match(clearer,/isNativeCheckpointAbsent\(observed\)/);
+ assert.match(clearer,/isNativeCheckpointAbsent\(observed\.checkpoint\)/);
  assert.equal((main.match(/invoke\("save_session_checkpoint_if_revision"/g)||[]).length,0);
  assert.match(main,/save_session_checkpoint_if_revision/);
  assert.equal((main.match(/invoke\("clear_session_checkpoint"/g)||[]).length,0);
