@@ -324,6 +324,55 @@ mod tests{
         spawn_internal_readonly(root,id,&exe,&[],&std::env::temp_dir()).is_err()
     }
     #[test]
+    fn two_owned_pids_follow_separate_durable_admission_and_exact_terminal_receipts(){
+        let dir=root();
+        let input_a=dir.join("a.bin");
+        let input_b=dir.join("b.bin");
+        let input_c=dir.join("c.bin");
+        for p in [&input_a,&input_b,&input_c]{
+            fs::write(p,b"verification input").unwrap();
+        }
+        let exe=std::env::current_exe().unwrap();
+        let args=[
+            "--ignored".into(),"--exact".into(),
+            "native_scheduler::background_os_workers::tests::fixture_sleep".into()
+        ];
+        let mut a=spawn_admitted_readonly(&dir,A,&input_a,&"a".repeat(64),
+            &exe,&args,&std::env::temp_dir()).unwrap();
+        let mut b=spawn_admitted_readonly(&dir,B,&input_b,&"b".repeat(64),
+            &exe,&args,&std::env::temp_dir()).unwrap();
+        assert_ne!(a.child.id(),b.child.id());
+        assert!(spawn_admitted_readonly(&dir,C,&input_c,&"c".repeat(64),
+            &exe,&args,&std::env::temp_dir()).is_err());
+        assert_eq!(read_admissions(&dir).unwrap().iter().filter(|v|v.1=="os_running").count(),2);
+        a.cancel_exact(A).unwrap();
+        assert_eq!(read_admissions(&dir).unwrap().iter().find(|v|v.0==A).unwrap().1,"os_cancelled_unverified");
+        // Terminal OS result frees admission capacity, NOT the UUID or input.
+        assert!(spawn_admitted_readonly(&dir,C,&input_a,&"c".repeat(64),
+            &exe,&args,&std::env::temp_dir()).is_err());
+        let mut c=spawn_admitted_readonly(&dir,C,&input_c,&"c".repeat(64),
+            &exe,&args,&std::env::temp_dir()).unwrap();
+        b.cancel_exact(B).unwrap();c.cancel_exact(C).unwrap();
+        drop(a);drop(b);drop(c);
+        let snap=read_admissions(&dir).unwrap();
+        assert_eq!(snap.len(),3);
+        assert!(snap.iter().all(|e|e.1=="os_cancelled_unverified"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn reserved_input_survives_failed_spawn_without_unsafe_auto_retry(){
+        let dir=root();
+        let input=dir.join("input.bin");fs::write(&input,b"read only").unwrap();
+        let missing=dir.join("missing.exe");
+        assert!(spawn_admitted_readonly(&dir,A,&input,&"a".repeat(64),
+            &missing,&[],&std::env::temp_dir()).is_err());
+        assert_eq!(read_admissions(&dir).unwrap(),vec![(A.into(),"reserved".into())]);
+        let exe=std::env::current_exe().unwrap();
+        assert!(spawn_admitted_readonly(&dir,A,&input,&"a".repeat(64),
+            &exe,&[],&std::env::temp_dir()).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn unknown_launch_intent_survives_restart_and_never_reuses_uuid(){
         let d=root();
         let path=receipt_path(&d,A);
