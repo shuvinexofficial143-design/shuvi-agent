@@ -14872,6 +14872,10 @@ try {{
                 _=>return Err("Unknown edit-job phase.".into()),
             };
 
+            // Persist the phase proposal before returning it; no Adobe mutation occurs.
+            // Only post-proposal receipts may advance this exact edit-job phase.
+            job.issue_proposal(&phase.id,now_ms())?;
+            premiere_edit_job::save(&path,&job)?;
             let iterative_review=phase.id=="review" && phase.tool=="premiere_review_session_start";
             let after_execution=if iterative_review {
                 json!({
@@ -14924,6 +14928,7 @@ try {{
                     &&matches!(entry.event.as_str(),"executed"|"failed")
                 )
                 .ok_or("No matching typed action audit receipt for this edit-job phase.")?;
+            job.require_issued_action_receipt(&phase_id,&action_id,receipt.timestamp_ms)?;
             let success=receipt.event=="executed"&&receipt.success;
             job.record(&phase_id,&receipt.tool,&action_id,success,now_ms())?;
             premiere_edit_job::save(&path,&job)?;
