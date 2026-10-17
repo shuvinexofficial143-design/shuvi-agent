@@ -18,7 +18,8 @@ test("stale cleanup is conservative, limited by age, file prefix and directory t
  const beg=target.indexOf("fn prune_stale_vision_captures(");
  const end=target.indexOf("pub(super) fn expired_capture_binding(",beg);
  const code=target.slice(beg,end);
- assert.match(code,/Duration::from_secs\(15 \* 60\)/);
+ assert.match(target,/STALE_VISION_CAPTURE_AGE: std::time::Duration =[\s\S]*?Duration::from_secs\(15 \* 60\)/);
+ assert.match(code,/elapsed >= STALE_VISION_CAPTURE_AGE/);
  assert.match(code,/fs::read_dir\(dir\)/);
  assert.match(code,/name\.starts_with\("vision-"\)/);
  assert.match(code,/name\.ends_with\("\.png"\)/);

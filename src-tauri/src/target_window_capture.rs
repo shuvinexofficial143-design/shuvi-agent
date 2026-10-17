@@ -725,7 +725,8 @@ mod tests {
         let stale=SystemTime::now()-Duration::from_secs(3600);
         let times=std::fs::FileTimes::new().set_modified(stale);
         for path in [&old_vision,&old_manual,&wrong_extension] {
-            std::fs::File::open(path).unwrap().set_times(times).unwrap();
+            std::fs::OpenOptions::new().write(true).open(path)
+                .unwrap().set_times(times).unwrap();
         }
         assert_eq!(prune_stale_vision_captures(&dir).unwrap(),1);
         assert!(!old_vision.exists());
