@@ -4,7 +4,7 @@
 // verify the foreground HWND and PID, capture its exact on-screen rectangle,
 // then restore the owner's previous foreground window. If Windows blocks focus
 // or the target is ambiguous, fail closed and never send a different app image.
-use super::{now_ms, prune_screenshot_dir, ps_single_quote, run_hidden_powershell, ui_root_script, MAX_SCREENSHOT_FILES};
+use super::{now_ms, ps_single_quote, run_hidden_powershell, ui_root_script};
 use serde_json::Value;
 use std::{fs, io::Read, path::{Path, PathBuf}};
 
@@ -14,6 +14,37 @@ const MAX_CAPTURE_PNG_BYTES: u64 = 96 * 1024 * 1024;
 // ~148 MiB raw BGRA bitmap at most. Stops giant 16k x 16k GDI allocations.
 const MAX_CAPTURE_PIXELS: u64 = 36_864_000;
 use uuid::Uuid;
+
+// Distinguish short-lived AI vision artifacts from deliberate user
+// capture_screen files. Only expired vision-*.png files *within Shuvi's
+// one controlled directory* may be scavenged. Symlinks and directories
+// are never followed or deleted; active captures have a wide grace period.
+const STALE_VISION_CAPTURE_AGE: std::time::Duration =
+    std::time::Duration::from_secs(15 * 60);
+
+fn prune_stale_vision_captures(dir: &Path) -> Result<usize, String> {
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Vision screenshot cleanup directory unavailable: {e}"))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue; };
+        if !name.starts_with("vision-") || !name.ends_with(".png") { continue; }
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) { continue; }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if now.duration_since(modified)
+            .is_ok_and(|elapsed| elapsed >= STALE_VISION_CAPTURE_AGE)
+            && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+
 
 // OS-derived, action-local window identity captured BEFORE owner approval.
 // Neither AI nor WebView may choose HWND, PID or process birth generation.
@@ -118,8 +149,10 @@ pub(super) fn capture_window_png(
     let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Could not create screenshot directory: {error}"))?;
-    let _ = prune_screenshot_dir(&dir, MAX_SCREENSHOT_FILES.saturating_sub(1));
-    let path = dir.join(format!("screen-{}-{}.png", now_ms(), Uuid::new_v4()));
+    // Best-effort cleanup of orphaned *ephemeral* vision captures from
+    // interrupted earlier runs. Never touch deliberately saved screen-*.png.
+    let _ = prune_stale_vision_captures(&dir);
+    let path = dir.join(format!("vision-{}-{}.png", now_ms(), Uuid::new_v4()));
     let escaped_path = ps_single_quote(&path.to_string_lossy());
     let root_script = ui_root_script(Some(window));
     let script = r#"
@@ -587,7 +620,8 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::{png_crc_update, png_dimensions, verify_capture_receipt, verify_png_structure,
-                parse_prepared_capture, expired_capture_binding, verify_unbound_desktop_png, verify_vision_png_bytes};
+                parse_prepared_capture, expired_capture_binding, verify_unbound_desktop_png, verify_vision_png_bytes,
+                prune_stale_vision_captures};
     use std::io::Cursor;
     use serde_json::json;
 
@@ -673,6 +707,41 @@ mod tests {
         assert!(expired_capture_binding(1000,61001,Some(&binding)));
         assert!(expired_capture_binding(1000,999,Some(&binding)));
         assert!(!expired_capture_binding(1000,900000,None));
+    }
+
+    #[test]
+    fn stale_vision_cleanup_never_removes_manual_or_recent_capture_files() {
+        use std::time::{Duration, SystemTime};
+        let dir=std::env::temp_dir().join(format!(
+            "shuvi39-vision-prune-{}-{}",std::process::id(),uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let old_vision=dir.join("vision-expired.png");
+        let old_manual=dir.join("screen-user-saved.png");
+        let recent_vision=dir.join("vision-active.png");
+        let wrong_extension=dir.join("vision-not-image.txt");
+        for path in [&old_vision,&old_manual,&recent_vision,&wrong_extension] {
+            std::fs::write(path,b"test").unwrap();
+        }
+        let stale=SystemTime::now()-Duration::from_secs(3600);
+        let times=std::fs::FileTimes::new().set_modified(stale);
+        for path in [&old_vision,&old_manual,&wrong_extension] {
+            std::fs::File::open(path).unwrap().set_times(times).unwrap();
+        }
+        assert_eq!(prune_stale_vision_captures(&dir).unwrap(),1);
+        assert!(!old_vision.exists());
+        assert!(old_manual.exists());
+        assert!(recent_vision.exists());
+        assert!(wrong_extension.exists());
+        for path in [&old_manual,&recent_vision,&wrong_extension] {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+    #[test]
+    fn vision_scavenger_wont_remove_nonexistent_directory() {
+        let dir=std::env::temp_dir().join(format!(
+            "shuvi39-no-vision-folder-{}",uuid::Uuid::new_v4()));
+        assert!(prune_stale_vision_captures(&dir).is_err());
     }
 
     #[test]

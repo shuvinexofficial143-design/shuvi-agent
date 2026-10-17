@@ -1125,3 +1125,23 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - This minimizes persistence on the owner's filesystem; it cannot undo
   storage remnants, prove actual PNG deflate pixel fidelity, or prevent
   an explicitly approved provider from receiving the image bytes.
+
+## Milestone 29 — Separate temporary vision capture identity and orphan cleanup
+
+- Before this change, temporary owner-approved `inspect_screen` images and
+  intentionally persisted manual `capture_screen` images both used
+  `screen-*.png` filenames. A crash could leave a private temporary PNG,
+  and indiscriminate cleanup would risk deleting screenshots the owner
+  explicitly requested to save.
+- Target-window temporary captures now use `vision-<timestamp>-<UUID>.png`.
+  On a new target vision capture, Shuvi best-effort scans only its own
+  screenshot folder and removes old regular `vision-*.png` files whose
+  modified time is at least **15 minutes** old. It skips symlinks,
+  directories, recent captures, unknown names and manual `screen-*.png`.
+- The scanner does not run on every request and is not a promise of
+  recovery after an application never restarts. Previously generated
+  `screen-*.png` leftovers are deliberately NOT auto-deleted because
+  they cannot be distinguished from saved user screenshots.
+- Windows/Rust tests cover old-versus-recent temporary images and saved
+  manual screenshots. Source tests assert exact filename separation,
+  restricted directory traversal and age boundary.
