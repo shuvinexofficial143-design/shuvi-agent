@@ -2,6 +2,7 @@
 
 mod web_bridge;
 mod target_window_capture;
+mod vision_screenshot_guard;
 mod native_uia_window_guard;
 mod remote_agent;
 mod blender_worker;
@@ -8646,6 +8647,32 @@ $bitmap.Dispose()"#
     }
 }
 
+// InspectScreen is explicitly consented, but neither an invalid prompt nor a
+// known text-only vision model should activate/focus an application, capture
+// its pixels, or write a temporary PNG to disk. Public catalog lookup is
+// read-only; its result never replaces the selected paid model.
+async fn preflight_inspect_screen_vision(
+    context: &ProviderContext, prompt: &str
+) -> Result<(), String> {
+    if prompt.is_empty() || prompt.len() > MAX_CHAT_MESSAGE_BYTES {
+        return Err("Vision prompt is empty or exceeds Shuvi's native request limit. No screenshot captured.".into());
+    }
+    if context.provider == "xkiro" {
+        let models = list_xkiro_models().await?;
+        let chosen = models.iter().find(|item| item.id == context.model)
+            .ok_or_else(|| "Selected xKiro model is absent from public catalog; no screenshot captured.".to_string())?;
+        if chosen.vision != Some(true) {
+            return Err(format!(
+                "xKiro model '{}' is not marked vision-capable. No screenshot was captured or paid vision request sent. Explicitly choose a Vision model.",
+                context.model
+            ));
+        }
+    }
+    // analyze_png_bytes_with_provider still checks the current model
+    // capability at send time; provider capability could change in between.
+    Ok(())
+}
+
 async fn analyze_png_with_provider(
     context: &ProviderContext,
     prompt: &str,
@@ -10683,6 +10710,8 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             })
         }
         ToolAction::InspectScreen { prompt, provider, window } => {
+            // Fail before touching the desktop for invalid prompts/text-only models.
+            preflight_inspect_screen_vision(&provider, &prompt).await?;
             // The consent UI (Shuvi) may be foreground while the owner presses Allow once.
             // For app tasks capture the explicit observed target, NEVER the arbitrary foreground.
             let (path, observed_target) = if window.eq_ignore_ascii_case("desktop") {
@@ -10690,18 +10719,23 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             } else {
                 target_window_capture::capture_window_png(&window,capture_target.as_ref())?
             };
-            let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
+            // The PNG is needed only for this one vision call. Owning the
+            // path makes cleanup unconditional on success, provider failure,
+            // timeout and cancellation (future drop). Never expose a stale
+            // filesystem path in a model-facing action response.
+            let captured = vision_screenshot_guard::EphemeralVisionCapture::new(path);
+            let analysis = analyze_png_with_provider(&provider, &prompt, captured.path()).await?;
+            drop(captured);
 
             Ok(ActionResult {
                 success: true,
                 tool,
                 stdout: format!(
-                    "Window-targeted analysis from {}/{}:\nTarget: {}\n{}\nScreenshot: {}",
+                    "Window-targeted analysis from {}/{}:\nTarget: {}\n{}\nScreenshot: temporary capture deleted after analysis",
                     provider.provider,
                     provider.model,
                     observed_target,
                     analysis,
-                    path.display()
                 ),
                 stderr: String::new(),
                 exit_code: Some(0),

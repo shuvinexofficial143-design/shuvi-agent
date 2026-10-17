@@ -1027,3 +1027,31 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   case when comparing prepared and executed OS roots.
 - Add Rust regression for an abbreviated unique target alias while
   retaining rejection of padded/malformed selectors.
+
+## Milestone 25 — Ephemeral vision screenshot lifecycle and pre-capture provider check
+
+- A successfully analyzed or failed `inspect_screen` used to leave its PNG
+  in the temporary screenshot directory and return a filesystem path
+  in the model-facing result. The owner-approved screenshot is now wrapped
+  in an action-scoped Rust RAII `EphemeralVisionCapture` that deletes the
+  temporary PNG after successful vision analysis and also on provider
+  failure, early-return, task unwind, or async cancellation.
+- The returned action result keeps analysis, selected provider/model and
+  target identity, but describes the screenshot as temporary/deleted and
+  never exposes a non-existent local PNG path to the model. This changes
+  **inspect_screen only**; manual `capture_screen` still intentionally
+  saves its user-requested screenshot path.
+- Before focusing an app, copying any pixels or storing a screenshot,
+  inspect_screen validates the bounded prompt and performs a **read-only
+  xKiro catalog lookup** that rejects selected text-only models. The
+  original at-send capability check remains mandatory because model
+  capability may change after capture, and no paid provider fallback is
+  selected silently.
+- Rust tests cover drop cleanup on success/error/panic/idempotence;
+  `scripts/shuvi39-ephemeral-vision-capture.test.mjs` locks
+  preflight-before-capture ordering, cleanup across the asynchronous
+  provider request and separation from manual screenshot behavior.
+- This bounds temporary image retention but does **not** securely erase
+  overwritten disk blocks, backups or pixels already transmitted to
+  the explicitly selected vision provider. No real Windows application
+  live acceptance was run here.
