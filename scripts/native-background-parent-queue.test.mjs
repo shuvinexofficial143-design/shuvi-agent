@@ -36,3 +36,21 @@ test('M52 retains one exclusive GUI lease and never grants owner approval',()=>{
   assert.match(queue,/No public Tauri dispatch/);
   assert.doesNotMatch(queue,/permission\.grant|ownerApproved:\s*true/);
 });
+test('M53 launches two separately claimed parent UUIDs with independent real Job Object-backed SHA verification',()=>{
+  assert.match(queue,/fn run_two_ready_approved<F>/);
+  assert.match(queue,/std::thread::scope\(\|scope\|/);
+  assert.match(queue,/scope\.spawn\(\|\|run_next_approved\(root,\|\|host_ram_over_limit\(\)\)\)/);
+  assert.match(queue,/fn two_independent_parent_claims_race_safely_under_os_journal_lock/);
+  assert.match(queue,/fn bounded_priority_aging_prevents_old_low_priority_parent_starvation/);
+  assert.match(queue,/Parent dispatcher panicked|parent dispatcher panicked/);
+  assert.match(queue,/first approved parent|First approved parent/);
+  assert.match(parent,/const MAX_BACKGROUND_WORKERS:usize=2/);
+  assert.match(parent,/READ_ONLY_JOB_CAP:u64=512\*1024\*1024/);
+});
+test('M53 exact parent Stop refuses foreign/unstaged PID and never reports process termination as success',()=>{
+  assert.match(queue,/fn request_exact_parent_stop_at\(/);
+  assert.match(queue,/super::request_stop_for_child\(root,id\)/);
+  assert.match(queue,/c\.phase=="os_running"/);
+  assert.match(queue,/fn parent_stop_cannot_claim_process_termination_without_owned_os_pid/);
+  assert.doesNotMatch(queue,/TerminateProcess|taskkill|Command::new/);
+});
