@@ -202,6 +202,15 @@ pub(crate) fn begin(app:&AppHandle,id:&str,tool:&str,now:u64)->Result<(),String>
     begin_at(&journal_path(app)?,id,tool,now).map(|_|())
 }
 pub(crate) fn audit(app:&AppHandle,id:&str,success:bool,now:u64)->Result<(),String>{
+    // Never publish a successful Blender action journal from a stale or
+    // changed saved file; an OS exit and one-time earlier hash are inadequate.
+    if success {
+        if let Some(current)=read(app)?{
+            if current.action_id==id&&current.tool=="blender_run_plan"{
+                crate::native_blender_action_artifact::read_verified(app,id)?;
+            }
+        }
+    }
     audited_at(&journal_path(app)?,id,success,now)?;
     // The audited exact UUID plus independently rehashed final certificate
     // is the sole automatic release condition. Failed actions remain held.

@@ -174,3 +174,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 ### Milestone 27 recovery integrity hardening
 - Before recording a post-crash owner-confirmed SUCCESS for an interrupted \`blender_run_plan\`, the existing reconciliation path now independently verifies the exact native UUID artifact certificate, including actual on-disk SHA256. Failures occur **before** owner process receipt / Rust audit are written, preventing a false successful dependency from unlocking downstream DAG admission. Unknown/failed reviews remain possible but never become verified Blender delivery.
 - Node regression enforces this pre-audit gate precedes the existing recovery mutation and later verified resource release.
+
+## Milestone 28 — transitive Blender artifact rehash before DAG admission and restart success
+- An already-audited Blender step is **not permanently trusted** for dependent work. Before scheduling a successor, the real Rust API recursively checks every transitive Blender ancestor by exact UUID against its SHA-256-on-disk certificate; immediate preflight and final begin entrypoints each recheck. A non-Blender intermediary does not mask a missing/tampered Blender checkpoint.
+- Crash-recovered success is verified against exact UUID artifact **before** scheduler durable terminal promotion. Read-only status refuses to project verified Blender success if earlier output bytes no longer agree. Native journal success also rehashes first, preventing a timing gap between output creation and action audit publication.
+- Offline Rust tests cover transitive DAG, tamper denial and restart-success projection; Node contracts cover production-path wiring. This adds bounded readback I/O, not any Windows GUI, cloud provider or side-effecting worker.

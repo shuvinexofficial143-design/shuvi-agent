@@ -248,6 +248,60 @@ fn recover_terminal_at(file:&Path,native:Option<&crate::native_worker_job::Nativ
         _=>Err("Native journal has unsupported terminal state.".into())
     }
 }
+/// A later DAG job may use a verified Blender artifact only while its
+/// *current bytes* still agree with that exact action's durable certificate.
+/// Walk transitive ancestors; a non-Blender intermediary must not mask a
+/// tampered Blender checkpoint. Read-only and no automatic re-execution.
+fn verify_dependency_artifacts<F>(
+    schedule:&Schedule,target:&str,mut certificate:F
+)->Result<(),String>
+where F:FnMut(&str)->Result<(),String>{
+    fn visit<F>(
+        s:&Schedule,id:&str,seen:&mut HashSet<String>,certificate:&mut F
+    )->Result<(),String>
+    where F:FnMut(&str)->Result<(),String>{
+        if !seen.insert(id.to_string()){return Ok(());}
+        let step=s.jobs.iter().find(|j|j.step_id==id)
+            .ok_or("Scheduler dependency disappeared during verification.")?;
+        if step.phase!="audited" {
+            return Err("Unaudited dependency cannot authorize a native successor.".into());
+        }
+        if step.tool=="blender_run_plan" {
+            certificate(step.action_id.as_deref()
+                .ok_or("Blender dependency lacks an audited action UUID.")?)?;
+        }
+        for parent in &step.depends_on{
+            visit(s,parent,seen,certificate)?;
+        }
+        Ok(())
+    }
+    let job=schedule.jobs.iter().find(|j|j.step_id==target)
+        .ok_or("No such scheduled action for dependency verification.")?;
+    let mut seen=HashSet::new();
+    for parent in &job.depends_on{
+        visit(schedule,parent,&mut seen,&mut certificate)?;
+    }
+    Ok(())
+}
+fn verify_blender_recovery<F>(
+    schedule:&Schedule,native:Option<&crate::native_worker_job::NativeJob>,
+    mut certificate:F
+)->Result<(),String>
+where F:FnMut(&str)->Result<(),String>{
+    if let Some(j)=native{
+        if j.phase=="audit_verified" && j.audit_success==Some(true){
+            if let Some(running)=schedule.jobs.iter().find(|j|j.phase=="running") {
+                if running.tool=="blender_run_plan" {
+                    if running.action_id.as_deref()!=Some(j.action_id.as_str()) {
+                        return Err("Recovered Blender action UUID disagrees with durable audit.".into());
+                    }
+                    certificate(&j.action_id)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
 /// Deterministic owner DAG order. Reconstruct READY from persisted queued
 /// jobs and Rust-audited prerequisites, never from elapsed time or model claims.
 fn first_ready_step(s:&Schedule)->Option<&str>{
@@ -297,8 +351,16 @@ pub(crate) fn preflight(app:&AppHandle,graph:Option<&Value>,step:&str,tool:&str,
     // lease heartbeat or a model's reported success.
     {
         let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
-        recover_terminal_at(&file,crate::native_worker_job::read(app)?.as_ref())?;
+        let audit=crate::native_worker_job::read(app)?;
+        if let Some(schedule)=read_at(&file)? {
+            verify_blender_recovery(&schedule,audit.as_ref(),|id|
+                crate::native_blender_action_artifact::read_verified(app,id).map(|_|()))?;
+        }
+        recover_terminal_at(&file,audit.as_ref())?;
     }
+    let merged=merged(read(app)?,graph)?;
+    verify_dependency_artifacts(&merged,step,|id|
+        crate::native_blender_action_artifact::read_verified(app,id).map(|_|()))?;
     preflight_at(&file,graph,step,tool,action_id)
 }
 fn begin_at(file:&Path,graph:Option<&Value>,step:&str,tool:&str,id:&str)->Result<(),String>{
@@ -313,6 +375,11 @@ fn begin_at(file:&Path,graph:Option<&Value>,step:&str,tool:&str,id:&str)->Result
 }
 pub(crate) fn begin(app:&AppHandle,graph:Option<&Value>,step:&str,tool:&str,id:&str)
     ->Result<(),String>{
+    // Recheck the trusted output at the actual dispatch boundary too:
+    // a separate preflight is NOT a lasting guarantee about disk contents.
+    let schedule=merged(read(app)?,graph)?;
+    verify_dependency_artifacts(&schedule,step,|parent|
+        crate::native_blender_action_artifact::read_verified(app,parent).map(|_|()))?;
     begin_at(&path(app)?,graph,step,tool,id)
 }
 fn finish_at(file:&Path,id:&str,tool:&str,success:Option<bool>)->Result<(),String>{
@@ -391,7 +458,19 @@ pub(crate) fn verified_status(app:&AppHandle)->Result<Option<Schedule>,String>{
         return Ok(snapshot);
     }
     let journal=crate::native_worker_job::read(app)?;
-    projected_terminal(snapshot,journal.as_ref())
+    if let Some(schedule)=snapshot.as_ref(){
+        verify_blender_recovery(schedule,journal.as_ref(),|id|
+            crate::native_blender_action_artifact::read_verified(app,id).map(|_|()))?;
+    }
+    let projected=projected_terminal(snapshot,journal.as_ref())?;
+    if let Some(schedule)=projected.as_ref(){
+        for job in schedule.jobs.iter().filter(|j|
+            j.phase=="audited"&&j.tool=="blender_run_plan"){
+            crate::native_blender_action_artifact::read_verified(app,
+                job.action_id.as_deref().ok_or("Audited Blender step lacks UUID.")?)?;
+        }
+    }
+    Ok(projected)
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
@@ -409,6 +488,57 @@ mod tests{
           {"step_id":"import","expected_tool":"premiere_insert_media","depends_on":["model"]}]})
     }
     fn cleanup(p:&Path){let _=fs::remove_file(p);let _=fs::remove_file(p.with_extension("json.bak"));}
+    #[test]
+    fn transitive_blender_dependency_requires_fresh_exact_artifact_evidence(){
+        let plan=serde_json::json!({"objective":"Authorized workflow","revision":1,
+            "steps":[
+                {"step_id":"blender","expected_tool":"blender_run_plan","depends_on":[]},
+                {"step_id":"handoff","expected_tool":"premiere_insert_media","depends_on":["blender"]},
+                {"step_id":"deliver","expected_tool":"premiere_export","depends_on":["handoff"]}
+            ]});
+        let mut s=from_graph(&plan).unwrap();
+        for (index,job) in s.jobs.iter_mut().enumerate(){
+            if index<2{
+                job.phase="audited".into();
+                job.action_id=Some(if index==0{
+                    "e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+                }else{"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"}.into());
+            }
+        }
+        let mut observed=Vec::new();
+        verify_dependency_artifacts(&s,"deliver",|id|{
+            observed.push(id.to_string());Ok(())
+        }).unwrap();
+        assert_eq!(observed,vec!["e8b36b21-1c6a-459e-9b6f-75dd5692ab81"]);
+        assert!(verify_dependency_artifacts(&s,"deliver",|_|{
+            Err("Output checksum mismatch".into())
+        }).is_err());
+        assert!(verify_dependency_artifacts(&s,"deliver",|_|Ok(())).is_ok());
+        s.jobs[0].phase="failed".into();
+        assert!(verify_dependency_artifacts(&s,"deliver",|_|Ok(())).is_err());
+    }
+    #[test]
+    fn post_crash_blender_success_requires_verified_output_before_dag_recovery(){
+        let mut s=from_graph(&serde_json::json!({"objective":"Blender checkpoint",
+            "steps":[{"step_id":"save","expected_tool":"blender_run_plan","depends_on":[]}]})).unwrap();
+        let action="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
+        s.jobs[0].phase="running".into();s.jobs[0].action_id=Some(action.into());
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:action.into(),tool:"blender_run_plan".into(),
+            phase:"audit_verified".into(),started_at_ms:1000,updated_at_ms:1001,
+            heartbeat_seq:0,audit_success:Some(true),prior_action_ids:vec![]
+        };
+        assert!(verify_blender_recovery(&s,Some(&job),|_|
+            Err("Missing checkpoint".into())).is_err());
+        let mut seen=0;
+        verify_blender_recovery(&s,Some(&job),|id|{
+            assert_eq!(id,action);seen+=1;Ok(())
+        }).unwrap();
+        assert_eq!(seen,1);
+        s.jobs[0].tool="premiere_insert_media".into();
+        verify_blender_recovery(&s,Some(&job),|_|
+            Err("Not a Blender job".into())).unwrap();
+    }
     #[test]
     fn omitted_initial_revision_defaults_to_one_but_invalid_revision_fails(){
         let mut value=graph(1);
