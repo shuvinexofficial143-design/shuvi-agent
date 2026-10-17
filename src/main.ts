@@ -25,6 +25,7 @@ import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from ".
 import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
 import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
 import {createMasterRemoteReceiptLane} from "./master-remote-receipt-lane.mjs";
+import {terminalRemoteReceiptClearAllowed} from "./master-remote-terminal-fence.mjs";
 import {captureRemoteInboxOwner,isRemoteInboxOwnerCurrent} from "./master-remote-inbox-owner.mjs";
 import {createMasterNativeSingleFlight} from "./master-native-single-flight.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
@@ -3284,15 +3285,27 @@ async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={})
 async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<void>{
   const closingTask=remoteTask;
   if(!closingTask)return;
+  const closingScope=activePermissionScope;
   const extras= status==="succeeded" && closingTask.evidenceActionId
     ? {evidence:{kind:"native_audit",id:closingTask.evidenceActionId}} : {};
+  let acknowledged=false;
   try {
-    if(!(await sendRemoteReceipt(status,extras)))
-      remoteStatusLabel("Remote task changed before receipt confirmation; do not infer outcome.");
-  } catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
-  // Older remote close receipt may return after the next inbox task begins.
-  // Do not clear its status, approval, or revision on an old close response.
+    acknowledged=await sendRemoteReceipt(status,extras);
+  } catch {
+    // A failed terminal receipt is UNKNOWN, not proof of server delivery.
+  }
+  // An old remote response may arrive after a newer inbox/local task.
   if(remoteTask!==closingTask)return;
+  if(activePermissionScope!==closingScope)return;
+  if(!terminalRemoteReceiptClearAllowed(closingTask,remoteTask,acknowledged)){
+    // Retain old task identity: accepting a new inbox command now could
+    // duplicate uncertain OS effects or lose the server-side revision.
+    cancelRequested=true;
+    revokeTaskScope(closingScope);
+    remoteApproval=null;
+    remoteStatusLabel("Remote terminal receipt unconfirmed; previous task held for owner review. No new task admitted.");
+    return;
+  }
   remoteTask=null;
   remoteApproval=null;
 }
