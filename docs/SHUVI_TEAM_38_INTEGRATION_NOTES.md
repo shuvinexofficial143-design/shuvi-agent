@@ -205,3 +205,9 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Releasing the owned output after real Rust audit plus rehashed artifact certificate additionally requires its stored approved-plan digest to match certificate plan SHA-256. Missing/foreign digest cannot free a new-format claimed path even if output filename or exit-code looks plausible.
 - Existing historical v1 resource claims remain readable with optional digest absent but are never mislabeled as plan-provenance verified. Owner-facing resource status now includes optional approved digest, not a forged success flag.
 - Rust disk-restart, wrong plan, legacy compatibility and UUID replay tests plus Node wiring contracts added. Windows app live acceptance still separate.
+
+## Milestone 33 — Windows desktop reserved-output owner panel
+- Added a collapsible, read-only "Reserved outputs" section to the already-present native sidebar, sourced solely from the existing authenticated Rust native_worker_status Tauri command. Displays exact tool/UUID prefix, bounded canonical output path, reason reservation persists, and optional approved plan digest prefix.
+- Strict TypeScript contract validation accepts at most 12 held Blender claims with exactly one output path, UUID format, bounded paths, lowercase SHA256, no forged evidence/safe retry flags and consistent durable count. Failure displays "unavailable", never fake idle.
+- Paths and unknown status strings use DOM textContent only, never innerHTML; no UI control can force-unlock or replay a claim. Every four-second existing worker-status refresh updates the panel without new independent OS calls.
+- Added Node UI wiring/HTML injection/safety tests; Native Rust and UI source CI verification required. Real installed Windows acceptance not yet conducted.

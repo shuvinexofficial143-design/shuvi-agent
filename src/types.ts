@@ -112,6 +112,17 @@ export type ChatResponse = {
   usage: UsageStats | null;
 };
 
+export type NativeResourceClaim = {
+  actionId: string;
+  tool: string;
+  readPaths: string[];
+  writePaths: string[];
+  health: string;
+  approvedPlanSha256: string | null;
+  evidenceVerified: false;
+  safeToAutoRetry: false;
+};
+
 export type NativeWorkerStatus = {
   schemaVersion: 1;
   observedAtMs: number;
@@ -125,6 +136,10 @@ export type NativeWorkerStatus = {
   recoveryPhase: string | null;
   recoveryTaskId: string | null;
   requiresOwnerReview: boolean;
+  resourceOwnershipHealth: "no_held_output_claims" | "output_resources_still_reserved";
+  resourceHeldCount: number;
+  resourceRetiredRecentCount: number;
+  resourceClaims: NativeResourceClaim[];
   progressHeartbeatVerified: false;
   safeToAutoRetry: false;
   // Durable Rust supervision of THIS process, not Adobe/Blender progress.

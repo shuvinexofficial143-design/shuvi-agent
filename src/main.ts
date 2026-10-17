@@ -158,6 +158,10 @@ root.innerHTML = `
       <small id="nativeDeliverySummary" class="ram-children">Previous delivery: not yet checked</small>
       <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
       <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
+      <details id="nativeResourceClaims" class="ram-children">
+        <summary id="nativeResourceClaimsSummary">Reserved outputs: not checked</summary>
+        <div id="nativeResourceClaimsList">Waiting for trusted Rust ownership status.</div>
+      </details>
       <details id="nativeActionHistory" class="ram-children">
         <summary>Native action history</summary>
         <div id="nativeActionHistoryList">History not yet checked</div>
@@ -637,6 +641,70 @@ function nativeWorkerDisplay(): string {
     return "Host lease occupied — action identity not independently attributed";
   return "Host worker: no action in this process (other instances unknown)";
 }
+// Display only owner-readable Rust evidence; never infer liveness, replay,
+// unlock a resource or build HTML from a filesystem path/worker payload.
+function renderResourceClaims(): void {
+  const title=el<HTMLElement>("#nativeResourceClaimsSummary");
+  const output=el<HTMLElement>("#nativeResourceClaimsList");
+  output.replaceChildren();
+  const host=nativeHostStatusUnavailable?null:nativeHostStatus;
+  if (!host) {
+    title.textContent="Reserved outputs: unavailable";
+    output.textContent="Ownership status unavailable. Do not infer that outputs are free.";
+    return;
+  }
+  const claims=host.resourceClaims;
+  title.textContent="Reserved outputs ("+claims.length+")";
+  if (!claims.length) {
+    output.textContent="No held output claims in this journal. This does not verify past app results.";
+    return;
+  }
+  const allowed=new Set([
+    "worker_journal_running_os_liveness_unverified",
+    "successful_audit_output_still_held",
+    "failed_action_output_requires_review",
+    "reviewed_unknown_output_still_held",
+    "orphaned_or_previous_action_requires_owner_review"
+  ]);
+  for(const claim of claims){
+    const row=document.createElement("div");
+    row.className="native-resource-row";
+    const heading=document.createElement("strong");
+    heading.textContent=claim.tool+" · "+claim.actionId.slice(0,8);
+    row.append(heading);
+    const description=document.createElement("small");
+    const reason=allowed.has(claim.health)?claim.health.replaceAll("_"," "):"ownership review required";
+    const path=claim.writePaths[0]??"output path unavailable";
+    description.textContent=reason+" · output: "+path.slice(-230);
+    row.append(description);
+    if(claim.approvedPlanSha256){
+      const digest=document.createElement("small");
+      digest.textContent="Approved plan SHA-256: "+claim.approvedPlanSha256.slice(0,16)+"…";
+      row.append(digest);
+    }
+    output.append(row);
+  }
+}
+function resourceClaimsValid(host:NativeWorkerStatus): boolean {
+  const claimed=host.resourceClaims;
+  const validUUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  return (host.resourceOwnershipHealth==="no_held_output_claims"
+      ||host.resourceOwnershipHealth==="output_resources_still_reserved")
+    &&Array.isArray(claimed)&&claimed.length<=12
+    &&host.resourceHeldCount===claimed.length
+    &&Number.isInteger(host.resourceRetiredRecentCount)
+    &&host.resourceRetiredRecentCount>=0&&host.resourceRetiredRecentCount<=48
+    &&claimed.every(item=>
+      validUUID.test(item.actionId)&&item.tool==="blender_run_plan"
+      &&item.evidenceVerified===false&&item.safeToAutoRetry===false
+      &&Array.isArray(item.writePaths)&&item.writePaths.length===1
+      &&Array.isArray(item.readPaths)&&item.readPaths.length<=1
+      &&[...item.writePaths,...item.readPaths].every(p=>typeof p==="string"
+        &&p.length>0&&p.length<=4096&&!/[\u0000-\u001f]/.test(p))
+      &&(item.approvedPlanSha256===null
+        ||/^[a-f0-9]{64}$/.test(item.approvedPlanSha256))
+    );
+}
 // Only a read-only Rust IPC call can update host ownership observations.
 // Never use the web graph or this UI timer to grant another native lease.
 async function refreshNativeWorkerStatus(): Promise<void> {
@@ -645,7 +713,7 @@ async function refreshNativeWorkerStatus(): Promise<void> {
   try{
     const status=await invoke<NativeWorkerStatus>("native_worker_status");
     if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
-      ||status.safeToAutoRetry!==false
+      ||status.safeToAutoRetry!==false||!resourceClaimsValid(status)
       ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
         "rust_supervisor_observed","supervisor_start_record_only","last_action_audited",
         "audited_job_conflicts_with_live_lease","last_action_reviewed_unknown"].includes(status.supervisorHealth))
@@ -658,6 +726,7 @@ async function refreshNativeWorkerStatus(): Promise<void> {
   }finally{
     nativeHostReadPending=false;
     renderOrchestrationStatus();
+    renderResourceClaims();
   }
 }
 
