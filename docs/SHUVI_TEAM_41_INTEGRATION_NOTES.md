@@ -867,3 +867,37 @@ or extra material slots, stale revisions, inactive camera, wrong lamp,
 ambiguous pages and no render approval. The original Stage-2 3-stage
 receipt chain remains isolated. The material-render job must not be
 counted as ordinary three-stage acceptance or real host verification.
+
+## Team-41 — exact full-plan shape classifier and corrected material source (source-only)
+
+Review found two defects in the prior source-only acceptance path:
+
+1. Optional `look_render` preview erroneously set
+   `requires_new_session_loading_verified_stage2=true`, although its source
+   must be the SHA-pinned material checkpoint. The preview now makes the
+   two mutually exclusive source requirements explicit:
+   `render` and `look` load Stage-2; `look_render` loads the material
+   checkpoint, *not* Stage-2.
+2. The native `blender_plan_lineage::valid_stage` originally checked key
+   identifying fields but did not compare every geometry coordinate,
+   request timeout, complete result binding or extra payload key. A
+   maliciously modified typed plan could still be labeled a fixed acceptance
+   stage while its full plan SHA-256 reflected different actions.
+
+The lineage classifier now has a second independent **complete JSON shape**
+check against `blender_acceptance_recipe::expected_plan`, which is purely
+declarative, does not invoke `derive`, and cannot launch Blender. Only canonical
+distinct UUID request/command identifiers and the permitted *first* fresh
+64-character scene revision vary. Every step operation, step name, bindings,
+payload nested fields, geometry, target identity, requested material values,
+render settings, plan/step deadlines and additional keys must otherwise
+match. If there is any extra hidden field or swapped binding, lineage's
+`acceptance_stage` is `other`. Original owner permissions and plan-SHA
+audit remain in force; this stage classification still **does not prove**
+historical approval, runtime execution or image quality.
+
+Native Rust regressions cover all five recipes, forged geometry, extra
+payload keys/bindings, timeouts, altered material targets, duplicate UUIDs
+and distinct material-render destination, while source Node checks guard
+the exact-template and preview-source contract. This requires no new
+Blender installation, Python launch, GUI interaction or Adobe integration.

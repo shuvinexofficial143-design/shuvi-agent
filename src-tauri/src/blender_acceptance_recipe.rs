@@ -128,6 +128,21 @@ fn render(rev:&str,filename:&str)->Vec<Value>{
     ]
 }
 
+/// Generate exact expected typed recipe independently of plan lineage.
+//// Never calls derive: derive can compare untrusted requests against this
+//// source-of-truth shape without recursive dispatch or Blender execution.
+pub(crate) fn expected_plan(stage:&str,revision:&str)->Option<Value>{
+    let steps=match stage{
+        "model1"=>model1(revision),
+        "model2"=>model2(revision),
+        "render"=>render(revision,RENDER),
+        "look_render"=>render(revision,MATERIAL_RENDER),
+        "look"=>look(),
+        _=>return None,
+    };
+    Some(json!({"timeout_ms":90_000,"steps":steps}))
+}
+
 /// A plan-only preview: all UUIDs are fresh on each call, and callers must
 /// explicitly request a distinct owner-approved BlenderSessionPlan action.
 /// This never opens a session or asserts prior native action authorization.
@@ -136,15 +151,16 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
         !revision.bytes().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase()){
         return Err("Native Blender recipe needs a fresh lowercase scene revision from session inspect.".into());
     }
-    let (steps,output,requires_render)=match stage{
-        "model1"=>(model1(revision),STAGE1,false),
-        "model2"=>(model2(revision),STAGE2,false),
-        "render"=>(render(revision,RENDER),RENDER,true),
-        "look_render"=>(render(revision,MATERIAL_RENDER),MATERIAL_RENDER,true),
-        "look"=>(look(),LOOK,false),
-        _=>return Err("Native Blender recipe only accepts model1, model2, look, render or look_render.".into()),
+    let plan=expected_plan(stage,revision)
+        .ok_or("Native Blender recipe only accepts model1, model2, look, render or look_render.")?;
+    let (output,requires_render)=match stage{
+        "model1"=>(STAGE1,false),
+        "model2"=>(STAGE2,false),
+        "render"=>(RENDER,true),
+        "look_render"=>(MATERIAL_RENDER,true),
+        "look"=>(LOOK,false),
+        _=>unreachable!("expected_plan already filtered known stages"),
     };
-    let plan=json!({"timeout_ms":90_000,"steps":steps});
     if serde_json::to_vec(&plan).map_err(|_|"Cannot serialize typed Blender recipe.")?.len()>65536{
         return Err("Blender recipe exceeds native 64 KiB plan input bound.".into());
     }
@@ -165,7 +181,7 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
         "render_action_approval_required":requires_render,
         "must_use_current_session_inspect_revision":true,
         "requires_separate_native_owner_approval":true,
-        "requires_new_session_loading_verified_stage2":requires_render || stage=="look",
+        "requires_new_session_loading_verified_stage2":stage=="render" || stage=="look",
         "supplementary_not_three_stage_acceptance":stage=="look" || stage=="look_render",
         "requires_new_session_loading_verified_material":stage=="look_render",
         "action_approved":false,

@@ -4,6 +4,7 @@
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::HashSet;
+use uuid::Uuid;
 
 fn operation(step:&Value)->Result<&str,String>{
     step.pointer("/request/operation").and_then(Value::as_str)
@@ -123,6 +124,50 @@ fn valid_stage(steps:&[&Value],ops:&[String])->&'static str{
         _=>"other",
     }
 }
+/// Check the WHOLE plan shape against the exact plan-only native generator,
+/// not just a few stage-identifying fields. Only fresh UUIDs and the initial
+/// session-revision value are allowed to vary. Every step name, request field,
+/// result binding, timeout, geometry, device property and destination must
+/// otherwise be identical. No files, external commands or Blender launches.
+fn exact_recipe_shape(plan:&Value,stage:&str)->bool{
+    let revision=if stage=="look"{
+        "a".repeat(64) // the look plan has no embedded initial revision
+    }else{
+        match plan.pointer("/steps/0/request/payload/expected_scene_revision").and_then(Value::as_str){
+            Some(s) if s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase())=>s.to_owned(),
+            _=>return false
+        }
+    };
+    let expected=match crate::blender_acceptance_recipe::expected_plan(stage,&revision){
+        Some(value)=>value,
+        None=>return false
+    };
+    let expected_steps=match expected.get("steps").and_then(Value::as_array){
+        Some(v)=>v,
+        None=>return false
+    };
+    let steps=match plan.get("steps").and_then(Value::as_array){
+        Some(v) if v.len()==expected_steps.len()=>v,
+        _=>return false
+    };
+    let mut normalized=plan.clone();
+    let mut seen_ids=HashSet::new();
+    for (index,step) in steps.iter().enumerate(){
+        for key in ["request_id","command_id"]{
+            let id=match step.pointer(&format!("/request/{key}")).and_then(Value::as_str){
+                Some(v)=>v,
+                None=>return false
+            };
+            match Uuid::parse_str(id){
+                Ok(uuid) if uuid.to_string()==id && seen_ids.insert(id.to_owned())=>{},
+                _=>return false,
+            }
+            normalized["steps"][index]["request"][key]=expected_steps[index]["request"][key].clone();
+        }
+    }
+    normalized==expected
+}
+
 pub(crate) fn derive(plan:&Value)->Result<Value,String>{
     let steps=plan.get("steps").and_then(Value::as_array)
         .filter(|s|!s.is_empty()&&s.len()<=6)
@@ -137,7 +182,8 @@ pub(crate) fn derive(plan:&Value)->Result<Value,String>{
         ops.push(operation(step)?.to_owned());
     }
     let ordered=steps.iter().collect::<Vec<_>>();
-    let stage=valid_stage(&ordered,&ops);
+    let suggested=valid_stage(&ordered,&ops);
+    let stage=if suggested!="other" && exact_recipe_shape(plan,suggested){suggested}else{"other"};
     Ok(json!({
         "schema_version":1,
         "plan_sha256":format!("{:x}",Sha256::digest(&raw)),
@@ -190,12 +236,7 @@ mod tests{
     }
     #[test]
     fn classifies_exact_bounded_render_and_rejects_substituted_dimensions(){
-        let plan=json!({"steps":[
-            step("configure","render.configure",json!({"width":64,"height":64,"samples":1,"expected_scene_revision":"a".repeat(64)}),json!([])),
-            step("configured_scene","scene.inspect",json!({}),json!([])),
-            step("render","render.execute",json!({"name":"shuvi41-proof-render.png","expected_scene_revision":"BOUND"}),
-                json!([{"source_step":"configured_scene","source_path":["data","revision"],"target_path":["expected_scene_revision"]}]))
-        ],"timeout_ms":90000});
+        let plan=crate::blender_acceptance_recipe::expected_plan("render",&"a".repeat(64)).unwrap();
         let token=derive(&plan).unwrap();
         assert_eq!(token["acceptance_stage"],"render");
         receipt_matches(&json!({"approved_plan_lineage":token}),"render").unwrap();
@@ -204,6 +245,58 @@ mod tests{
         assert_eq!(forged["acceptance_stage"],"other");
         assert!(receipt_matches(&json!({"approved_plan_lineage":forged}),"render").is_err());
     }
+    #[test]
+    fn strict_template_rejects_hidden_mutations_and_unsafe_material_render_substitutions(){
+        let revision="b".repeat(64);
+        for stage in ["model1","model2","render","look","look_render"]{
+            let original=crate::blender_acceptance_recipe::expected_plan(stage,&revision).unwrap();
+            assert_eq!(derive(&original).unwrap()["acceptance_stage"],stage);
+            let mut altered=original.clone();
+            // A stealthy additional payload field was previously ignored by
+            // the permissive stage classifier.
+            altered["steps"][0]["request"]["payload"]["dangerous_extra"]=json!("unexpected");
+            assert_eq!(derive(&altered).unwrap()["acceptance_stage"],"other");
+            let mut appended=original.clone();
+            appended["steps"][0]["bindings"].as_array_mut().unwrap().push(json!({
+                "source_step":"forged","source_path":["data","revision"],
+                "target_path":["expected_scene_revision"]
+            }));
+            assert_eq!(derive(&appended).unwrap()["acceptance_stage"],"other");
+            let mut changed_timeout=original.clone();
+            changed_timeout["steps"][0]["request"]["timeout_ms"]=json!(90000);
+            assert_eq!(derive(&changed_timeout).unwrap()["acceptance_stage"],"other");
+            let mut wrong_plan_budget=original.clone();
+            wrong_plan_budget["timeout_ms"]=json!(180000);
+            assert_eq!(derive(&wrong_plan_budget).unwrap()["acceptance_stage"],"other");
+        }
+        let mut create=crate::blender_acceptance_recipe::expected_plan("model1",&revision).unwrap();
+        create["steps"][0]["request"]["payload"]["geometry"]["vertices"][4][2]=json!(99.0);
+        assert_eq!(derive(&create).unwrap()["acceptance_stage"],"other");
+        let mut look=crate::blender_acceptance_recipe::expected_plan("look",&revision).unwrap();
+        look["steps"][2]["request"]["payload"]["target"]["object_id"]=json!("spoofed-target");
+        assert_eq!(derive(&look).unwrap()["acceptance_stage"],"other");
+        let mut render=crate::blender_acceptance_recipe::expected_plan("look_render",&revision).unwrap();
+        render["steps"][0]["request"]["payload"]["expected_scene_revision"]=json!("0".repeat(64));
+        // Fresh revisions can legitimately vary; the classifier must not
+        // claim owner approval or verified input source merely from this.
+        assert_eq!(derive(&render).unwrap()["acceptance_stage"],"look_render");
+    }
+
+    #[test]
+    fn strict_template_rejects_noncanonical_or_replayed_request_ids(){
+        let revision="c".repeat(64);
+        let original=crate::blender_acceptance_recipe::expected_plan("model2",&revision).unwrap();
+        let mut duplicate=original.clone();
+        duplicate["steps"][1]["request"]["request_id"]=original["steps"][0]["request"]["request_id"].clone();
+        assert_eq!(derive(&duplicate).unwrap()["acceptance_stage"],"other");
+        let mut mismatched=original.clone();
+        mismatched["steps"][1]["request"]["command_id"]=json!("not-a-uuid");
+        assert_eq!(derive(&mismatched).unwrap()["acceptance_stage"],"other");
+        let mut renamed=original.clone();
+        renamed["steps"][1]["name"]=json!("renamed");
+        assert_eq!(derive(&renamed).unwrap()["acceptance_stage"],"other");
+    }
+
     #[test]
     fn approved_camera_light_stage_needs_exact_devices_bindings_and_shape(){
         for stage in ["model1","model2"]{

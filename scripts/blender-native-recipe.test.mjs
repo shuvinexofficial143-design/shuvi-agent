@@ -31,7 +31,9 @@ test("read-only acceptance recipe is surfaced through native typed tool action w
 test("native recipe is fixed, typed, bounded and never invokes a process or reads user files",()=>{
   assert.doesNotMatch(rust,/Command::new|std::process|std::fs|subprocess|bpy|eval\(/);
   assert.match(rust,/Uuid::new_v4\(\)/);
-  assert.match(rust,/let plan=json!\(\{"timeout_ms":90_000,"steps":steps\}\)/);
+  assert.match(rust,/Some\\(json!\\(\\{"timeout_ms":90_000,"steps":steps\\}\\)\\)/);
+  assert.match(rust,/let plan=expected_plan\\(stage,revision\\)/);
+  assert.match(rust,/"requires_new_session_loading_verified_stage2":stage=="render" \\|\\| stage=="look"/);
   assert.match(rust,/if serde_json::to_vec\(&plan\).*\.len\(\)>65536/);
   for(const operation of [
     "mesh.create","mesh.inspect","mesh.translate_vertices","objects.list","device.create","material.create_assign",
