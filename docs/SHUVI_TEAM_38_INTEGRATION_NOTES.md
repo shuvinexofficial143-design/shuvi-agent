@@ -238,3 +238,6 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 35 authenticated final-pulse idempotency
 - The final worker pulse may be observed by the bounded monitor and then again by the terminal artifact-ack path. An identical action/plan/sequence/stage is accepted idempotently without changing the persisted observed timestamp; a changed stage with the same sequence, regressed sequence or backdated new stage is rejected. Added real Rust disk test for both cases.
+
+### Milestone 35 source terminology compatibility
+- Updated the recovery UI source-contract test to the more accurate archival evidence label: signed HMAC was verified before Rust recorded the stage, but a persisted JSON stage is **not** cryptographically re-authenticated on a future status read. No automation or liveness assertion is derived.

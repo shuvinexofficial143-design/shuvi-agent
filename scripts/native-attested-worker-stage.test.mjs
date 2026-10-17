@@ -42,8 +42,8 @@ test("recovery-required worker display keeps last authenticated stage visible wi
  const frontend=get("src/main.ts");
  const view=frontend.slice(frontend.indexOf("function nativeWorkerDisplay()"),frontend.indexOf("async function refreshNativeWorkerStatus()"));
  assert.match(view,/RECOVERY REQUIRED/);
- assert.match(view,/last signed Python worker stage/);
- assert.match(view,/NOT Blender success or OS liveness/);
+ assert.match(view,/archived Rust-recorded HMAC-checked Python stage/);
+ assert.match(view,/NOT fresh HMAC proof, Blender success or OS liveness/);
  assert.match(view,/no automatic retry/);
  assert.match(frontend,/function resourceClaimsValid/);
 });
