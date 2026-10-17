@@ -87,6 +87,7 @@ export type SessionCheckpoint = {
   messages: ChatMessage[];
   orchestration?: AgentOrchestrationCheckpoint | null;
   worker_models?: Record<string,string> | null;
+  checkpoint_nonce?: string | null;
 };
 
 export type ToolProposal = {

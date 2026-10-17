@@ -14,9 +14,9 @@ test("native terminal cleanup keeps delete+readback in same serialized lane oper
  const start=source.indexOf("async function guardedClearNativeCheckpoint(");
  const end=source.indexOf("async function saveActiveCheckpoint()",start);
  const block=source.slice(start,end);
- const clear=block.indexOf('await invoke("clear_session_checkpoint")');
- const read=block.indexOf('await invoke<SessionCheckpoint|null>("load_session_checkpoint")',clear);
- const compare=block.indexOf("if(!isNativeCheckpointAbsent(observed))",read);
+ const clear=block.indexOf('clear_session_checkpoint_if_revision');
+ const read=block.indexOf('await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot")',clear);
+ const compare=block.indexOf("!isNativeCheckpointAbsent(observed.checkpoint)",read);
  assert.ok(clear>=0&&read>clear&&compare>read);
  assert.match(block,/taskCheckpointLane\.enqueue\(/);
  assert.match(block,/verifyReadback/);

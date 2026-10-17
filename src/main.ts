@@ -22,6 +22,7 @@ import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./mas
 import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
 import {isNativeCheckpointAbsent} from "./master-checkpoint-absent.mjs";
+import {checkedNativeCheckpointRevision} from "./master-native-checkpoint-cas.mjs";
 import {classifyNativeResumeReplay} from "./master-native-resume-replay.mjs";
 import {classifyMasterCommentaryCompletion} from "./master-commentary-completion.mjs";
 import {createMasterFinalizationSingleFlight} from "./master-finalization-single-flight.mjs";
@@ -867,50 +868,67 @@ function renderOrchestrationStatus(): void {
 
 // Serialize every native checkpoint save AND clear from this WebView, never
 // letting a delayed older task clear/overwrite a newer task's snapshot.
+type NativeCheckpointSnapshot={revision:string|null;checkpoint:SessionCheckpoint|null};
 const taskCheckpointLane=createTaskCheckpointLane();
+// One sticky token per WebView, never refreshed after a CAS conflict.
+let nativeCheckpointRevision:string|null|undefined=undefined;
+async function nativeExpectedCheckpointRevision():Promise<string|null>{
+  if(nativeCheckpointRevision===undefined){
+    const snapshot=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+    nativeCheckpointRevision=checkedNativeCheckpointRevision(snapshot.revision);
+  }
+  return nativeCheckpointRevision;
+}
 async function guardedSaveNativeCheckpoint(verifyReadback=false):Promise<boolean>{
   const scope=activePermissionScope;
   const graph=orchestration.task_graph;
   const owner=orchestration.owner_request;
-  // Snapshot BEFORE queueing. Do not read mutable NEW task fields in an
-  // older queued Rust checkpoint operation.
+  const sameOwner=()=>activePermissionScope===scope&&
+    orchestration.task_graph===graph&&orchestration.owner_request===owner;
+  // Snapshot BEFORE queueing; old task cannot capture the next owner's state.
   const checkpoint=structuredClone(currentCheckpoint());
-  return taskCheckpointLane.enqueue(
-    ()=>activePermissionScope===scope&&
-      orchestration.task_graph===graph&&orchestration.owner_request===owner,
-    async()=>{
-      await invoke("save_session_checkpoint",{checkpoint});
-      // Keep save+readback in ONE serialized lane turn so another WebView
-      // action cannot publish a different checkpoint between them.
-      if(verifyReadback){
-        const reloaded=await invoke<SessionCheckpoint|null>("load_session_checkpoint");
-        const verified=assessNativeCheckpointReadback(checkpoint,reloaded);
-        if(!verified.verified)throw Error(
-          "Native checkpoint readback refused. No provider/action may continue: "+
-          verified.reason
-        );
-      }
+  return taskCheckpointLane.enqueue(sameOwner,async()=>{
+    await nativeExpectedCheckpointRevision();
+    if(!sameOwner())throw Error("Task owner rotated before native CAS save.");
+    const written=await invoke<NativeCheckpointSnapshot>(
+      "save_session_checkpoint_if_revision",
+      {checkpoint,expectedRevision:nativeCheckpointRevision}
+    );
+    nativeCheckpointRevision=checkedNativeCheckpointRevision(written.revision);
+    if(!sameOwner())throw Error("Old task checkpoint save finished after owner rotation.");
+    if(verifyReadback){
+      const reloaded=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+      if(reloaded.revision!==nativeCheckpointRevision)
+        throw Error("Native checkpoint revision changed after conditional save.");
+      const verified=assessNativeCheckpointReadback(checkpoint,reloaded.checkpoint);
+      if(!verified.verified)throw Error(
+        "Native checkpoint readback refused. No provider/action may continue: "+
+        verified.reason
+      );
     }
-  );
+  });
 }
 async function guardedClearNativeCheckpoint(
   scope:typeof activePermissionScope,graph:typeof orchestration.task_graph,
   owner:string|null,verifyReadback=false
 ):Promise<boolean>{
-  return taskCheckpointLane.enqueue(
-    ()=>activePermissionScope===scope&&
-      orchestration.task_graph===graph&&orchestration.owner_request===owner,
-    async()=>{
-      await invoke("clear_session_checkpoint");
-      // One FIFO transaction: no newer queued WebView checkpoint can be saved
-      // before Rust proves the old native disk checkpoint is absent.
-      if(verifyReadback){
-        const observed=await invoke<SessionCheckpoint|null>("load_session_checkpoint");
-        if(!isNativeCheckpointAbsent(observed))
-          throw Error("Native checkpoint erasure not independently verified.");
-      }
+  const sameOwner=()=>activePermissionScope===scope&&
+    orchestration.task_graph===graph&&orchestration.owner_request===owner;
+  return taskCheckpointLane.enqueue(sameOwner,async()=>{
+    await nativeExpectedCheckpointRevision();
+    if(!sameOwner())throw Error("Task owner rotated before native CAS clear.");
+    const cleared=await invoke<NativeCheckpointSnapshot>(
+      "clear_session_checkpoint_if_revision",
+      {expectedRevision:nativeCheckpointRevision}
+    );
+    nativeCheckpointRevision=checkedNativeCheckpointRevision(cleared.revision);
+    if(!sameOwner())throw Error("Old task checkpoint clear finished after owner rotation.");
+    if(verifyReadback){
+      const observed=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+      if(observed.revision!==null||!isNativeCheckpointAbsent(observed.checkpoint))
+        throw Error("Native checkpoint erasure not independently verified.");
     }
-  );
+  });
 }
 async function saveActiveCheckpoint(): Promise<void> {
   try {
@@ -954,11 +972,17 @@ async function loadRecoveryCheckpoint(): Promise<void> {
     // write or clear. Queue the read under the same original task scope.
     let loaded:SessionCheckpoint|null=null;
     const accepted=await taskCheckpointLane.enqueue(stillReading,async()=>{
-      loaded=await invoke<SessionCheckpoint|null>("load_session_checkpoint");
+      const snapshot=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+      loaded=snapshot.checkpoint;
+      if(stillReading()){
+        const observedRevision=checkedNativeCheckpointRevision(snapshot.revision);
+        if(nativeCheckpointRevision!==undefined&&
+           nativeCheckpointRevision!==observedRevision)
+          throw Error("Native checkpoint changed in another process; owner review required.");
+        nativeCheckpointRevision=observedRevision;
+      }
     });
     if(!accepted||!stillReading())return;
-    // TypeScript cannot observe the assignment from the serialized IPC
-    // callback; retain the actual Rust-returned union after awaited lane.
     savedCheckpoint=loaded as SessionCheckpoint|null;
 
     if (!savedCheckpoint || savedCheckpoint.messages.length === 0) {
