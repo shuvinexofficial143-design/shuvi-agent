@@ -57,3 +57,22 @@ test("edit-job save phase remains separate approval, and existing export dispatc
   assert.match(stage,/accepted\/queued is not encoder completion/i);
   assert.match(job,/pub fn record\(/);
 });
+
+test("each Edit Job phase persists its first proposal and rejects stale or reused typed action receipts",()=>{
+  assert.match(job,/proposal_issued_at_ms:Option<u64>/);
+  assert.match(job,/pub fn issue_proposal\(/);
+  assert.match(job,/pub fn require_issued_action_receipt\(/);
+  assert.match(job,/receipt_timestamp_ms<issued/);
+  assert.match(job,/p\.action_id\.as_deref\(\)==Some\(action_id\)/);
+  assert.match(job,/fn edit_job_phase_proposal_and_receipt_are_temporally_bound/);
+  assert.match(job,/fn legacy_edit_job_phase_is_compatible_but_requires_new_proposal/);
+  const next=route('ToolAction::PremiereEditJobNext {job_id} => {',
+    'ToolAction::PremiereEditJobRecordAction {');
+  assert.match(next,/job\.issue_proposal\(&phase\.id,now_ms\(\)\)\?;/);
+  assert.match(next,/premiere_edit_job::save\(&path,&job\)\?;/);
+  const record=route('ToolAction::PremiereEditJobRecordAction {job_id,phase_id,action_id} => {',
+    'ToolAction::PremierePlanReviewCorrection {');
+  assert.match(record,/job\.require_issued_action_receipt\(&phase_id,&action_id,receipt\.timestamp_ms\)\?;/);
+  assert.match(record,/entry\.timestamp_ms>=job\.created_at_ms/);
+  assert.match(record,/entry\.tool==pending\.tool/);
+});
