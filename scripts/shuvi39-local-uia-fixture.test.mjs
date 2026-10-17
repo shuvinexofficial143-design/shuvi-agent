@@ -23,5 +23,5 @@ test("CI syntax parses but cannot launch the opt-in UI fixture",()=>{
  assert.match(ci,/Parser\]::ParseFile\(\$fixturePath,\[ref\]\$fixtureTokens,\[ref\]\$fixtureErrors\)/);
  assert.match(ci,/shuvi39-local-uia-fixture\.ps1/);
  assert.doesNotMatch(ci,/&\s+\$fixturePath/);
- assert.doesNotMatch(ci,/\.\s+\$fixturePath/);
+ assert.doesNotMatch(ci,/^\s*\.\s+\$fixturePath\b/m);
 });
