@@ -146,6 +146,24 @@ export type NativeBackgroundOwnerStatus = {
   }>;
 };
 
+// M54: durable parent queue state is NOT live OS liveness or current-file proof.
+export type NativeApprovedParentQueueStatus = {
+  schemaVersion: 1;
+  applicationVerified: false;
+  processLivenessVerified: false;
+  safeToAutoRetry: false;
+  parents: Array<{
+    parentId: string;
+    recordedPhase: "queued" | "admitted" | "sha256_verified" | "outcome_unknown";
+    priority: 0 | 1 | 2;
+    dependsOn: string[];
+    currentFileSha256Verified: false;
+    applicationVerified: false;
+    processLivenessVerified: false;
+    safeToAutoRetry: false;
+  }>;
+};
+
 export type NativeWorkerStatus = {
   schemaVersion: 1;
   observedAtMs: number;
