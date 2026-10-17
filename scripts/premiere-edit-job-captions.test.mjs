@@ -101,3 +101,21 @@ test("edit-job phase receipt cannot be replayed from another saved job or a dama
   assert.match(record,/premiere_edit_job::require_unclaimed_action_in_store\(&path,&job_id,&action_id\)\?;/);
   assert.ok(record.indexOf('require_unclaimed_action_in_store')<record.indexOf('job.record('));
 });
+
+test("approved Premiere edit-job proposal arguments are SHA-bound to the executed action receipt",()=>{
+  assert.match(job,/pub fn proposal_arguments_sha256\(args:&Value\)/);
+  assert.match(job,/pub fn bind_proposal_arguments\(/);
+  assert.match(job,/pub fn require_bound_action_arguments\(/);
+  assert.match(job,/fn exact_phase_arguments_digest_rejects_altered_action_receipt/);
+  assert.match(job,/fn legacy_phase_without_arguments_hash_requires_new_exact_proposal/);
+  const next=route('ToolAction::PremiereEditJobNext {job_id} => {',
+    'ToolAction::PremiereEditJobRecordAction {');
+  assert.match(next,/job\.bind_proposal_arguments\(&phase\.id,&arguments\)\?;/);
+  const record=route('ToolAction::PremiereEditJobRecordAction {job_id,phase_id,action_id} => {',
+    'ToolAction::PremierePlanReviewCorrection {');
+  assert.match(record,/job\.require_bound_action_arguments\(&phase_id,&receipt\.detail\)\?;/);
+  assert.ok(record.indexOf('require_bound_action_arguments')<record.indexOf('job.record('));
+  assert.match(host,/premiere_edit_job::proposal_arguments_sha256\(&proposal\.arguments\)/);
+  assert.match(host,/premiere_args_sha256=\{hash\}/);
+  assert.match(host,/Vision prompt omitted from persistent audit/);
+});
