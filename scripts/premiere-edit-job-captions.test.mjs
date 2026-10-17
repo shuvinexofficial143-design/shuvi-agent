@@ -44,7 +44,7 @@ test("edit-job next validates actual SRT SHA/template revision then checks nativ
   assert.match(block,/"request":request,"expected":job\.project_expectation\(\)/);
   assert.doesNotMatch(block,/insert_mapped_graphic|backup_premiere_project|request\("save_project"/);
   assert.match(caption,/pub fn preflight_timeline/);
-  assert.match(graphic,/pub fn run_batch/);
+  assert.match(graphic,/pub async fn run_batch/);
 });
 test("edit-job save phase remains separate approval, and existing export dispatch never implies encoding completion",()=>{
   const stage=route('ToolAction::PremiereEditJobNext {job_id} => {',
