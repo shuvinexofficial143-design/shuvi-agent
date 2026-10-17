@@ -51,3 +51,27 @@ test("native single-flight guard never grants read consent or fakes action recei
  const m=readFileSync(new URL("../src/master-native-single-flight.mjs",import.meta.url),"utf8");
  assert.doesNotMatch(m,/invoke\(|execute_action|grantTaskRead|prepare_tool|verified:true/);
 });
+
+test("audited native success releases old execution lease before same-task ready worker continuation",()=>{
+ const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+ const source=ui.slice(ui.indexOf("async function executePendingProposal"),
+   ui.indexOf("function renderChatPermission"));
+ const audited=source.indexOf("const postOutcomeOwnership=captureNativeActionOwnership");
+ const final=source.indexOf("messages.push(toolResultMessage(result));",audited);
+ const clear=source.indexOf("clearExecutingAction(actionId);",final);
+ const release=source.indexOf("nativeFlight.release();",final);
+ const next=source.indexOf("await continueAfterOutcome();",final);
+ assert.ok(audited>0&&final>audited&&clear>final&&release>clear&&next>release);
+});
+test("audited native failure unlocks only after confirmed result classification, before bounded replan",()=>{
+ const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+ const source=ui.slice(ui.indexOf("async function executePendingProposal"),
+   ui.indexOf("function renderChatPermission"));
+ const failure=source.indexOf("const failedOutcomeOwnership=captureNativeActionOwnership");
+ const audited=source.indexOf("await auditGraphOutcome(proposal);",failure);
+ const clear=source.indexOf("clearExecutingAction(actionId);",audited);
+ const release=source.indexOf("nativeFlight.release();",clear);
+ const next=source.indexOf("await continueAfterOutcome();",release);
+ assert.ok(failure>0&&audited>failure&&clear>audited&&release>clear&&next>release);
+ assert.match(source,/finally \{\s*nativeFlight\.release\(\);\s*\}/);
+});

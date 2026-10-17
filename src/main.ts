@@ -2013,6 +2013,11 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       return;
     }
     messages.push(toolResultMessage(result));
+    // The exact native execute + Rust receipt + project proof has FINISHED.
+    // Release before a dependency-ready read-only native worker may recurse;
+    // otherwise it would silently fail acquisition under our own lease.
+    clearExecutingAction(actionId);
+    nativeFlight.release();
     await continueAfterOutcome();
   } catch (error) {
     // A delayed failed IPC call is not evidence against another user task.
@@ -2069,6 +2074,10 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       return;
     }
     // The exact failed Rust action receipt permits bounded safety replanning.
+    // The audited native attempt has finished; a subsequent *new* action may
+    // acquire its own Rust permit after safety replan and owner approval.
+    clearExecutingAction(actionId);
+    nativeFlight.release();
     await continueAfterOutcome();
   } finally {
     clearExecutingAction(actionId);
