@@ -2184,6 +2184,7 @@ async function runAgentStep(): Promise<void> {
   try {
     await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
   } catch {
+    if(staleModelRequest())return;
     await stopAgentForSafety("Shuvi could not persist its model-request reservation. No AI provider request was sent.");
     return;
   }
@@ -2266,7 +2267,7 @@ async function runAgentStep(): Promise<void> {
           "Next ready step is "+next.step_id+" with exact tool "+next.tool+
           ". Provide one typed tool proposal for that step, keeping normal owner approval and evidence checks. "+
           "If unsafe or unsupported, explain the blocking reason; never assert success without a Rust action receipt."});
-        if (!await persistRequiredContinuationCheckpoint()) return;
+        if (!await persistRequiredContinuationCheckpoint(()=>!staleModelRequest())) return;
         if (staleModelRequest()) return;
         await runAgentStep();
         return;
