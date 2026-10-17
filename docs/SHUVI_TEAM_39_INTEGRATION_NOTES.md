@@ -886,3 +886,28 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - New native Rust unit tests distinguish allowed 8K from an above-budget
   bitmap with matching PNG header. These limits are resource ceilings,
   not an Adobe/Blender live performance benchmark.
+
+## Milestone 21 — Same-process popup isolation for targeted screenshots
+
+- The approved app screenshot formerly checked only the Win32 PID at five
+  visible surface points before and after CopyFromScreen. Windows can show
+  a *different top-level popup from the same process* over the authorized
+  window, so PID equality does not prove those pixels belong to the exact
+  approved HWND. This also matters for dialogs containing different user
+  data or blocking editor controls.
+- Native Win32 capture now calls GetAncestor(hit, GA_ROOT=2) for each
+  WindowFromPoint sample after checking process ID; that top-level root
+  must equal the originally bound exact target HWND. Child controls
+  within the requested window are permitted, while owned popups,
+  floating same-process windows and foreign-process overlays fail closed.
+  GA_ROOTOWNER is deliberately **not** used because it could collapse a
+  foreign owned popup into the original application owner.
+- The check runs on both sides of CopyFromScreen and before the temporary
+  screenshot is saved or its path is returned for image requests. The
+  existing PNG structural CRC, pixel memory cap, process generation and
+  permission/lease code is unchanged.
+- Regression verifies the actual P/Invoke signature, GA_ROOT flag,
+  correct rejection order and both pre/post capture barriers. This
+  remains bounded representative-point sampling, not full pixel-level
+  occlusion proof; real editor/dialog acceptance on a user-authorized
+  Windows host is still required.

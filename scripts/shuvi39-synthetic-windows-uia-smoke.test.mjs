@@ -47,3 +47,21 @@ test("capture PowerShell has two live Win32 surface checks bracketing CopyFromSc
  assert.match(rust.slice(begin,copy),/WindowFromPoint/);
  assert.match(rust.slice(begin,copy),/GetWindowThreadProcessId/);
 });
+
+test("native screenshot rejects same-process foreign top-level modal and popup overlays",()=>{
+ const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
+ const source=rust.slice(rust.indexOf("function Assert-ShuviCaptureSurface"),
+  rust.indexOf("# Sample visible target ownership both before",rust.indexOf("function Assert-ShuviCaptureSurface")));
+ assert.match(rust,/GetAncestor\(IntPtr hWnd, uint flags\)/);
+ const pid=source.indexOf("if ($hitPid -ne $nativePid)");
+ const root=source.indexOf("GetAncestor($hit, [uint32]2)",pid);
+ const refuse=source.indexOf("$hitRoot -ne $target",root);
+ assert.ok(pid>=0&&root>pid&&refuse>root);
+ assert.match(source,/Another top-level window covers the approved screenshot target/);
+ assert.doesNotMatch(source,/GetAncestor\(\$hit, \[uint32\]3\)/);
+ const copy=rust.indexOf("$graphics.CopyFromScreen(");
+ const before=rust.indexOf("    Assert-ShuviCaptureSurface\n",rust.indexOf("function Assert-ShuviCaptureSurface"));
+ const after=rust.indexOf("    Assert-ShuviCaptureSurface\n",copy);
+ const save=rust.indexOf("$bitmap.Save(",after);
+ assert.ok(before>=0&&before<copy&&copy<after&&after<save);
+});

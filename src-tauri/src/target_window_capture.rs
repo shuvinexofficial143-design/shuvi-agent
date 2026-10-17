@@ -49,6 +49,9 @@ public static class ShuviTargetCaptureWin32 {
     public struct POINT { public int X, Y; }
     [DllImport("user32.dll")]
     public static extern IntPtr WindowFromPoint(POINT point);
+    // GA_ROOT follows the actual parent window chain. Owner/GA_ROOTOWNER
+    // would wrongly bless a separate same-process popup owned by the target.
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")]
@@ -164,6 +167,14 @@ try {
         [void][ShuviTargetCaptureWin32]::GetWindowThreadProcessId($hit, [ref]$hitPid)
         if ($hitPid -ne $nativePid) {
             throw 'Foreign process occludes target. No screenshot sent.'
+        }
+        # Matching process ID is insufficient: a separate modal, owned
+        # popup or floating top-level dialog from the SAME application
+        # can still cover the target while the target HWND stays visible.
+        # Child controls in the requested root remain valid.
+        $hitRoot = [ShuviTargetCaptureWin32]::GetAncestor($hit, [uint32]2)
+        if ($hitRoot -eq [IntPtr]::Zero -or $hitRoot -ne $target) {
+            throw 'Another top-level window covers the approved screenshot target. No image sent.'
         }
     }
     }
