@@ -1083,6 +1083,9 @@ struct ActionState {
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
     running_action_children: Mutex<HashMap<String, u32>>,
     running_action_tools: Mutex<HashMap<String, String>>,
+    // M55: ephemeral exact parent UUIDs bound to a CURRENT owner-approved
+    // dispatch action. Never sourced from mutable queue status or model input.
+    running_approved_parent_ids: Mutex<HashMap<String, [String;2]>>,
     running_action_started_at_ms: Mutex<HashMap<String, u64>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
@@ -19186,6 +19189,66 @@ fn native_sha_child_uuid(owner_action_id:&str,index:u8)->String{
     raw[8]=(raw[8]&0x3f)|0x80;
     uuid::Uuid::from_bytes(raw).to_string()
 }
+/// M55: authorization is from the CURRENT executing owner's exact prepared
+/// dispatch action, not from an old queue record, guessed PID or status poll.
+#[cfg(windows)]
+fn require_live_approved_parent_stop_binding(
+    state:&ActionState,dispatch_id:&str,parent_id:&str
+)->Result<(),String>{
+    if uuid::Uuid::parse_str(dispatch_id)
+        .map(|u|u.to_string()!=dispatch_id).unwrap_or(true)
+        ||uuid::Uuid::parse_str(parent_id)
+            .map(|u|u.to_string()!=parent_id).unwrap_or(true){
+        return Err("Stop requires canonical dispatch and parent UUIDs.".into());
+    }
+    let running=state.running_action_tools.lock()
+        .map_err(|_|"Running action ledger poisoned; Stop requires owner review.")?;
+    if running.get(dispatch_id).map(String::as_str)!=Some("run_approved_sha_parent_queue"){
+        return Err("Exact approved parent dispatch is not currently executing.".into());
+    }
+    let bindings=state.running_approved_parent_ids.lock()
+        .map_err(|_|"Parent Stop authorization map poisoned; owner review required.")?;
+    let ids=bindings.get(dispatch_id)
+        .ok_or("No active immutable approved parent binding for dispatch.")?;
+    if ids[0]!=parent_id&&ids[1]!=parent_id {
+        return Err("Parent UUID was not in the owner's exact approved dispatch pair.".into());
+    }
+    Ok(())
+}
+/// Stop is only a durable intent for an OS-owned worker; NOT termination.
+/// It never takes the desktop execution lease, because the approved dispatcher
+/// is expected to hold that lease until both children return.
+#[tauri::command]
+fn cancel_native_approved_parent(
+    dispatch_action_id:String,
+    parent_id:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<bool,String>{
+    #[cfg(windows)]{
+        require_live_approved_parent_stop_binding(state.inner(),
+            &dispatch_action_id,&parent_id)?;
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Approved parent Stop journal unavailable.")?;
+        let requested=native_scheduler::background_os_workers::parent_queue::
+            request_exact_parent_stop_at(&root,&parent_id)?;
+        if requested{
+            append_audit(&app,&AuditEntry{
+                timestamp_ms:now_ms(),
+                event:"native_approved_parent_stop_intent".into(),
+                tool:"run_approved_sha_parent_queue".into(),
+                detail:format!("Exact approved background parent {} Stop intent persisted; actual OS termination NOT verified.",parent_id),
+                success:false,
+                action_id:Some(dispatch_action_id),
+            })?;
+        }
+        Ok(requested)
+    }
+    #[cfg(not(windows))]{
+        let _=(dispatch_action_id,parent_id,state,app);
+        Err("Approved background parent Stop requires Windows.".into())
+    }
+}
 #[tauri::command]
 fn cancel_running_action(
     action_id: String,
@@ -19397,6 +19460,14 @@ async fn execute_action(
     }
     let action = action.ok_or_else(|| "Prepared action could not be claimed for execution.".to_string())?;
 
+    // M55: only the real prepared/allowed dispatch may bind these exact UUIDs.
+    // No untrusted read-only status, AI text or FIFO queue selection can bind them.
+    if let ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id}
+        =&action.action{
+        state.running_approved_parent_ids.lock()
+            .map_err(|_|"Cannot bind owner-approved parent Stop identities.")?
+            .insert(action_id.clone(),[first_parent_id.clone(),second_parent_id.clone()]);
+    }
     let tool = action.tool.clone();
     let scheduled_step=action.task_step_id.clone();
     let detail = action.detail.clone();
@@ -19567,6 +19638,11 @@ async fn execute_action(
     }
     if let Ok(mut children) = state.running_action_children.lock() {
         children.remove(&action_id);
+    }
+    // Removal is after the current action tools record; a racing Stop request
+    // cannot authorize a new or completed action from leftover parent IDs.
+    if let Ok(mut bound)=state.running_approved_parent_ids.lock(){
+        bound.remove(&action_id);
     }
 
     match execution {
@@ -19976,6 +20052,7 @@ pub fn run() {
             prepare_powershell,
             deny_action,
             cancel_running_action,
+            cancel_native_approved_parent,
             execute_action,
             execute_powershell,
             audit_log,
@@ -20129,6 +20206,27 @@ mod task_graph_transport_tests {
         missing.as_object_mut().unwrap().remove("depends_on");
         assert!(stage_tool(proposal(missing),None,&state).is_err());
         assert_eq!(state.pending.lock().unwrap().len(),1);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn m55_exact_stop_binding_cannot_reach_foreign_or_completed_parent(){
+        let state=ActionState::default();
+        const ACTION:&str="ad98b59c-4a66-4f7a-941e-8a26b66755be";
+        const PARENT_A:&str="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
+        const PARENT_B:&str="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
+        const FOREIGN:&str="3ac5c21a-8407-4ed7-b4b7-f51ba437a491";
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_err());
+        state.running_action_tools.lock().unwrap()
+            .insert(ACTION.into(),"run_approved_sha_parent_queue".into());
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_err());
+        state.running_approved_parent_ids.lock().unwrap()
+            .insert(ACTION.into(),[PARENT_A.into(),PARENT_B.into()]);
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_ok());
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_B).is_ok());
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,FOREIGN).is_err());
+        assert!(require_live_approved_parent_stop_binding(&state,"not-a-uuid",PARENT_A).is_err());
+        state.running_action_tools.lock().unwrap().remove(ACTION);
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_err());
     }
     #[cfg(windows)]
     #[test]
