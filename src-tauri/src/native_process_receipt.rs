@@ -3,11 +3,67 @@
 //! A crash between intent and PID registration remains launch-uncertain.
 //! The owner must reconcile an unknown record; NEVER delete or replay it.
 use serde::{Deserialize,Serialize};
-use std::{collections::HashSet,fs,path::{Path,PathBuf},sync::Mutex};
+use std::{collections::HashSet,fs,fs::OpenOptions,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
 static JOURNAL_LOCK:Mutex<()> = Mutex::new(());
 const MAX_BYTES:usize=4096;
 const MAX_HISTORY:usize=48;
+
+// Keep launch_pending, PID publication, owner Stop and terminal receipt
+// in one OS-serialized durable state machine across separate Shuvi instances.
+// This is NOT the retained Windows Job Object nor Blender audit evidence.
+struct CrossProcessReceiptLock(fs::File);
+impl CrossProcessReceiptLock {
+    fn take(path:&Path)->Result<Self,String>{
+        let lock=path.with_extension("json.oslock");
+        match fs::symlink_metadata(&lock){
+            Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()=>{
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta.file_attributes()&0x400!=0{
+                        return Err("Owned process receipt OS lock is a reparse point.".into());
+                    }
+                }
+            },
+            Ok(_)=>return Err("Owned process receipt lock must be a regular file.".into()),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Err("Owned process receipt lock inaccessible.".into()),
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const OPEN_REPARSE_POINT:u32=0x0020_0000;
+            let handle=OpenOptions::new().read(true).write(true).create(true)
+                .share_mode(0).custom_flags(OPEN_REPARSE_POINT)
+                .open(&lock)
+                .map_err(|_|"Another Shuvi process owns the subprocess receipt.".to_string())?;
+            let meta=handle.metadata()
+                .map_err(|_|"Cannot inspect held subprocess receipt OS lock.")?;
+            if !meta.is_file()||meta.file_attributes()&0x400!=0{
+                return Err("Subprocess receipt OS lock resolved to a reparse point.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C"{fn flock(fd:i32,operation:i32)->i32;}
+            let handle=OpenOptions::new().read(true).write(true).create(true)
+                .open(&lock)
+                .map_err(|_|"Cannot open subprocess receipt OS lock.".to_string())?;
+            if unsafe{flock(handle.as_raw_fd(),2|4)}!=0{
+                return Err("Another Shuvi process owns the subprocess receipt.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(not(any(windows,unix)))]
+        {
+            Err("Cross-process subprocess receipt locking is unavailable.".into())
+        }
+    }
+}
+
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -90,12 +146,17 @@ pub(super) fn path(app:&AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&root).map_err(|_|"Native subprocess data directory inaccessible.".to_string())?;
     Ok(root.join("native-worker-process.json"))
 }
-pub(crate) fn read(app:&AppHandle)->Result<Option<ProcessReceipt>,String>{
+fn read_locked_at(file:&Path)->Result<Option<ProcessReceipt>,String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
-    read_at(&path(app)?)
+    let _os=CrossProcessReceiptLock::take(file)?;
+    read_at(file)
+}
+pub(crate) fn read(app:&AppHandle)->Result<Option<ProcessReceipt>,String>{
+    read_locked_at(&path(app)?)
 }
 pub(super) fn begin_at(file:&Path,id:&str,tool:&str)->Result<(),String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
+    let _os=CrossProcessReceiptLock::take(file)?;
     let mut next=ProcessReceipt{version:1,action_id:id.to_string(),tool:tool.to_string(),
         phase:"launch_pending".into(),pid:None,exit_code:None,
         descendants_contained:false,app_progress_verified:false,
@@ -118,6 +179,7 @@ pub(super) fn begin_at(file:&Path,id:&str,tool:&str)->Result<(),String>{
 }
 pub(super) fn started_at(file:&Path,id:&str,tool:&str,pid:u32,contained:bool)->Result<(),String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
+    let _os=CrossProcessReceiptLock::take(file)?;
     let mut prior=read_at(file)?.ok_or("Native subprocess launch intent missing.")?;
     if prior.phase!="launch_pending"||prior.pid.is_some()
        ||prior.action_id!=id||prior.tool!=tool||pid==0 {
@@ -130,6 +192,7 @@ pub(super) fn started_at(file:&Path,id:&str,tool:&str,pid:u32,contained:bool)->R
 }
 pub(super) fn finish_at(file:&Path,id:&str,tool:&str,phase:&str,code:Option<i32>)->Result<(),String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
+    let _os=CrossProcessReceiptLock::take(file)?;
     let mut prior=read_at(file)?.ok_or("Native subprocess receipt missing at termination.")?;
     if prior.phase!="running"||prior.action_id!=id||prior.tool!=tool
        ||!matches!(phase,"exited"|"cancelled"|"timed_out"){
@@ -144,6 +207,7 @@ pub(super) fn finish_at(file:&Path,id:&str,tool:&str,phase:&str,code:Option<i32>
 pub(super) fn mark_cancel_requested_at(file:&Path,id:&str)->Result<(),String>{
     let _lock=JOURNAL_LOCK.lock()
         .map_err(|_|"Native process stop-intent journal lock poisoned.")?;
+    let _os=CrossProcessReceiptLock::take(file)?;
     let mut current=read_at(file)?.ok_or("Owned process receipt missing at owner Stop.")?;
     if current.action_id!=id
        ||!matches!(current.phase.as_str(),"launch_pending"|"running"){
@@ -157,6 +221,7 @@ pub(super) fn mark_cancel_requested_at(file:&Path,id:&str)->Result<(),String>{
 /// It records unknown effects without claiming that the application was updated.
 pub(super) fn owner_review_at(file:&Path,id:&str,tool:&str)->Result<(),String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
+    let _os=CrossProcessReceiptLock::take(file)?;
     let mut prior=read_at(file)?.ok_or("No native subprocess receipt for owner review.")?;
     if prior.action_id!=id||prior.tool!=tool
        ||!matches!(prior.phase.as_str(),"launch_pending"|"running"){
@@ -174,7 +239,73 @@ mod tests {
     }
     const A:&str="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
     const B:&str="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
-    fn cleanup(f:&Path){let _=fs::remove_file(f);let _=fs::remove_file(f.with_extension("json.bak"));}
+    fn cleanup(f:&Path){
+        let _=fs::remove_file(f);
+        let _=fs::remove_file(f.with_extension("json.bak"));
+        let _=fs::remove_file(f.with_extension("json.oslock"));
+    }
+    #[test]
+    fn subprocess_receipt_os_lock_blocks_stop_pid_and_terminal_publication(){
+        let f=file();
+        let foreign=CrossProcessReceiptLock::take(&f).unwrap();
+        assert!(begin_at(&f,A,"blender_run_plan").is_err());
+        assert!(read_locked_at(&f).is_err());
+        drop(foreign);
+        begin_at(&f,A,"blender_run_plan").unwrap();
+        let foreign=CrossProcessReceiptLock::take(&f).unwrap();
+        assert!(started_at(&f,A,"blender_run_plan",123,true).is_err());
+        assert!(mark_cancel_requested_at(&f,A).is_err());
+        assert!(owner_review_at(&f,A,"blender_run_plan").is_err());
+        drop(foreign);
+        started_at(&f,A,"blender_run_plan",123,true).unwrap();
+        let foreign=CrossProcessReceiptLock::take(&f).unwrap();
+        assert!(finish_at(&f,A,"blender_run_plan","exited",Some(0)).is_err());
+        drop(foreign);
+        mark_cancel_requested_at(&f,A).unwrap();
+        assert!(finish_at(&f,A,"blender_run_plan","exited",Some(0)).is_err());
+        finish_at(&f,A,"blender_run_plan","cancelled",Some(0)).unwrap();
+        assert_eq!(read_locked_at(&f).unwrap().unwrap().phase,"cancelled");
+        cleanup(&f);
+    }
+    #[test]
+    fn stop_vs_terminal_race_cannot_erase_acknowledged_owner_stop(){
+        use std::sync::{Arc,Barrier};
+        let f=file();begin_at(&f,A,"blender_run_plan").unwrap();
+        started_at(&f,A,"blender_run_plan",123,true).unwrap();
+        let gate=Arc::new(Barrier::new(3));
+        let left=f.clone();let right=f.clone();
+        let first=Arc::clone(&gate);let second=Arc::clone(&gate);
+        std::thread::scope(|scope|{
+            let stop=scope.spawn(move||{first.wait();mark_cancel_requested_at(&left,A)});
+            let terminal=scope.spawn(move||{second.wait();
+                finish_at(&right,A,"blender_run_plan","exited",Some(0))
+            });
+            gate.wait();
+            let stop_result=stop.join().unwrap();
+            let terminal_result=terminal.join().unwrap();
+            // If owner Stop was confirmed first, exit=0 cannot overwrite it.
+            if stop_result.is_ok(){assert!(terminal_result.is_err());}
+        });
+        let current=read_locked_at(&f).unwrap().unwrap();
+        if current.cancel_requested{
+            assert_eq!(current.phase,"running");
+            assert!(finish_at(&f,A,"blender_run_plan","exited",Some(0)).is_err());
+            finish_at(&f,A,"blender_run_plan","cancelled",Some(0)).unwrap();
+        }else{
+            assert_eq!(current.phase,"exited");
+            assert!(!current.cancel_requested);
+        }
+        cleanup(&f);
+    }
+    #[test]
+    fn fake_receipt_lock_directory_cannot_authorize_launch(){
+        let f=file();
+        let os=f.with_extension("json.oslock");
+        fs::create_dir(&os).unwrap();
+        assert!(begin_at(&f,A,"blender_run_plan").is_err());
+        assert!(!f.exists());
+        fs::remove_dir(os).unwrap();
+    }
     #[test]
     fn durable_launch_intent_blocks_crash_replay_and_mismatched_pid(){
         let f=file();
