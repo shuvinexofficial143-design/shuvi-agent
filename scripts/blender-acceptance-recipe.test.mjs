@@ -29,7 +29,7 @@ const python=candidates.find(parts=>{
   const [exe,...args]=parts;
   return spawnSync(exe,[...args,"-c","import ast"],{timeout:5000}).status===0;
 });
-test("python acceptance scenario is executable in plan-only mode and 11 fixtures pass",{
+test("python acceptance scenario is executable in plan-only mode and 12 fixtures pass",{
   skip:python?false:"No Python interpreter on test runner",
 },()=>{
   const [exe,...args]=python;
@@ -41,7 +41,7 @@ test("python acceptance scenario is executable in plan-only mode and 11 fixtures
     "-s","integrations/blender-worker","-p","test_shuvi_blender_acceptance.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(regressions.status,0,regressions.stderr);
-  assert.match(regressions.stderr,/Ran 11 tests/);
+  assert.match(regressions.stderr,/Ran 12 tests/);
   const result=spawnSync(exe,[...args,"-B",py,"--stage","render",
     "--scene-revision","a".repeat(64)],{cwd:root,timeout:5000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
