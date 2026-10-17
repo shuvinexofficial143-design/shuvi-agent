@@ -7,6 +7,7 @@ const host=read("src-tauri/src/native_background_os_workers.rs");
 const verify=read("src-tauri/src/native_background_hash_readback.rs");
 const ledger=read("src-tauri/src/native_background_admission.rs");
 const config=JSON.parse(read("src-tauri/tauri.conf.json"));
+const sidecarConfig=JSON.parse(read("src-tauri/tauri.sha-sidecar.conf.json"));
 const pkg=JSON.parse(read("package.json"));
 const workflow=read(".github/workflows/ci.yml");
 const builder=read("scripts/prepare-native-sha-sidecar.mjs");
@@ -41,9 +42,10 @@ test("independent native host hash is required before durable terminal upgrade",
  assert.match(ledger,/app_verified:false/);
 });
 test("NSIS packaging builds exact Windows sidecar per target without untrusted downloads",()=>{
- assert.deepEqual(config.bundle.externalBin,["binaries/shuvi-readonly-hash-worker"]);
+ assert.equal(config.bundle.externalBin,undefined);
+ assert.deepEqual(sidecarConfig.bundle.externalBin,["binaries/shuvi-readonly-hash-worker"]);
  assert.equal(config.build.beforeBuildCommand,"npm run build");
- assert.equal(pkg.scripts["build:windows-installer"],"npm run prepare:sha-sidecar && tauri build");
+ assert.equal(pkg.scripts["build:windows-installer"],"npm run prepare:sha-sidecar && tauri build --config src-tauri/tauri.sha-sidecar.conf.json");
  assert.equal(pkg.scripts["prepare:sha-sidecar"],"node scripts/prepare-native-sha-sidecar.mjs");
  assert.match(builder,/cargo/);
  assert.match(builder,/--locked/);
