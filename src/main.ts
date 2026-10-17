@@ -23,6 +23,7 @@ import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
 import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
 import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
+import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
 import {createMasterRemoteReceiptLane} from "./master-remote-receipt-lane.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
@@ -2060,6 +2061,18 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     clearChatPermission();
     return;
   }
+  const uiScope=activePermissionScope,uiGraph=orchestration.task_graph;
+  const uiOwner=orchestration.owner_request,uiRemote=remoteTask;
+  const uiPending=pendingAction;
+  const uiFence=captureMasterPermissionUiFence(
+    uiScope,uiGraph,uiOwner,uiPending,proposal,uiRemote);
+  const uiCurrent=()=>isMasterPermissionUiFenceCurrent(uiFence,{
+    scope:activePermissionScope,graph:orchestration.task_graph,
+    owner:orchestration.owner_request,pending:pendingAction,
+    proposal:pendingChatProposal,remote:remoteTask,
+    cancelRequested,mode:orchestration.recovery_mode
+  });
+  if(!uiCurrent()){clearChatPermission();return;}
 
   chatPermission.classList.remove("hidden");
   const allowReadGrant = pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
@@ -2107,6 +2120,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
   if (approve) {
     approve.onclick = async () => {
+      if(!uiCurrent())return;
       await executePendingProposal(proposal);
     };
   }
@@ -2114,6 +2128,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
   if (allowSession) {
     allowSession.onclick = async () => {
+      if(!uiCurrent())return;
       const pendingId=pendingAction?.id;
       const ownerTaskId=activePermissionScope.taskId;
       const key=taskReadPermissionKey(proposal);
@@ -2128,15 +2143,18 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         grantId=await invoke<string>("issue_task_read_grant",
           {taskId:ownerTaskId,actionId:pendingId});
       }catch{
+        if(!uiCurrent())return;
         await stopAgentForSafety("Rust refused this read grant; no action executed.");
         return;
       }
-      if(pendingAction?.id!==pendingId||activePermissionScope.taskId!==ownerTaskId||cancelRequested){
+      if(!uiCurrent()||pendingAction?.id!==pendingId||
+          activePermissionScope.taskId!==ownerTaskId||cancelRequested){
         await revokeNativeTaskReads(ownerTaskId);
         return;
       }
       if(!grantTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk))){
         await revokeNativeTaskReads(ownerTaskId);
+        if(!uiCurrent())return;
         await stopAgentForSafety("Local read grant rejected; no action executed.");
         return;
       }
@@ -2151,11 +2169,19 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const deny = chatPermission.querySelector<HTMLButtonElement>("#chatDeny");
   if (deny) {
     deny.onclick = async () => {
-      if (!pendingAction) return;
-
-      const actionId = pendingAction.id;
-      const deniedTaskId=activePermissionScope.taskId;
-      revokeTaskScope(activePermissionScope);
+      if(!uiCurrent())return;
+      const actionId=uiPending.id;
+      const deniedTaskId=uiScope.taskId;
+      let deniedGraph=orchestration.task_graph;
+      const sameDeniedOwner=()=>activePermissionScope===uiScope&&
+        activePermissionScope.taskId===deniedTaskId&&
+        orchestration.task_graph===deniedGraph&&
+        orchestration.owner_request===uiOwner&&!cancelRequested;
+      const stillDenied=()=>sameDeniedOwner()&&remoteTask===uiRemote;
+      // Remove the old buttons before ANY asynchronous Rust await. Repeated
+      // clicks, Stop and newer task admission must not reuse this approval.
+      clearChatPermission();
+      revokeTaskScope(uiScope);
       nativeReadGrantIds.clear();
       openingWindowObservation=null;
       projectCreationEvidence=null;
@@ -2163,47 +2189,38 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       projectReopenEvidence=null;
       renderPremiereProjectProofProgress();
       await revokeNativeTaskReads(deniedTaskId);
-      if(remoteTask){
-        clearChatPermission();
-        try{await invoke("deny_action",{actionId});}catch{/* fail closed */}
+      if(!stillDenied())return;
+      if(uiRemote){
+        try {await invoke("deny_action",{actionId});}catch{/* fail closed */}
+        if(!stillDenied())return;
         await closeRemoteTask("stopped");
+        if(!sameDeniedOwner())return;
         await stopAgentForSafety("The remote Windows action was denied locally.");
         return;
       }
-      clearChatPermission();
-
-      let deniedConfirmed = false;
+      let deniedConfirmed=false;
+      let receipt:AuditEntry|null=null;
       try {
-        await invoke("deny_action", { actionId });
-        const receipt = await readActionAuditReceipt(actionId);
-        deniedConfirmed = exactActionReceipt(receipt, actionId, proposal.tool, "denied", false);
+        await invoke("deny_action",{actionId});
+        receipt=await readActionAuditReceipt(actionId);
+        if(!stillDenied())return;
+        deniedConfirmed=exactActionReceipt(receipt,actionId,proposal.tool,"denied",false);
         void refreshAudit();
-        orchestration = recordToolOutcome(
-          orchestration,
-          proposal,
-          deniedConfirmed ? "denied" : "failure",
-          undefined,
-          false,
-          actionId,
-          receipt
-        );
-      } catch {
-        orchestration = recordToolOutcome(
-          orchestration,
-          proposal,
-          "failure",
-          undefined,
-          false,
-          actionId,
-          null
-        );
+      }catch{
+        if(!stillDenied())return;
       }
+      // The original task is still current: only now classify the exact
+      // failed/denied action. Never modify a new task's DAG from old IPC.
+      orchestration=recordToolOutcome(orchestration,proposal,
+        deniedConfirmed?"denied":"failure",undefined,false,actionId,receipt);
+      deniedGraph=orchestration.task_graph;
       await auditGraphOutcome(proposal);
-      messages.push(hiddenToolFailure(proposal, {
-        denied_by_user: deniedConfirmed,
-        denial_audit_confirmed: deniedConfirmed,
-        action_id: actionId,
-        retry_automatically: false
+      if(!stillDenied())return;
+      messages.push(hiddenToolFailure(proposal,{
+        denied_by_user:deniedConfirmed,
+        denial_audit_confirmed:deniedConfirmed,
+        action_id:actionId,
+        retry_automatically:false
       }));
       await continueAfterOutcome();
     };
