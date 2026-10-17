@@ -11,7 +11,7 @@ use crate::premiere_project_persistence::{self,ProjectFileFingerprint};
 const MAX_FILE_BYTES:u64=256*1024*1024;
 const BUFFER_BYTES:usize=64*1024;
 
-#[derive(Clone,Debug,Deserialize,Serialize)]
+#[derive(Clone,Debug,Deserialize,Serialize,PartialEq,Eq)]
 pub struct ProjectSnapshot {
     pub fingerprint:ProjectFileFingerprint,
     pub sha256:String,
