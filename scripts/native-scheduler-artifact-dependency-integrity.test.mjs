@@ -24,3 +24,10 @@ test("restart recovery and final audit cannot promote tampered Blender outputs",
     <target.indexOf("audited_at("));
  assert.doesNotMatch(scheduler,/tauri::command|unrestricted_shell_execute/);
 });
+
+test("status polling never rehashes all 48 archival Blender artifacts every refresh",()=>{
+ const status=scheduler.slice(scheduler.indexOf("pub(crate) fn verified_status("),scheduler.indexOf("pub(crate) fn read(",scheduler.indexOf("pub(crate) fn verified_status(")));
+ assert.match(status,/verify_blender_recovery\(schedule,journal\.as_ref\(\),/);
+ assert.match(status,/not a fresh filesystem/);
+ assert.doesNotMatch(status,/for job in schedule\.jobs\.iter\(\)\.filter/);
+});

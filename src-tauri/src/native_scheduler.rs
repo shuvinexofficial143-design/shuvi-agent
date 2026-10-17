@@ -462,15 +462,12 @@ pub(crate) fn verified_status(app:&AppHandle)->Result<Option<Schedule>,String>{
         verify_blender_recovery(schedule,journal.as_ref(),|id|
             crate::native_blender_action_artifact::read_verified(app,id).map(|_|()))?;
     }
-    let projected=projected_terminal(snapshot,journal.as_ref())?;
-    if let Some(schedule)=projected.as_ref(){
-        for job in schedule.jobs.iter().filter(|j|
-            j.phase=="audited"&&j.tool=="blender_run_plan"){
-            crate::native_blender_action_artifact::read_verified(app,
-                job.action_id.as_deref().ok_or("Audited Blender step lacks UUID.")?)?;
-        }
-    }
-    Ok(projected)
+    // Status is a projection of durable audit state, not a fresh filesystem
+    // provenance claim. Rehashing up to 48 historic 128 MiB Blender files
+    // on every UI poll would saturate disk and slow a small Windows host.
+    // Exact transitive artifacts are independently reverified on preflight,
+    // immediate dispatch, crash-success promotion and final DAG delivery.
+    projected_terminal(snapshot,journal.as_ref())
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
