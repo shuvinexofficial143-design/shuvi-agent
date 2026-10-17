@@ -148,3 +148,21 @@ test("post-reopen independent SHA must match original created bytes; no automati
   "6edb58c0-13b4-49d3-9463-56e255ba8c84"),null);
  assert.equal(reopen.originalGoalVerified,false);
 });
+
+// The SAME validators with optional independent native proof may now construct
+// a legitimate Rust-bound project artifact candidate. A final artifact hash
+// is NOT independent host creative acceptance.
+test("project-only independent proof chain maps only its audited CREATE UUID to the Rust SHA-256 artifact",()=>{
+ const f=fixture(),proof=verifyChain(f);assert.ok(proof);
+ const claims=nativeTaskDeliveryClaims(f.graph,f.schedule,{
+  taskId:TASK,created:proof.created,sha:proof.sha,reopened:proof.reopened});
+ assert.deepEqual(claims[0].artifact,{kind:"premiere_project",path:PATH,sha256:SHA,bytes:8192});
+ assert.equal(claims[1].artifact,null);
+ const nativeReceipt={version:1,objective:OWNER,revision:1,recordedAtMs:9999,steps:claims};
+ const aligned=assessPremiereProjectDeliveryContract(OWNER,f.graph,f.schedule,nativeReceipt,
+   TASK,proof.created,proof.sha,proof.reopened);
+ assert.equal(aligned.deliveryContractAligned,true);
+ assert.equal(aligned.originalGoalVerified,false);
+ assert.equal(aligned.windowsLiveVerified,false);
+ assert.equal(assessMasterFinalOutcome(OWNER,f.graph,f.schedule,nativeReceipt,null,TASK).verified,false);
+});

@@ -1385,14 +1385,17 @@ async function continueAfterOutcome(): Promise<void> {
     // Finalization is NOT merely UI state: Rust rechecks EVERY stored action
     // ID against its audit and hashes actual Blender/Remotion deliverables.
     // Failure preserves the checkpoint and refuses a "completed" claim.
-    const claims=nativeTaskDeliveryClaims(orchestration.task_graph,schedule);
+    const claims=nativeTaskDeliveryClaims(orchestration.task_graph,schedule,{
+      taskId:activePermissionScope.taskId,created:projectCreationEvidence,
+      sha:projectShaFileProof,reopened:projectReopenEvidence
+    });
     if(!claims){
       await stopAgentForSafety("Cannot construct a SHA-256-bound native delivery from audited worker steps.");
       return;
     }
-    // Do not publish an ordinary Rust native delivery for a Premiere project
-    // job while the Rust allowlist cannot independently attest .prproj bytes.
-    // An all-audited DAG is NOT enough to make a real final project receipt.
+    // A Premiere project requires its separately verified Create/SHA/Reopen
+    // evidence before any claimed .prproj path enters Rust. Native Rust still
+    // independently hashes the exact bytes and binds every action UUID.
     const preflight=assessNativeFinalizationPreflight(
       orchestration.owner_request,orchestration.task_graph,schedule,claims,
       activePermissionScope.taskId,projectCreationEvidence,projectShaFileProof,
@@ -1413,8 +1416,8 @@ async function continueAfterOutcome(): Promise<void> {
       return;
     }
     if(!continuationCurrent())return;
-    // This future .prproj Rust delivery contract is NONTERMINAL and can
-    // never promote an unverified creative goal to completed.
+    // Even a real native .prproj SHA-256 delivery is NONTERMINAL until
+    // original Adobe project/creative-goal acceptance is independently shown.
     const projectDelivery=assessPremiereProjectDeliveryContract(
       orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
       activePermissionScope.taskId,projectCreationEvidence,projectShaFileProof,projectReopenEvidence);

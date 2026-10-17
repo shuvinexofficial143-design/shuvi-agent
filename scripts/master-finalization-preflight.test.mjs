@@ -48,7 +48,7 @@ test("even a fully Rust-audited Premiere Create/Reopen DAG MUST NOT publish a fa
  assert.equal(result.stage,"premiere_project_delivery_unavailable");
  assert.equal(result.projectProofStage,"reopen_audited");
  assert.equal(result.originalGoalVerified,false);
- assert.match(result.reason,/Rust delivery cannot independently rehash/);
+ assert.match(result.reason,/independent Rust SHA-256 and separately approved\/audited Reopen/);
  assert.equal(assessMasterFinalOutcome(OWNER,f.graph,f.schedule,
   {version:1,objective:OWNER,revision:1,recordedAtMs:1,steps:claims},null,TASK).verified,false);
 });
@@ -126,4 +126,40 @@ test("late failed checkpoint / native scheduler / delivery may not stop a rotate
  assert.match(desktop,/if\(activePermissionScope!==stoppedScope\)return;/);
  assert.match(desktop,/if\(!continuationCurrent\(\)\)return;\s*await stopAgentForSafety\("Cannot verify terminal Rust task schedule/);
  assert.match(desktop,/if\(!continuationCurrent\(\)\)return;\s*await stopAgentForSafety\("Native delivery verification failed/);
+});
+
+test("exact independently bound project Create/SHA/Reopen may ask Rust for cryptographic project delivery but never creative success",()=>{
+ const f=fixture(),claims=nativeTaskDeliveryClaims(f.graph,f.schedule,{
+  taskId:TASK,created:f.created,sha:f.sha,reopened:f.reopen
+ });
+ assert.ok(claims);
+ assert.deepEqual(claims[0].artifact,{kind:"premiere_project",path:PATH,sha256:SHA,bytes:8192});
+ assert.equal(claims[1].artifact,null);
+ const admitted=check(f,OWNER,claims);
+ assert.equal(admitted.allowed,true);
+ assert.equal(admitted.stage,"premiere_project_native_hash_candidate");
+ assert.equal(admitted.projectProofStage,"reopen_audited");
+ assert.equal(admitted.originalGoalVerified,false);
+ assert.equal(assessMasterFinalOutcome(OWNER,f.graph,f.schedule,
+  {version:1,objective:OWNER,revision:1,recordedAtMs:1,steps:claims},null,TASK).verified,false);
+});
+test("project delivery injection, malformed independent SHA, missing Reopen and foreign owner never enter native Rust file-finalizer",()=>{
+ for(const corrupt of [
+  f=>f.sha.sha256="not-a-sha",
+  f=>f.reopen.projectReopenEvidenceVerified=false,
+  f=>f.reopen.reopenActionId=CREATE,
+  f=>f.created.taskId=OPEN,
+  f=>f.schedule.jobs[1].phase="outcome_unknown"
+ ]){
+  const f=fixture();corrupt(f);
+  const claims=nativeTaskDeliveryClaims(f.graph,f.schedule,{taskId:TASK,created:f.created,sha:f.sha,reopened:f.reopen});
+  assert.ok(!claims||check(f,OWNER,claims).allowed===false);
+ }
+ const f=fixture(),good=nativeTaskDeliveryClaims(f.graph,f.schedule,{
+  taskId:TASK,created:f.created,sha:f.sha,reopened:f.reopen
+ });
+ assert.ok(good);
+ const altered=structuredClone(good);altered[0].artifact.path="C:\\Elsewhere\\foreign.prproj";
+ assert.equal(check(f,OWNER,altered).allowed,false);
+ assert.equal(check(f,"Premiere me video export karo",good).allowed,false);
 });
