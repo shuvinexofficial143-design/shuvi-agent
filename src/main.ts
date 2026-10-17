@@ -3256,8 +3256,18 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
   const stoppingScope=activePermissionScope;
   const stoppingReadTaskId=stoppingScope.taskId;
-  const stillStopping=()=>activePermissionScope===stoppingScope&&cancelRequested;
-  revokeTaskScope(activePermissionScope);
+  const stoppingOwner=orchestration.owner_request;
+  const stoppingRemote=remoteTask;
+  let stoppingGraph=orchestration.task_graph;
+  const stillStopping=()=>activePermissionScope===stoppingScope&&
+    orchestration.task_graph===stoppingGraph&&
+    orchestration.owner_request===stoppingOwner&&
+    remoteTask===stoppingRemote&&cancelRequested;
+  const stoppingPending=pendingAction;
+  const stoppingProposal=pendingChatProposal;
+  // Hide the previous Allow Once controls before ANY async Rust reply.
+  if(stoppingPending)clearChatPermission();
+  revokeTaskScope(stoppingScope);
   nativeReadGrantIds.clear();
   openingWindowObservation=null;
   projectCreationEvidence=null;
@@ -3267,47 +3277,42 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   await revokeNativeTaskReads(stoppingReadTaskId);
   if(!stillStopping())return;
 
-  if (pendingAction && pendingChatProposal) {
-    const actionId = pendingAction.id;
-    const proposal = pendingChatProposal;
-    if(remoteTask){
-      try{await invoke("deny_action",{actionId});}catch{/* conservative stop */}
-      clearChatPermission();
-      await closeRemoteTask("stopped");
+  if(stoppingPending&&stoppingProposal){
+    const actionId=stoppingPending.id;
+    if(stoppingRemote){
+      try {await invoke("deny_action",{actionId});}
+      catch {/* The original consent was already revoked. */}
+      if(!stillStopping())return;
+      if(!(await closeRemoteTask("stopped")))return;
+      if(activePermissionScope!==stoppingScope||
+         orchestration.task_graph!==stoppingGraph||
+         orchestration.owner_request!==stoppingOwner||
+         remoteTask!==null)return;
       await stopAgentForSafety("Windows owner stopped the remote task before its action.");
       return;
     }
-    clearChatPermission();
-
     let denied = false;
     let receipt: AuditEntry | null = null;
     try {
       await invoke("deny_action", { actionId });
+      if(!stillStopping())return;
       receipt = await readActionAuditReceipt(actionId);
-      denied = exactActionReceipt(receipt, actionId, proposal.tool, "denied", false);
+      if(!stillStopping())return;
+      denied = exactActionReceipt(receipt, actionId, stoppingProposal.tool, "denied", false);
       void refreshAudit();
     } catch {
-      // If Rust cannot confirm denial, keep the graph conservative: the bound
-      // prepared action is failed locally and will still require replan/recovery.
+      if(!stillStopping())return;
     }
     if(!stillStopping())return;
-
-    orchestration = recordToolOutcome(
-      orchestration,
-      proposal,
-      denied ? "denied" : "failure",
-      undefined,
-      false,
-      actionId,
-      receipt
-    );
-    await auditGraphOutcome(proposal);
+    orchestration = recordToolOutcome(orchestration,stoppingProposal,
+      denied ? "denied" : "failure",undefined,false,actionId,receipt);
+    stoppingGraph=orchestration.task_graph;
+    await auditGraphOutcome(stoppingProposal);
     if(!stillStopping())return;
     await saveActiveCheckpoint();
     if(!stillStopping())return;
-
-    // No provider/tool request is active while waiting for permission.
-    await runAgentStep();
+    // A stopped prepared action must never buy another AI continuation.
+    await stopAgentForSafety("Owner stopped this prepared Windows action.");
     return;
   }
 
@@ -3322,7 +3327,6 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
     // cannot race ahead of cancellation confirmation.
     return;
   }
-
   el<HTMLButtonElement>("#stopButton").textContent = "Stopping…";
 });
 
