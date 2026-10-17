@@ -747,6 +747,31 @@ mod tests{
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn owner_stop_intent_terminates_the_exact_owned_job_tree_and_records_unverified_os_exit(){
+        let dir=root();let input=dir.join("approved-input.bin");
+        fs::write(&input,b"some immutable test bytes").unwrap();
+        let exe=std::env::current_exe().unwrap();
+        let args=[
+            "--ignored".into(),"--exact".into(),
+            "native_scheduler::background_os_workers::tests::fixture_sleep".into()
+        ];
+        let mut worker=spawn_admitted_readonly(
+            &dir,A,&input,&"a".repeat(64),
+            &exe,&args,&std::env::temp_dir()
+        ).unwrap();
+        assert!(request_stop_for_child(&dir,A).unwrap());
+        let err=worker.wait_with_host_guard(||Ok(false)).unwrap_err();
+        assert!(err.contains("Owner Stop request terminated owned SHA process"));
+        let observation=inspect_readonly_health(&dir).unwrap();
+        assert_eq!(observation.len(),1);
+        assert_eq!(observation[0].recorded_phase,"os_cancelled_unverified");
+        assert!(observation[0].stop_requested);
+        assert!(!observation[0].current_file_rehashed);
+        assert!(!observation[0].safe_to_auto_retry);
+        drop(worker);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn stop_marker_exact_uuid_idempotent_and_never_stops_foreign_or_terminal(){
         let dir=root();let f=dir.join("a.bin");let g=dir.join("b.bin");
         fs::write(&f,b"alpha").unwrap();fs::write(&g,b"beta").unwrap();
