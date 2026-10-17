@@ -21,6 +21,7 @@ import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from ".
 import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./master-native-action-ownership.mjs";
 import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
+import {isNativeCheckpointAbsent} from "./master-checkpoint-absent.mjs";
 import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
 import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
 import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
@@ -891,12 +892,21 @@ async function guardedSaveNativeCheckpoint(verifyReadback=false):Promise<boolean
 }
 async function guardedClearNativeCheckpoint(
   scope:typeof activePermissionScope,graph:typeof orchestration.task_graph,
-  owner:string|null
+  owner:string|null,verifyReadback=false
 ):Promise<boolean>{
   return taskCheckpointLane.enqueue(
     ()=>activePermissionScope===scope&&
       orchestration.task_graph===graph&&orchestration.owner_request===owner,
-    ()=>invoke("clear_session_checkpoint")
+    async()=>{
+      await invoke("clear_session_checkpoint");
+      // One FIFO transaction: no newer queued WebView checkpoint can be saved
+      // before Rust proves the old native disk checkpoint is absent.
+      if(verifyReadback){
+        const observed=await invoke<SessionCheckpoint|null>("load_session_checkpoint");
+        if(!isNativeCheckpointAbsent(observed))
+          throw Error("Native checkpoint erasure not independently verified.");
+      }
+    }
   );
 }
 async function saveActiveCheckpoint(): Promise<void> {
@@ -907,7 +917,7 @@ async function saveActiveCheckpoint(): Promise<void> {
   }
 }
 
-async function clearActiveCheckpoint(): Promise<void> {
+async function clearActiveCheckpoint(verifyReadback=false): Promise<boolean> {
   const clearingScope=activePermissionScope;
   const clearingGraph=orchestration.task_graph;
   const clearingOwner=orchestration.owner_request;
@@ -919,11 +929,13 @@ async function clearActiveCheckpoint(): Promise<void> {
   // Never intentionally delete a NEW task's durable recovery checkpoint.
   if(activePermissionScope!==clearingScope||
      orchestration.task_graph!==clearingGraph||
-     orchestration.owner_request!==clearingOwner)return;
+     orchestration.owner_request!==clearingOwner)return false;
   try {
-    await guardedClearNativeCheckpoint(clearingScope,clearingGraph,clearingOwner);
+    return await guardedClearNativeCheckpoint(clearingScope,clearingGraph,clearingOwner,verifyReadback);
   } catch {
-    // Best-effort cleanup only. Native conditional-write/delete is separate.
+    // Required terminal cleanup remains unresolved without exact Rust proof.
+    // Other cleanup paths are best effort. Native cross-process CAS is separate.
+    return false;
   }
 }
 
@@ -1459,7 +1471,21 @@ async function continueAfterOutcome(): Promise<void> {
       orchestration.recovery_mode!=="stopped";
     if(!terminalStillOwned())return;
     // The async Rust checkpoint clear may finish after another task begins.
-    await clearActiveCheckpoint();
+    const checkpointErased=await clearActiveCheckpoint(true);
+    if(!checkpointErased){
+      if(activePermissionScope===continuationScope&&
+         orchestration.task_graph===continuationGraph&&
+         orchestration.owner_request===continuationOwner&&remoteTask===null){
+        messages.push({role:"assistant",content:
+          "Native task delivery was verified, but Rust checkpoint deletion was NOT verified. "+
+          "The previous saved session may remain; do not Resume or repeat Windows actions. "+
+          "Inspect recovery state before starting another task."});
+        renderMessages();
+      }
+      // Intentionally keep Busy until owner recovery. No false verified
+      // terminal cleanup or automatic repeat of a completed OS mutation.
+      return;
+    }
     // clearActiveCheckpoint intentionally revokes the old scope; identity,
     // graph and owner equality, not an unrevoked consent flag, guard UI reset.
     if(activePermissionScope!==continuationScope||

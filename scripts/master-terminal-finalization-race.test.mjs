@@ -9,7 +9,7 @@ test("positive final mobile acknowledgement is required before checkpoint clear 
  const previous=done.indexOf('const hadTerminalRemote=remoteTask!==null');
  const wait=done.indexOf('if(!(await closeRemoteTask(terminalStatus)))return;',previous);
  const owned=done.indexOf('if(!terminalStillOwned())return;',wait);
- const clear=done.indexOf('await clearActiveCheckpoint();',owned);
+ const clear=done.indexOf('await clearActiveCheckpoint(true)',owned);
  const reset=done.indexOf('setBusy(false);',clear);
  assert.ok(previous>0&&wait>previous&&owned>wait&&clear>owned&&reset>clear);
  assert.match(done,/remoteTask===null&&!cancelRequested&&/);
@@ -31,7 +31,7 @@ test("terminal receipt failure preserves unresolved task, preventing a new inbou
  assert.match(close,/return true;/);
 });
 test("old Rust checkpoint clear completion cannot reset busy in a rotated task",()=>{
- const pos=done.indexOf("await clearActiveCheckpoint();",done.indexOf("const terminalStillOwned"));
+ const pos=done.indexOf("await clearActiveCheckpoint(true)",done.indexOf("const terminalStillOwned"));
  const post=done.slice(pos,done.indexOf("setBusy(false);",pos));
  assert.match(post,/activePermissionScope!==continuationScope/);
  assert.match(post,/orchestration.task_graph!==continuationGraph/);

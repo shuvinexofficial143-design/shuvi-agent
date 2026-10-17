@@ -5,14 +5,14 @@ import {stagingWasInvalidated} from "../src/approval-staging-guard.mjs";
 const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 const segment=(a,b)=>ui.slice(ui.indexOf(a),ui.indexOf(b,ui.indexOf(a)));
 test("an old final delivery cannot clear a newly rotated task checkpoint after Rust grant revocation",()=>{
- const block=segment("async function clearActiveCheckpoint()", "async function loadRecoveryCheckpoint");
+ const block=segment("async function clearActiveCheckpoint(verifyReadback=false)", "async function loadRecoveryCheckpoint");
  assert.match(block,/const clearingScope=activePermissionScope;/);
  assert.match(block,/const clearingGraph=orchestration\.task_graph;/);
  assert.match(block,/const clearingOwner=orchestration\.owner_request;/);
  assert.ok(block.indexOf("await revokeNativeTaskReads(finishedTaskId)") <
    block.indexOf("if(activePermissionScope!==clearingScope"));
  assert.ok(block.indexOf("if(activePermissionScope!==clearingScope") <
-   block.indexOf('guardedClearNativeCheckpoint(clearingScope,clearingGraph,clearingOwner)'));
+   block.indexOf('guardedClearNativeCheckpoint(clearingScope,clearingGraph,clearingOwner,verifyReadback)'));
 });
 test("stale pre-stage checkpoint failure never stops a newly admitted owner task",()=>{
  const block=segment("async function stageProposal", "async function executePendingProposal");
