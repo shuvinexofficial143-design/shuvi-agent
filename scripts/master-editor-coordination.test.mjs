@@ -55,10 +55,13 @@ test("the master context remains within the exact provider context budget",()=>{
 
 test("mobile editing completion requires an audited finished task graph",()=>{
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
-  assert.match(main,/const masterEditing = Boolean\(editingMasterContext\(messages\)\)/);
-  assert.match(main,/const graphSatisfied = progress.total > 0 && progress.completed === progress.total/);
-  assert.match(main,/masterEditing \? graphSatisfied :/);
-  assert.match(main,/\? "succeeded" : "outcome_unknown"/);
+  const provider=main.slice(main.indexOf("async function runAgentStep"),main.indexOf('el<HTMLButtonElement>("#resumeTask")'));
+  const terminal=main.slice(main.indexOf("async function continueAfterOutcome"),main.indexOf("async function stageProposal"));
+  assert.match(provider,/if\(remoteTask&&!staleModelRequest\(\)\)await closeRemoteTask\("outcome_unknown"\)/);
+  assert.doesNotMatch(provider,/closeRemoteTask\("succeeded"\)/);
+  assert.match(terminal,/const finalOutcome=assessMasterFinalOutcome\(/);
+  assert.match(terminal,/if\(!finalOutcome\.verified\)\{/);
+  assert.match(terminal,/closeRemoteTask\(remoteTask\.evidenceActionId/);
 });
 
 test("native UI routes through the existing permission-first chat, not a fake worker executor",()=>{

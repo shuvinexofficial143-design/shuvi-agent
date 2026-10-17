@@ -16,7 +16,7 @@ test("an old final delivery cannot clear a newly rotated task checkpoint after R
 });
 test("stale pre-stage checkpoint failure never stops a newly admitted owner task",()=>{
  const block=segment("async function stageProposal", "async function executePendingProposal");
- const start=block.indexOf('await guardedSaveNativeCheckpoint()');
+ const start=block.indexOf('await guardedSaveNativeCheckpoint(true)');
  const catchAt=block.indexOf('if(staleStage())return;',start);
  const stop=block.indexOf("Could not save task progress before staging the action.",catchAt);
  assert.ok(start>=0&&catchAt>start&&stop>catchAt);

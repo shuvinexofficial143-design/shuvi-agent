@@ -34,8 +34,8 @@ test("only exact restored state and original reserved count may be used after fr
  assert.equal(assessNativeCheckpointReadback(original,newer).verified,false);
 });
 test("Resume native preflight is after owner confirmation and before restoring task state/AI dispatch",()=>{
- const block=ui.slice(ui.indexOf('el<HTMLButtonElement>("#resumeTask")'),
-  ui.indexOf('el<HTMLButtonElement>("#reviewNativeJob")'));
+ const start=ui.indexOf('el<HTMLButtonElement>("#resumeTask")');
+ const block=ui.slice(start,ui.indexOf('el<HTMLButtonElement>("#reviewNativeJob")',start));
  const confirm=block.indexOf('window.confirm(');
  const exact=block.indexOf('assessNativeCheckpointReadback(checkpoint,onDisk)');
  const rotate=block.indexOf('rotatePermissionScope();');
@@ -54,8 +54,8 @@ test("recover banner native read is serialized and bound to exact owner identity
  assert.match(block,/if\(!accepted\|\|!stillReading\(\)\)return;/);
 });
 test("Resume never grants read consent from a persisted checkpoint",()=>{
- const block=ui.slice(ui.indexOf('el<HTMLButtonElement>("#resumeTask")'),
-  ui.indexOf('el<HTMLButtonElement>("#reviewNativeJob")'));
+ const start=ui.indexOf('el<HTMLButtonElement>("#resumeTask")');
+ const block=ui.slice(start,ui.indexOf('el<HTMLButtonElement>("#reviewNativeJob")',start));
  assert.match(block,/rotatePermissionScope\(\); \/\/ Restoring progress never restores permission grants/);
  assert.doesNotMatch(block,/grantTaskRead\(|authorize_native_action\(/);
 });

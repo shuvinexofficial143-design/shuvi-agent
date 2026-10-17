@@ -22,7 +22,7 @@ test("native chat dispatch is guarded again after durable checkpoint preflight",
  const start=main.indexOf("async function runAgentStep()");
  const end=main.indexOf('el<HTMLButtonElement>("#resumeTask")',start);
  const run=main.slice(start,end);
- const save=run.indexOf('await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() })');
+ const save=run.indexOf('await guardedSaveNativeCheckpoint(true)');
  const gate=run.indexOf("if (staleModelRequest()) return;",save);
  const send=run.indexOf('const response = await invoke<ChatResponse>("chat"');
  assert.ok(save>=0 && gate>save && send>gate);
