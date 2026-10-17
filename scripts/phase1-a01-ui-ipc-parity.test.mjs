@@ -26,6 +26,7 @@ const uniqueNames=[
   "list_providers",
   "load_session_checkpoint",
   "native_scheduler_status",
+  "native_task_delivery_history",
   "native_task_delivery_status",
   "native_worker_history",
   "native_worker_status",
