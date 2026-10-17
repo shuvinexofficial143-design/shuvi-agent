@@ -19,10 +19,12 @@ test("vision model and prompt preflight happen before ANY screenshot capture",()
 });
 test("one-time PNG stays owned across awaited AI provider call and is unlinked before response",()=>{
  const acquire=stage.indexOf("EphemeralVisionCapture::new(path)");
- const analyze=stage.indexOf("analyze_png_with_provider(&provider, &prompt, captured.path()).await?");
- const cleanup=stage.indexOf("captured.discard()?");
- const response=stage.indexOf("Ok(ActionResult {",cleanup);
- assert.ok(acquire>0&&analyze>acquire&&cleanup>analyze&&response>cleanup);
+ const read=stage.indexOf("read_file_bytes_bounded(",acquire);
+ const verify=stage.indexOf("verify_vision_png_bytes(&image_bytes)",read);
+ const cleanup=stage.indexOf("captured.discard()?",verify);
+ const analyze=stage.indexOf("analyze_png_bytes_with_provider(&provider, &prompt, &image_bytes).await?",cleanup);
+ const response=stage.indexOf("Ok(ActionResult {",analyze);
+ assert.ok(acquire>0&&read>acquire&&verify>read&&cleanup>verify&&analyze>cleanup&&response>analyze);
  assert.doesNotMatch(stage,/path\.display\(\)/);
  assert.match(stage,/Screenshot: temporary capture deleted after analysis/);
  assert.match(guard,/pub\(super\) fn discard\(&mut self\) -> Result<\(\), String>/);

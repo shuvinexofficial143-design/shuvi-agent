@@ -1102,3 +1102,26 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - No global desktop or Windows host was actually captured in CI, nor is
   PNG CRC a guarantee against actual screen overlays or decompression
   bombs; it validates bounded PNG container integrity only.
+
+## Milestone 28 — Dispose verified screenshot before provider upload
+
+- An inspected screenshot was previously kept as a temporary on-disk PNG
+  throughout a potentially long, charged network vision request. Although
+  Milestones 25–27 cleaned up on completion/cancellation, unnecessary
+  sensitive disk retention remained *during* that request.
+- `inspect_screen` now reads the just-captured PNG into an existing
+  **12 MiB bounded memory buffer**, revalidates the exact to-be-uploaded
+  bytes against PNG signature, decoded pixel ceiling, all PNG chunk CRCs,
+  and clean final IEND, then requires successful file disposal *before*
+  calling the selected vision provider. The target/desktop capture helpers
+  still perform their first independent verification.
+- On failed read, invalid payload or failed unlink, **no paid image
+  request is initiated**. The RAII drop fallback handles early returns.
+  Manual `capture_screen` remains intentionally persisted; other tools
+  using `analyze_png_with_provider` are unchanged.
+- Native Rust tests include mutated in-memory CRC, truncated IEND,
+  trailing bytes and excessive image geometry. Source regressions assert
+  order from consent/preflight through capture/read/verify/unlink/upload.
+- This minimizes persistence on the owner's filesystem; it cannot undo
+  storage remnants, prove actual PNG deflate pixel fidelity, or prevent
+  an explicitly approved provider from receiving the image bytes.

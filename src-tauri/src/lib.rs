@@ -10735,14 +10735,18 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             } else {
                 target_window_capture::capture_window_png(&window,capture_target.as_ref())?
             };
-            // The PNG is needed only for this one vision call. Owning the
-            // path makes cleanup unconditional on success, provider failure,
-            // timeout and cancellation (future drop). Never expose a stale
-            // filesystem path in a model-facing action response.
+            // Read exactly the captured image into bounded memory. Validate
+            // the bytes that will be sent (not an earlier on-disk snapshot),
+            // then prove unlink BEFORE the first cost-bearing provider call.
+            // On read/validation errors, Drop still attempts disk cleanup.
             let mut captured = vision_screenshot_guard::EphemeralVisionCapture::new(path);
-            let analysis = analyze_png_with_provider(&provider, &prompt, captured.path()).await?;
-            // Cleanup error must NOT masquerade as a verified clean run.
+            let image_bytes = read_file_bytes_bounded(
+                captured.path(),12 * 1024 * 1024,"captured screenshot")?;
+            target_window_capture::verify_vision_png_bytes(&image_bytes)?;
+            // A Windows sharing violation blocks upload; no false claim
+            // that sensitive pixels were removed from disk.
             captured.discard()?;
+            let analysis = analyze_png_bytes_with_provider(&provider, &prompt, &image_bytes).await?;
 
             Ok(ActionResult {
                 success: true,

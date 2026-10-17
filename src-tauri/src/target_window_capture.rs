@@ -522,6 +522,19 @@ fn verify_png_structure(mut reader: impl Read, bytes: u64) -> Result<(), String>
 // still must be bounded and structurally trustworthy before being retained
 // for manual viewing or used by AI. This is a PNG container/CRC check, not
 // proof of live Windows pixel content or zlib decompression.
+// Validate the exact bounded in-memory PNG bytes that are about to be
+// submitted for a separately approved vision request. The file may have
+// changed after earlier disk verification, so do not trust only the signature
+// or CRC of the *previously* captured file.
+pub(super) fn verify_vision_png_bytes(bytes: &[u8]) -> Result<(), String> {
+    let (width,height) = png_dimensions(bytes)?;
+    if u64::from(width).checked_mul(u64::from(height))
+        .is_none_or(|pixels| pixels > MAX_CAPTURE_PIXELS) {
+        return Err("Vision screenshot exceeds decoded bitmap pixel budget.".into());
+    }
+    verify_png_structure(std::io::Cursor::new(bytes),bytes.len() as u64)
+}
+
 pub(super) fn verify_unbound_desktop_png(path: &Path) -> Result<(), String> {
     let bytes = fs::metadata(path)
         .map_err(|e| format!("Desktop screenshot missing; no image sent: {e}"))?.len();
@@ -574,7 +587,7 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::{png_crc_update, png_dimensions, verify_capture_receipt, verify_png_structure,
-                parse_prepared_capture, expired_capture_binding, verify_unbound_desktop_png};
+                parse_prepared_capture, expired_capture_binding, verify_unbound_desktop_png, verify_vision_png_bytes};
     use std::io::Cursor;
     use serde_json::json;
 
@@ -662,6 +675,22 @@ mod tests {
         assert!(!expired_capture_binding(1000,900000,None));
     }
 
+    #[test]
+    fn in_memory_vision_upload_checks_exact_png_bytes_not_stale_disk_header() {
+        let valid=sample_png();
+        assert!(verify_vision_png_bytes(&valid).is_ok());
+        let mut crc_corrupt=valid.clone();
+        crc_corrupt[45]^=0x10;
+        assert!(verify_vision_png_bytes(&crc_corrupt).is_err());
+        let mut junk=valid.clone();
+        junk.extend_from_slice(b"secret trailing bytes");
+        assert!(verify_vision_png_bytes(&junk).is_err());
+        assert!(verify_vision_png_bytes(&valid[..valid.len()-1]).is_err());
+        let mut huge=valid.clone();
+        huge[16..20].copy_from_slice(&8192_u32.to_be_bytes());
+        huge[20..24].copy_from_slice(&8192_u32.to_be_bytes());
+        assert!(verify_vision_png_bytes(&huge).is_err());
+    }
     #[test]
     fn desktop_png_verification_rejects_corruption_and_accepts_bounded_container() {
         let path=std::env::temp_dir().join(format!(
