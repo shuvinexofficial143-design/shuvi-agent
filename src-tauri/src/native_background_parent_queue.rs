@@ -65,7 +65,7 @@ fn validate(q:&Queue)->Result<(),String>{
             ||p.input_path.len()>4096||!Path::new(&p.input_path).is_absolute()
             ||p.input_path!=p.input_path.to_lowercase()
             ||p.priority>2||p.depends_on.len()>7
-            ||!matches!(p.phase.as_str(),"queued"|"admitted"|"sha256_verified"|"outcome_unknown")
+            ||!matches!(p.phase.as_str(),"queued"|"admitted"|"sha256_verified"|"outcome_unknown"|"owner_reconciled_unverified")
         {
             return Err("Parent queue identity/class/state is invalid.".into());
         }
@@ -467,6 +467,9 @@ pub(crate) struct ParentRecoveryView{
     pub current_sha256_reverified:bool,
     pub owner_review_required:bool,
     pub holds_resource:bool,
+    // OS durable terminal + exact local OS exit receipt was independently
+    // matched, NOT current PID liveness or SHA/application success.
+    pub recorded_terminal_evidence:bool,
     pub safe_to_auto_retry:bool,
     pub application_verified:bool,
     pub process_liveness_verified:bool,
@@ -496,6 +499,9 @@ pub(crate) fn recovery_snapshot_at(root:&Path)->Result<Vec<ParentRecoveryView>,S
             // silently assume a clean shutdown or safe review.
             super::inspect_stop_intent(root,&parent.parent_id)?
         }else{false};
+        let recorded_terminal_evidence=if identity_ok{
+            terminal_evidence(root,&parent.parent_id,child)?
+        }else{false};
         let current_sha=if parent.phase=="sha256_verified"&&identity_ok
             &&child.is_some_and(|e|e.phase=="sha256_verified"){
             let receipt=root.join(format!("native-bg-hash-{}.json",parent.parent_id));
@@ -515,6 +521,7 @@ pub(crate) fn recovery_snapshot_at(root:&Path)->Result<Vec<ParentRecoveryView>,S
                 ||(parent.phase=="sha256_verified"&&!current_sha)
                 ||(parent.phase=="queued"&&child.is_some()),
             holds_resource:active(parent),
+            recorded_terminal_evidence,
             safe_to_auto_retry:false,
             application_verified:false,
             process_liveness_verified:false,
@@ -538,10 +545,68 @@ pub(crate) fn mark_owner_reviewed_uncertain_at(root:&Path,id:&str)->Result<bool,
     match parent.phase.as_str(){
         "outcome_unknown"=>return Ok(false), // idempotent; still held
         "admitted"=>parent.phase="outcome_unknown".into(),
-        "queued"|"sha256_verified"=>return Err(
-            "Owner uncertainty review cannot rewrite queued or SHA-verified parent.".into()),
+        "queued"|"sha256_verified"|"owner_reconciled_unverified"=>return Err(
+            "Owner uncertainty review cannot rewrite queued, verified or reconciled parent.".into()),
         _=>return Err("Invalid parent recovery phase.".into()),
     }
+    save(&file,&q)?;
+    Ok(true)
+}
+
+/// Require *both* M46 OS journal terminal and M47 owned-process receipt,
+/// from the same canonical UUID/PID/exit code. OS "running" / reserved,
+/// missing receipt, different PID, or independent SHA success alone CANNOT
+/// authorize resource reconciliation. OS terminal journal is written ONLY
+/// by the contained worker after its Job Object verifies zero descendants.
+/// This is recorded historical terminal evidence, not fresh PID liveness.
+fn terminal_evidence(
+    root:&Path,id:&str,claim:Option<&super::admission::ClaimSnapshot>
+)->Result<bool,String>{
+    let Some(os)=claim else{return Ok(false)};
+    if !matches!(os.phase.as_str(),
+        "os_exited_unverified"|"os_cancelled_unverified"|"os_timed_out_unverified"){
+        return Ok(false);
+    }
+    let receipt=super::inspect_receipt(root,id)?
+        .ok_or("OS terminal ledger exists but child receipt missing; no unlock.")?;
+    if receipt.phase!=os.phase||receipt.action_id!=id
+        ||receipt.pid!=os.pid||receipt.exit_code!=os.exit_code
+        ||receipt.app_verified||!matches!(os.pid,Some(1..))
+        ||os.exit_code.is_none(){
+        return Err("OS terminal journal and owned Job Object receipt mismatch; no unlock.".into());
+    }
+    Ok(true)
+}
+/// M57 bounded owner-reconciled terminal resource closure. Exact inspected
+/// owner permission is checked by the Rust IPC caller BEFORE this function.
+/// The only terminal phase is an UNVERIFIED historical OS outcome; neither
+/// app success nor current input SHA is inferred. UUID is never reusable.
+/// Durable OS-locked parent journal ensures two instances cannot race closure.
+#[allow(dead_code)]
+pub(crate) fn reconcile_owned_terminal_at(root:&Path,id:&str)->Result<bool,String>{
+    if !super::valid_uuid(id){return Err("Reconciliation needs exact approved parent UUID.".into());}
+    let file=root_file(root)?;
+    let _local=TX.lock().map_err(|_|"Parent terminal reconciliation mutex poisoned.")?;
+    let _os=OsLock::take(&file)?;
+    let mut q=load(&file)?;
+    let p=q.parents.iter_mut().find(|p|p.parent_id==id)
+        .ok_or("Parent was never independently approved for reconciliation.")?;
+    if p.phase=="owner_reconciled_unverified"{return Ok(false);}
+    if !matches!(p.phase.as_str(),"admitted"|"outcome_unknown"){
+        return Err("Only quarantined/uncertain parent may reconcile OS terminal.".into());
+    }
+    let os=super::admission::snapshot_detailed_at(root)?
+        .into_iter().find(|claim|claim.action_id==id)
+        .ok_or("Parent OS admission missing; held resources cannot be released.")?;
+    if os.input_path!=p.input_path||os.expected_sha256!=p.expected_sha256{
+        return Err("Exact approved parent input/digest differs from OS journal.".into());
+    }
+    if !terminal_evidence(root,id,Some(&os))?{
+        return Err("Cannot reconcile absent/nonterminal OS worker or uncertain PID.".into());
+    }
+    // Never rewrite the M46 durable OS history. Parent UUID remains in the
+    // permanent append-only list and stops consuming one M52 queue slot.
+    p.phase="owner_reconciled_unverified".into();
     save(&file,&q)?;
     Ok(true)
 }
@@ -818,6 +883,69 @@ mod tests{
         let file=root_file(&d).unwrap();
         fs::write(&file,b"{corrupt").unwrap();
         assert!(recovery_snapshot_at(&d).is_err());
+        assert!(mark_owner_reviewed_uncertain_at(&d,A).is_err());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m57_explicit_reconciliation_requires_both_matching_os_terminal_records(){
+        let d=dir();let a=input(&d,"term-a");let b=input(&d,"term-b");
+        add(&d,A,&a,2,&[]).unwrap();add(&d,B,&b,1,&[]).unwrap();
+        claim_next_at(&d).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).is_err()); // no M46 evidence
+        super::super::admission::reserve_at(&d,A,&a,&"a".repeat(64)).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).is_err()); // reserved
+        super::super::admission::started_at(&d,A,4321).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).is_err()); // OS running
+        super::super::admission::terminal_at(
+            &d,A,4321,"os_cancelled_unverified",1).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).is_err()); // missing OS receipt
+        let receipt=d.join(format!("native-bg-readonly-{A}.json"));
+        let encode=|pid:u32|serde_json::json!({
+          "version":1,"actionId":A,"class":"read_only_native_verifier",
+          "phase":"os_cancelled_unverified","pid":pid,"exitCode":1,"appVerified":false
+        }).to_string();
+        fs::write(&receipt,encode(9999)).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).is_err()); // PID forgery
+        fs::write(&receipt,encode(4321)).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).unwrap());
+        assert!(!reconcile_owned_terminal_at(&d,A).unwrap()); // idempotent
+        let states=snapshot_at(&d).unwrap();
+        assert_eq!(states[0].phase,"owner_reconciled_unverified");
+        assert!(!active(&states[0]));
+        assert_eq!(states[1].phase,"queued"); // unrelated owner unaffected
+        assert!(add(&d,A,&a,0,&[]).is_err()); // UUID remains permanently spent
+        assert!(mark_owner_reviewed_uncertain_at(&d,A).is_err());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m57_restart_unknown_without_terminal_os_proof_never_releases_claim(){
+        let d=dir();let a=input(&d,"missing-os");
+        add(&d,A,&a,0,&[]).unwrap();
+        claim_next_at(&d).unwrap();
+        mark_owner_reviewed_uncertain_at(&d,A).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).is_err());
+        assert_eq!(snapshot_at(&d).unwrap()[0].phase,"outcome_unknown");
+        assert!(recovery_snapshot_at(&d).unwrap()[0].holds_resource);
+        assert!(!recovery_snapshot_at(&d).unwrap()[0].recorded_terminal_evidence);
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m57_terminal_reconciliation_rejects_os_success_without_application_proof(){
+        let d=dir();let a=input(&d,"sha-failed");
+        add(&d,A,&a,0,&[]).unwrap();claim_next_at(&d).unwrap();
+        super::super::admission::reserve_at(&d,A,&a,&"a".repeat(64)).unwrap();
+        super::super::admission::started_at(&d,A,4321).unwrap();
+        super::super::admission::terminal_at(&d,A,4321,"os_exited_unverified",0).unwrap();
+        fs::write(d.join(format!("native-bg-readonly-{A}.json")),
+            serde_json::json!({"version":1,"actionId":A,
+            "class":"read_only_native_verifier","phase":"os_exited_unverified",
+            "pid":4321,"exitCode":0,"appVerified":false}).to_string()).unwrap();
+        assert!(reconcile_owned_terminal_at(&d,A).unwrap());
+        let view=recovery_snapshot_at(&d).unwrap();
+        assert!(!view[0].holds_resource);
+        assert!(!view[0].current_sha256_reverified);
+        assert!(!view[0].application_verified);
+        assert!(!view[0].safe_to_auto_retry);
         assert!(mark_owner_reviewed_uncertain_at(&d,A).is_err());
         fs::remove_dir_all(d).unwrap();
     }
