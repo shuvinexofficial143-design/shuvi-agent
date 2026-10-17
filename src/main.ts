@@ -57,7 +57,7 @@ import {
 } from "./agent-orchestrator";
 
 import { taskGraphProgress, handoffContractFailure, type GraphAuditEvent } from "./task-graph.mjs";
-import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
+import { orchestrationWithMasterEditor } from "./master-editor.mjs";
 import { workerQueueView, nextWorkerTurn, workerSupervisorView } from "./master-worker-queue.mjs";
 import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
 import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
@@ -1654,7 +1654,10 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       const approvalId = crypto.randomUUID();
       const approvalExpiresAt = Date.now() + 90_000;
       try {
-        await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt});
+        if(!(await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt}))){
+          await denyStaleAction(preparedId);
+          return;
+        }
         if (staleStage()) {
           await denyStaleAction(preparedId);
           return;
@@ -2273,8 +2276,12 @@ async function runAgentStep(): Promise<void> {
   }
 
   if(remoteTask && remoteTask.status === "admitted"){
-    try {await sendRemoteReceipt("running");}
-    catch {
+    try {
+      if(!(await sendRemoteReceipt("running"))){
+        setBusy(false);
+        return;
+      }
+    } catch {
       await closeRemoteTask("outcome_unknown");
       setBusy(false);
       return;
@@ -3172,8 +3179,10 @@ async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_un
   if(!closingTask)return;
   const extras= status==="succeeded" && closingTask.evidenceActionId
     ? {evidence:{kind:"native_audit",id:closingTask.evidenceActionId}} : {};
-  try {await sendRemoteReceipt(status,extras);}
-  catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
+  try {
+    if(!(await sendRemoteReceipt(status,extras)))
+      remoteStatusLabel("Remote task changed before receipt confirmation; do not infer outcome.");
+  } catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
   // Older remote close receipt may return after the next inbox task begins.
   // Do not clear its status, approval, or revision on an old close response.
   if(remoteTask!==closingTask)return;
@@ -3224,8 +3233,9 @@ async function tickRemoteAgent():Promise<void>{
         }else if(d?.decision==="approve"){
           // The cloud server checks task, approval ID, deadline and single use.
           // Native Rust still checks its own prepared action UUID.
-          try{await sendRemoteReceipt("running");}
-          catch{await closeRemoteTask("outcome_unknown");return;}
+          try {
+            if(!(await sendRemoteReceipt("running")))return;
+          } catch {await closeRemoteTask("outcome_unknown");return;}
           remoteApproval=null;
           await executePendingProposal(a.proposal);
         }
@@ -3237,8 +3247,9 @@ async function tickRemoteAgent():Promise<void>{
     // The durable journal must acknowledge admission before any provider
     // or Windows action; unknown delivery outcomes fail closed.
     remoteTask={message:m,revision:1,status:"received",evidenceActionId:null,hadFailure:false};
-    try{await sendRemoteReceipt("admitted");}
-    catch{
+    try {
+      if(!(await sendRemoteReceipt("admitted")))return;
+    } catch {
       remoteTask=null;remoteStatusLabel("Remote admission unconfirmed; no command executed.");
       return;
     }
