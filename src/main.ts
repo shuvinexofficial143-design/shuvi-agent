@@ -21,6 +21,7 @@ import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from ".
 import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./master-native-action-ownership.mjs";
 import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
+import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -2223,8 +2224,20 @@ async function runAgentStep(): Promise<void> {
   // A model response belongs ONLY to the task that dispatched it. A Stop,
   // Resume, or replacement task rotates/revokes this local owner identity.
   const requestScope = activePermissionScope;
+  const requestGraph = orchestration.task_graph;
+  const requestOwner = orchestration.owner_request;
+  let providerTurnFence:ReturnType<typeof captureMasterProviderTurnFence>=null;
   const staleModelRequest = () => requestScope !== activePermissionScope ||
-    requestScope.revoked || cancelRequested || orchestration.recovery_mode === "stopped";
+    requestScope.revoked || cancelRequested ||
+    orchestration.recovery_mode === "stopped" ||
+    orchestration.task_graph!==requestGraph ||
+    orchestration.owner_request!==requestOwner ||
+    (providerTurnFence!==null&&!isMasterProviderTurnFenceCurrent(providerTurnFence,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      owner:orchestration.owner_request,nextStep:orchestration.next_step,
+      reserved:orchestration.model_requests_reserved,
+      mode:orchestration.recovery_mode,cancelRequested
+    }));
   const route = taskModelRoute ?? { ...defaultModelRoute(), role: "default" };
   // A scheduler READY step may use an explicitly configured specialist model
   // from this task's immutable checkpoint. The exact native typed action
@@ -2287,6 +2300,14 @@ async function runAgentStep(): Promise<void> {
     return;
   }
   orchestration = reservation.state;
+  providerTurnFence=captureMasterProviderTurnFence(
+    requestScope,orchestration.task_graph,orchestration.owner_request,
+    orchestration.next_step,orchestration.model_requests_reserved,
+    orchestration.recovery_mode);
+  if(!providerTurnFence){
+    await stopAgentForSafety("Original task or paid request reservation is invalid. No provider call dispatched.");
+    return;
+  }
   // A12: if the durable reservation cannot be saved, do NOT call the provider.
   try {
     if(!(await guardedSaveNativeCheckpoint(true)))return;
@@ -2334,6 +2355,9 @@ async function runAgentStep(): Promise<void> {
     messages.push({ role: "assistant", content: response.content });
     renderMessages();
     await saveActiveCheckpoint();
+    // Even if the provider returned correctly, a slow checkpoint fsync can
+    // finish after Stop, task rotation or a later DAG revision.
+    if(staleModelRequest())return;
 
     if (response.tool_proposal) {
       // A specialist is NEVER a second Master: it may only prepare the
@@ -2360,7 +2384,9 @@ async function runAgentStep(): Promise<void> {
         "Pointer drag was dispatched, but its visual result has not been verified. The edit is NOT complete. Inspect the screen before continuing." });
       renderMessages();
       await saveActiveCheckpoint();
+      if(staleModelRequest())return;
       await loadRecoveryCheckpoint();
+      if(staleModelRequest())return;
     } else if (progress.total && progress.completed < progress.total) {
       const next=nextWorkerTurn(orchestration.task_graph);
       // Master can continue a bounded approved task even when one provider
@@ -2382,19 +2408,19 @@ async function runAgentStep(): Promise<void> {
       messages.push({ role: "assistant", content: `Task paused with ${progress.completed}/${progress.total} steps supported by successful tool evidence. Unfinished steps remain saved.` });
       renderMessages();
       await saveActiveCheckpoint();
+      if(staleModelRequest())return;
       await loadRecoveryCheckpoint();
+      if(staleModelRequest())return;
     } else {
       await clearActiveCheckpoint();
     }
     // A native action receipt proves that action, not an entire creative edit.
-    // Master-edit requests must have a completed evidence-backed task graph
-    // before the mobile UI can display a completed task.
-    const masterEditing = Boolean(editingMasterContext(messages));
-    const graphSatisfied = progress.total > 0 && progress.completed === progress.total;
+    // Master-edit requests still require independently verified original
+    // goals; a commentary-only provider turn is never a terminal success.
     // A native action receipt is not original user-goal acceptance. Only the
     // strict final Rust/goal verifier in continueAfterOutcome may mark the
     // remote task succeeded; this generic provider turn cannot.
-    if(remoteTask)await closeRemoteTask("outcome_unknown");
+    if(remoteTask&&!staleModelRequest())await closeRemoteTask("outcome_unknown");
     setBusy(false);
   } catch {
     if (staleModelRequest()) return;
