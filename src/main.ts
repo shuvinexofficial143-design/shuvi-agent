@@ -16,6 +16,7 @@ import {inspectPremiereProjectReopenCandidate,bindPremiereReopenShaAfterReadback
 import type {PremiereReopenEvidence} from "./premiere-project-reopen-evidence.mjs";
 import {assessPremiereProjectProofProgress} from "./master-project-proof-progress.mjs";
 import {assessPremiereProjectDeliveryContract} from "./master-project-delivery-contract.mjs";
+import {assessNativeFinalizationPreflight} from "./master-finalization-preflight.mjs";
 import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from "./master-project-proof-fence.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
@@ -1179,7 +1180,8 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
-  const stoppedTaskId=activePermissionScope.taskId;
+  const stoppedScope=activePermissionScope;
+  const stoppedTaskId=stoppedScope.taskId;
   revokeTaskScope(activePermissionScope);
   nativeReadGrantIds.clear();
   // An owner Stop invalidates all volatile evidence before Rust revocation awaits.
@@ -1189,7 +1191,11 @@ async function stopAgentForSafety(reason: string): Promise<void> {
   projectReopenEvidence=null;
   renderPremiereProjectProofProgress();
   await revokeNativeTaskReads(stoppedTaskId);
+  // A Rust grant-revocation IPC reply can arrive after a new owner task.
+  // Never stop/modify that newer task using the old task's failure result.
+  if(activePermissionScope!==stoppedScope)return;
   if (remoteTask) await closeRemoteTask("stopped");
+  if(activePermissionScope!==stoppedScope)return;
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
   if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
   renderOrchestrationStatus();
@@ -1203,11 +1209,15 @@ async function stopAgentForSafety(reason: string): Promise<void> {
 // A confirmed Rust receipt is not durable Master progress until THIS
 // orchestration checkpoint is fsync-published. Never purchase the next model
 // request after an unsuccessful write, including read-only inspection turns.
-async function persistRequiredContinuationCheckpoint(): Promise<boolean> {
+async function persistRequiredContinuationCheckpoint(
+  stillCurrent:()=>boolean=()=>true
+): Promise<boolean> {
   try {
     await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
-    return true;
+    return stillCurrent();
   } catch {
+    // A failed old checkpoint must not stop a newly rotated user task.
+    if(!stillCurrent())return false;
     await stopAgentForSafety(
       "Could not durably save the last audited action and worker handoff. "+
       "Task stopped; review Rust audit/checkpoint before another provider request."
@@ -1227,7 +1237,7 @@ async function continueAfterOutcome(): Promise<void> {
     orchestration.task_graph===continuationGraph&&
     orchestration.owner_request===continuationOwner;
   renderOrchestrationStatus();
-  if (!await persistRequiredContinuationCheckpoint()) return;
+  if (!await persistRequiredContinuationCheckpoint(continuationCurrent)) return;
   if(!continuationCurrent())return;
   if (orchestration.recovery_mode === "stopped") {
     await stopAgentForSafety(
@@ -1250,6 +1260,7 @@ async function continueAfterOutcome(): Promise<void> {
     try {
       schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
     } catch {
+      if(!continuationCurrent())return;
       await stopAgentForSafety("Cannot verify terminal Rust task schedule. Final output is not certified.");
       return;
     }
@@ -1269,10 +1280,25 @@ async function continueAfterOutcome(): Promise<void> {
       await stopAgentForSafety("Cannot construct a SHA-256-bound native delivery from audited worker steps.");
       return;
     }
+    // Do not publish an ordinary Rust native delivery for a Premiere project
+    // job while the Rust allowlist cannot independently attest .prproj bytes.
+    // An all-audited DAG is NOT enough to make a real final project receipt.
+    const preflight=assessNativeFinalizationPreflight(
+      orchestration.owner_request,orchestration.task_graph,schedule,claims,
+      activePermissionScope.taskId,projectCreationEvidence,projectShaFileProof,
+      projectReopenEvidence);
+    if(!preflight.allowed){
+      await stopAgentForSafety("Final native delivery withheld: "+preflight.reason+
+        " Proof stage: "+preflight.projectProofStage+
+        ". No original Premiere creative goal was marked complete.");
+      return;
+    }
+    if(!continuationCurrent())return;
     let nativeDelivery:NativeTaskDelivery;
     try{
       nativeDelivery=await invoke<NativeTaskDelivery>("finalize_native_task_delivery",{steps:claims});
     }catch{
+      if(!continuationCurrent())return;
       await stopAgentForSafety("Native delivery verification failed. Audit or output files require inspection; checkpoint retained.");
       return;
     }
