@@ -13,6 +13,7 @@ import type {
   RuntimeStatus,
   NativeWorkerStatus,
   NativeBackgroundOwnerStatus,
+  NativeApprovedParentQueueStatus,
   NativeJobHistory,
   NativeSchedule,
   NativeTaskDelivery,
@@ -69,6 +70,7 @@ let nativeHostStatusUnavailable = true;
 let nativeHostReadPending = false;
 let nativeHistoryReadPending = false;
 let nativeBackgroundReadPending = false;
+let nativeParentQueueReadPending = false;
 let nativeSchedulerReadPending = false;
 let failedSchedulerStep: {stepId:string;actionId:string}|null = null;
 let masterEmptyToolReplies = 0;
@@ -177,6 +179,11 @@ root.innerHTML = `
         <button id="requestNativeBackgroundStop" class="hidden" type="button">Request Stop for approved SHA pair</button>
         <small id="nativeBackgroundStopMessage">Stop is available only while an owner-approved SHA pair is active.</small>
         <div id="nativeBackgroundHealthList">Waiting for exact Rust journal readback.</div>
+      </details>
+      <details id="nativeApprovedParentQueue" class="ram-children">
+        <summary id="nativeApprovedParentQueueSummary">Independently approved parents: not checked</summary>
+        <button id="refreshNativeApprovedParentQueue" type="button">Recheck parent queue</button>
+        <div id="nativeApprovedParentQueueList">Awaiting durable Rust read-only snapshot.</div>
       </details>
       <details id="nativeActionHistory" class="ram-children">
         <summary>Native action history</summary>
@@ -835,6 +842,54 @@ async function refreshNativeBackgroundHealth(): Promise<void> {
   }
 }
 
+// M54: only a durable queue projection. It cannot authorize or launch work.
+async function refreshNativeApprovedParentQueue():Promise<void>{
+  if(nativeParentQueueReadPending)return;
+  nativeParentQueueReadPending=true;
+  const button=el<HTMLButtonElement>("#refreshNativeApprovedParentQueue");
+  const summary=el<HTMLElement>("#nativeApprovedParentQueueSummary");
+  const list=el<HTMLElement>("#nativeApprovedParentQueueList");
+  button.disabled=true;
+  try{
+    const result=await invoke<NativeApprovedParentQueueStatus>("native_approved_parent_queue_status");
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const phases=new Set(["queued","admitted","sha256_verified","outcome_unknown"]);
+    if(result.schemaVersion!==1||result.applicationVerified!==false
+       ||result.processLivenessVerified!==false||result.safeToAutoRetry!==false
+       ||!Array.isArray(result.parents)||result.parents.length>48
+       ||result.parents.some(p=>!uuid.test(p.parentId)||!phases.has(p.recordedPhase)
+          ||![0,1,2].includes(p.priority)||!Array.isArray(p.dependsOn)
+          ||p.dependsOn.length>7||p.dependsOn.some(d=>!uuid.test(d))
+          ||p.applicationVerified!==false||p.processLivenessVerified!==false
+          ||p.currentFileSha256Verified!==false||p.safeToAutoRetry!==false)){
+      throw Error("Invalid approved parent queue receipt");
+    }
+    summary.textContent="Independently approved parents: "+result.parents.length+" recorded";
+    list.replaceChildren();
+    if(!result.parents.length){
+      list.textContent="No approved independent background parents recorded.";
+      return;
+    }
+    for(const parent of result.parents.slice(-12).reverse()){
+      const row=document.createElement("div");
+      row.className="native-resource-row";
+      const label=document.createElement("strong");
+      label.textContent="Parent "+parent.parentId.slice(0,8)+" · "+parent.recordedPhase.replaceAll("_"," ");
+      const small=document.createElement("small");
+      small.textContent="Priority "+parent.priority+" · prerequisites "+parent.dependsOn.length
+        +" · recorded journal ONLY. No live PID/current SHA/app success proof.";
+      row.append(label,small);
+      list.append(row);
+    }
+  }catch{
+    summary.textContent="Approved parent queue: unavailable";
+    list.textContent="Parent journal unavailable. Do not retry, unlock, or assume success.";
+  }finally{
+    button.disabled=false;
+    nativeParentQueueReadPending=false;
+  }
+}
+
 // Read-only display of UUID-bound Rust action history; no approval authority.
 async function refreshNativeWorkerHistory(): Promise<void> {
   if (nativeHistoryReadPending) return;
@@ -1122,6 +1177,7 @@ async function boot(): Promise<void> {
     await refreshNativeWorkerStatus();
     await refreshNativeWorkerHistory();
     await refreshNativeBackgroundHealth();
+    await refreshNativeApprovedParentQueue();
     await refreshNativeSchedule();
     await refreshRam();
     await refreshAudit();
@@ -1132,6 +1188,7 @@ async function boot(): Promise<void> {
     window.setInterval(() => void refreshNativeWorkerStatus(), 4000);
     window.setInterval(() => void refreshNativeWorkerHistory(), 8000);
     window.setInterval(() => void refreshNativeBackgroundHealth(), 20000);
+    window.setInterval(() => void refreshNativeApprovedParentQueue(), 20000);
     window.setInterval(() => void refreshNativeSchedule(), 8000);
   } catch (error) {
     settingsStatus.textContent = String(error);
@@ -1140,6 +1197,8 @@ async function boot(): Promise<void> {
 
 el<HTMLButtonElement>("#refreshNativeBackgroundHealth").addEventListener("click",
   () => void refreshNativeBackgroundHealth());
+el<HTMLButtonElement>("#refreshNativeApprovedParentQueue").addEventListener("click",
+  () => void refreshNativeApprovedParentQueue());
 
 // A STOP request is only routed through the existing exact native action
 // command. No PID, arbitrary process killer, automatic retry or claim of
