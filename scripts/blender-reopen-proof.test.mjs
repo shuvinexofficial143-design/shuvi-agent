@@ -23,6 +23,9 @@ test("saved Blender checkpoint requires independent read-only reopen evidence",(
   assert.match(check,/call\("mesh.inspect", \{"object_id": object_id\}\)/);
   assert.match(check,/digest != geometry.get\("geometry_revision"\)/);
   assert.match(check,/mesh_fingerprint/);
+  assert.match(check,/active_camera_name/);
+  assert.match(check,/proof_camera_verified/);
+  assert.match(check,/proof_key_light_verified/);
   assert.match(rust,/proof.get\("mesh_fingerprint"\)/);
   assert.match(check,/scene changed during geometry proof/);
   assert.match(rust,/proof.get\("mesh_geometry_verified"\)/);
@@ -52,5 +55,5 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 10 tests/);
+  assert.match(result.stderr,/Ran 13 tests/);
 });

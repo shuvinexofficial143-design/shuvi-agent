@@ -26,6 +26,44 @@ OBJECT_FIELDS = (
 )
 
 
+def _near_vector(actual, expected, *, tolerance=0.0002):
+    return (isinstance(actual, (list, tuple)) and len(actual) == len(expected)
+            and all(type(value) in (int, float) and abs(value - target) <= tolerance
+                    for value, target in zip(actual, expected)))
+
+
+def _proof_camera(item, is_active):
+    transform, camera = item.get("transform"), item.get("camera")
+    visibility = item.get("visibility")
+    return (
+        is_active and item.get("name") == "Shuvi41ProofCamera"
+        and item.get("type") == "CAMERA" and isinstance(camera, dict)
+        and isinstance(transform, dict) and isinstance(visibility, dict)
+        and visibility.get("hide_render") is False
+        and camera.get("type") == "PERSP"
+        and _near_vector([camera.get("lens"), camera.get("clip_start"), camera.get("clip_end")],
+                         [50.0, 0.1, 100.0])
+        and _near_vector(transform.get("location"), [4.0, -6.0, 4.0])
+        and _near_vector(transform.get("rotation_euler"), [1.15, 0.0, 0.58])
+        and _near_vector(transform.get("scale"), [1.0, 1.0, 1.0])
+    )
+
+
+def _proof_key_light(item):
+    transform, light = item.get("transform"), item.get("light")
+    visibility = item.get("visibility")
+    return (
+        item.get("name") == "Shuvi41ProofKey"
+        and item.get("type") == "LIGHT" and isinstance(light, dict)
+        and isinstance(transform, dict) and isinstance(visibility, dict)
+        and visibility.get("hide_render") is False
+        and light.get("type") == "POINT"
+        and _near_vector([light.get("energy")], [950.0])
+        and _near_vector(light.get("color"), [1.0, 0.94, 0.85])
+        and _near_vector(transform.get("location"), [2.0, -3.0, 5.0])
+    )
+
+
 def capture_scene(controller, expected_path: Path, *, require_saved_file: bool = True) -> dict:
     """Fingerprint full bounded object paging; deny missing/truncated/unstable reads."""
     from shuvi_blender_agent.contracts import Request, Status
@@ -56,6 +94,16 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
     if not isinstance(session_id, str) or not session_id or not isinstance(revision, str) or len(revision) != 64:
         raise ValueError("Blender scene has no stable readback snapshot")
 
+    # Scene.camera_id is session-local. Resolve it to a stable named camera
+    # from the authenticated, revision-consistent object pages.
+    active_id = scene.get("camera_id")
+    if active_id is not None and (
+        not isinstance(active_id, str) or not active_id.startswith(session_id + ":")
+    ):
+        raise ValueError("Blender active camera identity is malformed")
+    active_camera_name = None
+    proof_camera_verified = False
+    proof_key_light_verified = False
     objects = []
     mesh_count = 0
     total_vertices = 0
@@ -79,6 +127,14 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             if any(field not in item for field in OBJECT_FIELDS if field not in ("camera", "light")):
                 raise ValueError("Blender object readback missing required fields")
             stable = {field: item.get(field) for field in OBJECT_FIELDS}
+            if active_id is not None and item.get("object_id") == active_id:
+                if active_camera_name is not None or item.get("type") != "CAMERA":
+                    raise ValueError("Active Blender camera does not resolve to one camera object")
+                active_camera_name = item.get("name")
+            if _proof_camera(item, item.get("object_id") == active_id):
+                proof_camera_verified = True
+            if _proof_key_light(item):
+                proof_key_light_verified = True
             if item.get("type") == "MESH":
                 # Object names, transforms and counts alone DO NOT prove a
                 # modeled mesh survived: read actual vertex/face topology.
@@ -127,6 +183,9 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         if next_offset != offset:
             raise ValueError("Non-contiguous Blender readback pagination")
 
+    if active_id is not None and active_camera_name is None:
+        raise ValueError("Blender active camera is absent from paged objects")
+
     # Geometry readback may take multiple calls. Ensure all pages and mesh
     # snapshots belong to one unchanged source revision, not a mixed scene.
     final_scene = call("scene.inspect")
@@ -137,6 +196,7 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
 
     payload = {
         "scene": {field: scene[field] for field in SCENE_FIELDS},
+        "active_camera_name": active_camera_name,
         "objects": objects,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -148,7 +208,10 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
     return {"fingerprint": hashlib.sha256(encoded).hexdigest(),
             "mesh_fingerprint": hashlib.sha256(topology_bytes).hexdigest(),
             "object_count": total, "mesh_count": mesh_count,
-            "total_vertices": total_vertices, "total_faces": total_faces}
+            "total_vertices": total_vertices, "total_faces": total_faces,
+            "active_camera_name": active_camera_name,
+            "proof_camera_verified": proof_camera_verified,
+            "proof_key_light_verified": proof_key_light_verified}
 
 
 def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
@@ -170,4 +233,7 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
             "mesh_fingerprint": reopened["mesh_fingerprint"],
             "object_count": reopened["object_count"], "read_only": True,
             "mesh_geometry_verified": True, "mesh_count": reopened["mesh_count"],
-            "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"]}
+            "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"],
+            "active_camera_name": reopened["active_camera_name"],
+            "proof_camera_verified": reopened["proof_camera_verified"],
+            "proof_key_light_verified": reopened["proof_key_light_verified"]}

@@ -736,3 +736,45 @@ Changed modules remain team-41-owned. No new shared lib.rs ToolAction fields
 were needed; the existing independently owner-approved
 `blender_session_plan` is still the only executor. This change does NOT
 authorize changing team 38/40 implementations, Adobe import, merge or deploy.
+
+## Team-41 — independent saved camera/light readiness evidence (source-only)
+
+The approved three-stage recipe now creates a camera and light, but merely
+creating these objects is not proof that the active camera and illumination
+survived into the reopened Stage-2 checkpoint. The existing authenticated
+`shuvi_blender_reopen.capture_scene` now resolves the scene's session-local
+`camera_id` through the complete, revision-consistent paged object readback
+to a stable **active camera name**. That stable name is included in the
+cross-process scene fingerprint; raw object/session IDs are still not compared
+between different Blender launches. Missing or inconsistent active camera
+identities fail closed.
+
+For the exact Team-41 acceptance demonstration, the same readback explicitly
+tests the fixed `Shuvi41ProofCamera` type, active identity, lens/clip settings,
+bounded position/orientation, and render visibility; and the Stage-2
+`Shuvi41ProofKey` light's type, color, intensity, position and visibility.
+Numeric comparisons allow minimal native float roundoff. These narrow
+checks create `proof_camera_verified` and `proof_key_light_verified` fields
+only from inspected scene/objects data, not a model's description. Generic
+unrelated Blender scenes may have these flags `false`: the general .blend
+save/reopen worker does not silently require the sample camera/light.
+
+The independently matched writer/reopen result passes the fixed role claims
+through the existing version-1 artifact manifest; its downstream byte
+reverification remains read-only and *does not* independently re-run Blender.
+The three-stage native acceptance reviewer now denies Stage-1 or Stage-2
+receipts missing the expected active proof camera, and Stage-2 receipts
+without the fixed key light. Missing, false and wrong-name claims fail closed
+even if PNG integrity and mesh topology otherwise agree. The review's
+`active_camera_and_stage2_key_light_claims_consistent=true` refers only
+to supplied, internally consistent reopen/source claims; it is **not**
+photometric or semantic image verification, cryptographic attestation, a
+guarantee that scene composition is useful, or fresh historical approval.
+
+New fake-controller Python tests cover matching camera/lamp properties across
+distinct session IDs, camera inactivity, wrong lamp energy and stale camera
+identities. Native Rust and source Node regressions cover missing/wrong evidence,
+with the original native mesh/scene hash, PNG CRC, local approval/audit,
+file containment and independent source SHA requirements intact.
+**No user project, Windows app, Blender executable, AntCloud host, merge,
+deployment, Adobe worker or other team branch was run or changed.**

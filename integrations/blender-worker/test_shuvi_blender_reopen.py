@@ -79,6 +79,44 @@ class FakeController:
         raise AssertionError(request.operation)
 
 
+
+class ProofController(FakeController):
+    """Bounded synthetic 3-object scene; no bpy, GUI or Blender process."""
+
+    def __init__(self, saved, *, session="session-A", active=True, energy=950.0):
+        super().__init__(saved, session=session)
+        self.scene["object_count"] = 3
+        self.scene["object_counts_by_type"] = {"MESH": 1, "CAMERA": 1, "LIGHT": 1}
+        self.scene["collections"][0]["object_count"] = 3
+        self.camera = {
+            **self.obj, "name": "Shuvi41ProofCamera", "type": "CAMERA",
+            "object_id": session + ":camera", "materials": [],
+            "transform": {
+                "location": [4.0, -6.0, 4.0], "rotation_euler": [1.15, 0.0, 0.58],
+                "scale": [1.0, 1.0, 1.0],
+            },
+            "camera": {"type": "PERSP", "lens": 50.0, "clip_start": 0.1, "clip_end": 100.0},
+            "visibility": {"hide_render": False},
+        }
+        self.light = {
+            **self.obj, "name": "Shuvi41ProofKey", "type": "LIGHT",
+            "object_id": session + ":light", "materials": [],
+            "transform": {"location": [2.0, -3.0, 5.0]},
+            "light": {"type": "POINT", "energy": energy, "color": [1.0, 0.94, 0.85]},
+            "visibility": {"hide_render": False},
+        }
+        self.scene["camera_id"] = self.camera["object_id"] if active else None
+
+    def execute(self, request):
+        if request.operation == "objects.list":
+            return DummyResult({
+                "session_id": self.scene["session_id"], "revision": self.scene["revision"],
+                "total": 3, "offset": 0, "items": [self.obj, self.camera, self.light],
+                "next_offset": None,
+            })
+        return super().execute(request)
+
+
 class ReopenTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -94,6 +132,36 @@ class ReopenTests(unittest.TestCase):
         })
         self.patch_contracts.start()
         self.addCleanup(self.patch_contracts.stop)
+
+
+    def test_real_shape_camera_light_claims_survive_fresh_session(self):
+        writer = capture_scene(ProofController(self.file), self.file)
+        reader = capture_scene(ProofController(self.file, session="session-B"), self.file)
+        self.assertEqual(writer, reader)
+        self.assertEqual(writer["active_camera_name"], "Shuvi41ProofCamera")
+        self.assertTrue(writer["proof_camera_verified"])
+        self.assertTrue(writer["proof_key_light_verified"])
+        self.assertEqual(writer["mesh_count"], 1)
+
+    def test_inactive_or_wrong_camera_and_light_are_not_verified(self):
+        good = capture_scene(ProofController(self.file), self.file)
+        inactive = capture_scene(ProofController(self.file, active=False), self.file)
+        wrong_lamp = capture_scene(ProofController(self.file, energy=600.0), self.file)
+        self.assertFalse(inactive["proof_camera_verified"])
+        self.assertIsNone(inactive["active_camera_name"])
+        self.assertFalse(wrong_lamp["proof_key_light_verified"])
+        self.assertNotEqual(good["fingerprint"], inactive["fingerprint"])
+        self.assertNotEqual(good["fingerprint"], wrong_lamp["fingerprint"])
+
+    def test_stale_camera_identity_fails_closed_before_checkpoint_certificate(self):
+        ctrl = ProofController(self.file)
+        ctrl.scene["camera_id"] = "session-A:absent"
+        with self.assertRaisesRegex(ValueError, "active camera is absent"):
+            capture_scene(ctrl, self.file)
+        ctrl = ProofController(self.file)
+        ctrl.scene["camera_id"] = "other-session:camera"
+        with self.assertRaisesRegex(ValueError, "camera identity is malformed"):
+            capture_scene(ctrl, self.file)
 
     def test_same_content_different_session_ids_has_same_fingerprint(self):
         a = capture_scene(FakeController(self.file), self.file)

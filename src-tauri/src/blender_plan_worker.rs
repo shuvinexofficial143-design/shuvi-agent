@@ -34,6 +34,10 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
                 || !mesh_fingerprint.bytes().all(|c|c.is_ascii_hexdigit())
                 || proof.get("object_count").and_then(Value::as_u64).is_none_or(|n|n>1000)
                 || proof.get("mesh_geometry_verified").and_then(Value::as_bool)!=Some(true)
+                || ["proof_camera_verified","proof_key_light_verified"].iter().any(|key|
+                    proof.get(*key).is_some_and(|value|!value.is_boolean()))
+                || proof.get("active_camera_name").is_some_and(|value|
+                    !value.is_null() && value.as_str().is_none_or(|s|s.len()>256))
                 || proof.get("mesh_count").and_then(Value::as_u64).is_none_or(|n|n>64)
                 || proof.get("total_vertices").and_then(Value::as_u64).is_none_or(|n|n>8192)
                 || proof.get("total_faces").and_then(Value::as_u64).is_none_or(|n|n>8192)

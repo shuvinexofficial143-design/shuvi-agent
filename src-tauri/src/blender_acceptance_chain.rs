@@ -105,6 +105,16 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
                 ||evidence.get("mesh_geometry_verified").and_then(Value::as_bool)!=Some(true) {
                 return Err("Blender stage has no independently verified mesh topology.".into());
             }
+            // A structurally valid .blend is NOT proof that the fixed
+            // acceptance camera was active or its light survived Stage-2.
+            // The underlying claims come from independently matched writer
+            // and reopened scene/objects snapshots. This reviewer still
+            // does NOT reauthenticate historical owner approval.
+            if evidence.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
+                || evidence.get("proof_camera_verified").and_then(Value::as_bool)!=Some(true)
+                || (index==1 && evidence.get("proof_key_light_verified").and_then(Value::as_bool)!=Some(true)){
+                return Err("Blender proof checkpoint lacks verified active camera or Stage-2 key light.".into());
+            }
             let count=proof_number(evidence,"mesh_count",1,64)?;
             let vertices=proof_number(evidence,"total_vertices",5,8192)?;
             let faces=proof_number(evidence,"total_faces",5,8192)?;
@@ -156,6 +166,7 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
         "first_two_same_session":true,
         "render_uses_different_session":true,
         "mesh_change_observed_in_supplied_reopen_evidence":true,
+        "active_camera_and_stage2_key_light_claims_consistent":true,
         "historical_owner_approval_reauthenticated":false,
         "render_source_stage2_binding_proven":false,
         "render_source_stage2_binding_consistent":true,
@@ -201,10 +212,14 @@ mod tests {
             "artifact":artifact,
             "checkpoint_reopen":{"verified":true,"read_only":true,
                 "fingerprint":if which==0{"a".repeat(64)}else{"b".repeat(64)},
-                "object_count":2,"mesh_geometry_verified":true,
+                "object_count":if which==0{2}else{3},
+                "active_camera_name":"Shuvi41ProofCamera",
+                "proof_camera_verified":true,
+                "proof_key_light_verified":which==1,
+                "mesh_geometry_verified":true,
                 "mesh_fingerprint":if which==0{"c".repeat(64)}else{"d".repeat(64)},
-                "mesh_count":2,
-                "total_vertices":13,"total_faces":11}
+                "mesh_count":1,
+                "total_vertices":5,"total_faces":5}
         });
         let manifest=crate::blender_artifact_manifest::build(&evidence,&work.0,action,Some(session)).unwrap();
         let stage=if which==0{"model1"}else{"model2"};
@@ -292,6 +307,7 @@ mod tests {
         let value=review(&fixtures(&workspace),&workspace.0).unwrap();
         assert_eq!(value["status"],"receipt_chain_consistent");
         assert_eq!(value["first_two_same_session"],true);
+        assert_eq!(value["active_camera_and_stage2_key_light_claims_consistent"],true);
         assert_eq!(value["render_uses_different_session"],true);
         assert_eq!(value["render_source_stage2_binding_proven"],false);
         assert_eq!(value["render_source_stage2_binding_consistent"],true);
@@ -367,6 +383,24 @@ mod tests {
         assert!(review(&receipt,&workspace.0).is_err());
     }
 
+
+    #[test]
+    fn rejects_missing_camera_inactive_camera_and_missing_stage2_lighting(){
+        let work=Workspace::new();let good=fixtures(&work);
+        let mut no_camera=good.clone();
+        no_camera[0]["artifact_manifest"]["evidence"]["proof_camera_verified"]=json!(false);
+        assert!(review(&no_camera,&work.0).is_err());
+        let mut inactive=good.clone();
+        inactive[1]["artifact_manifest"]["evidence"]["active_camera_name"]=json!("OtherCamera");
+        assert!(review(&inactive,&work.0).is_err());
+        let mut dark=good.clone();
+        dark[1]["artifact_manifest"]["evidence"]["proof_key_light_verified"]=json!(false);
+        assert!(review(&dark,&work.0).is_err());
+        let mut no_evidence=good.clone();
+        no_evidence[1]["artifact_manifest"]["evidence"].as_object_mut().unwrap()
+            .remove("proof_key_light_verified");
+        assert!(review(&no_evidence,&work.0).is_err());
+    }
     #[test]
     fn rejects_swapped_stages_or_out_of_root_receipts(){
         let work=Workspace::new();let outside=Workspace::new();
