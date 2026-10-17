@@ -235,3 +235,6 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Stage journal reads and writes acquire both the in-process Rust mutex and a fixed OS-backed lock: Win32 share-mode-zero file handle or Unix nonblocking flock. Corrupt lock paths and conflicting Shuvi instances fail closed. No TTL/force-unlock.
 - Same-action stage sequence/timestamp regressions and same-sequence altered timestamp are rejected; unchanged duplicate readback remains idempotent. The archived journal is explicitly labeled as **Rust-recorded HMAC-checked evidence, not a freshly re-authenticated HMAC**, Blender progress, success, or OS liveness.
 - Added real filesystem Rust tests for OS-lock contention, replay/backdating and the plan-claim gate; extended frontend source safety contracts. Existing Windows OS/GUI single-lane lease remains exclusive.
+
+### Milestone 35 authenticated final-pulse idempotency
+- The final worker pulse may be observed by the bounded monitor and then again by the terminal artifact-ack path. An identical action/plan/sequence/stage is accepted idempotently without changing the persisted observed timestamp; a changed stage with the same sequence, regressed sequence or backdated new stage is rejected. Added real Rust disk test for both cases.

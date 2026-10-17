@@ -129,7 +129,10 @@ fn record_at(file:&Path,next:AttestedStage)->Result<(),String>{
                 return Err("Authenticated worker stage regressed or plan changed.".into());
             }
             if previous.sequence==next.sequence{
-                if previous==next{return Ok(());}
+                // The final signed pulse can be re-observed after the monitor
+                // has already persisted it. Treat SAME action/plan/sequence/
+                // stage as a no-op; never rewrite its original timestamp.
+                if previous.stage==next.stage{return Ok(());}
                 return Err("Replayed worker stage sequence changed its meaning.".into());
             }
         }
@@ -210,7 +213,13 @@ mod tests{
         record_at(&file,first.clone()).unwrap();
         let mut replay=first.clone();
         replay.observed_at_ms+=1;
-        assert!(record_at(&file,replay).is_err());
+        // Repeated HMAC-validated pulse at a later Rust clock tick is an
+        // idempotent observation, NOT a persisted heartbeat renewal.
+        record_at(&file,replay).unwrap();
+        assert_eq!(read_locked_at(&file).unwrap(),Some(first.clone()));
+        let mut different_stage=data(A,"blender_session_attached",1);
+        different_stage.observed_at_ms=first.observed_at_ms+1;
+        assert!(record_at(&file,different_stage).is_err());
         let mut newer=data(A,"blender_session_attached",2);
         newer.observed_at_ms=first.observed_at_ms-1;
         assert!(record_at(&file,newer).is_err());
