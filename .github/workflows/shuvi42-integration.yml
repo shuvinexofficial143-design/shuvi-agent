@@ -29,12 +29,16 @@ jobs:
             refs/heads/feature/shuvi40-adobe-editing:refs/remotes/origin/feature/shuvi40-adobe-editing \
             refs/heads/feature/shuvi41-blender-worker:refs/remotes/origin/feature/shuvi41-blender-worker
       - run: npm ci
-      - name: Test analyzer
-        run: node --test scripts/integration-compatibility-analyzer.test.mjs
-      - name: Analyze fetched branches
+      - name: Test analyzers
+        run: node --test scripts/integration-compatibility-analyzer.test.mjs scripts/git-merge-conflict-analyzer.test.mjs
+      - name: Analyze source compatibility
         run: npm run analyze:integration
+      - name: Analyze real Git three-way conflicts
+        run: npm run analyze:git-merge
       - name: Upload compatibility reports
         uses: actions/upload-artifact@v4
         with:
           name: shuvi42-integration-report-${{ github.sha }}
-          path: reports/shuvi42/integration-report.*
+          path: |
+            reports/shuvi42/integration-report.*
+            reports/shuvi42/git-merge-conflict-report.*

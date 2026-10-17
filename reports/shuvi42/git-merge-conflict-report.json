@@ -1,0 +1,509 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-17T13:38:36.245Z",
+  "repository": "shuvinexofficial143-design/shuvi-agent",
+  "baseline": {
+    "ref": "origin/phase1/safety-reconciliation-oct9",
+    "commit": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0"
+  },
+  "branches": [
+    {
+      "ref": "origin/feature/shuvi37-master-autonomy",
+      "commit": "c6e3531d0d9bb6629cbb0c537223a6d3bf833a1f",
+      "changed_file_count": 133
+    },
+    {
+      "ref": "origin/feature/shuvi38-native-scheduler",
+      "commit": "bfa76c600f3511ca9ed61638dd0d18d56919f035",
+      "changed_file_count": 76
+    },
+    {
+      "ref": "origin/feature/shuvi39-windows-vision",
+      "commit": "a681383cc8bc2f95452ef48302a5963ecdb471bb",
+      "changed_file_count": 53
+    },
+    {
+      "ref": "origin/feature/shuvi40-adobe-editing",
+      "commit": "cf7d1f26ce3c836bdb5f360ffcdf17ebfe423d51",
+      "changed_file_count": 38
+    },
+    {
+      "ref": "origin/feature/shuvi41-blender-worker",
+      "commit": "1088add70a3a65f88a84c4bb8e2a71dfafa98d90",
+      "changed_file_count": 30
+    }
+  ],
+  "summary": {
+    "branches_analyzed": 5,
+    "unique_changed_files": 312,
+    "overlapping_files": 15,
+    "genuine_conflicts": 9,
+    "compatible_overlaps": 6,
+    "pairwise_analyses": 10,
+    "all_pairwise_bases_match_baseline": true
+  },
+  "genuine_conflicts": [
+    {
+      "file": "integrations/blender-worker/shuvi_blender_plan.py",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi38-native-scheduler": "afb9738e5d5ee20590b10fe6ac429f12ff7e75840659f168278fe3b9b4ef230e",
+        "origin/feature/shuvi41-blender-worker": "2a9b111c26efe6c6b7cc6da7b9897fa9764994f00573b6bc9ab215ce82e672d2"
+      },
+      "baseline_sha": "70451194fd7d1b6c5aa98a4ba399766a789ee90ae6f1f41aa0c858aef691f8d5",
+      "conflicting_pairs": [
+        "origin/feature/shuvi38-native-scheduler + origin/feature/shuvi41-blender-worker"
+      ]
+    },
+    {
+      "file": "scripts/native-master-followup.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "09fdd33a4fbdd0b177c4c0ac74d03bc539287f4344a28d048d5072c9543cc9c0",
+        "origin/feature/shuvi39-windows-vision": "94adf94b8b5609a439ce9e0b6c285961ffc746b3155db9f25b98283a3bfd86eb"
+      },
+      "baseline_sha": "31a0b9ee310c2079c5858563b740f01c041e16128f6f45a4275d42fc13c7ad69",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "scripts/native-recovery-journal.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "4eef7b603f103cbf98d79984540ec4dd2f83c707d017107dc30caedb99cd24e1",
+        "origin/feature/shuvi39-windows-vision": "9adc410a85af9bbd6cd99cd3fd9e513c7b5baa77c0813e7b3af7df9c9bf78f79"
+      },
+      "baseline_sha": "91a6e2629474b6f25841844ec978fbe6a4b492653f41bc3d94996afbbd49bf75",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "scripts/premiere-acceptance-execution.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "9ef84820ca371338b4c885b0274829ff11c3673ad469c10bf50a70d23a26c3ad",
+        "origin/feature/shuvi39-windows-vision": "d4eb7beebc01137d9bde591b844e135e213e2f798a8f946e780d3f3df9460a95"
+      },
+      "baseline_sha": "c35259f820044c00799ae0dddec9152e5906f276ff20ebab101371fa231d00cb",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "src-tauri/src/lib.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi39-windows-vision",
+        "origin/feature/shuvi40-adobe-editing",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "46dd64c8e19c4341e1fc20f715e69920460887bc3f2646963ed03229669bebbe",
+        "origin/feature/shuvi38-native-scheduler": "0bd89ed27f33349fbfdc5771381497ecd19e3b57418504bb400619a251884bb9",
+        "origin/feature/shuvi39-windows-vision": "217a9f94a5b2beb4d9c3b2d0956ab9cb272ca3577a84324c6ef56ce42e7f0963",
+        "origin/feature/shuvi40-adobe-editing": "7bb43a5de2be5d673880fde6303d5697667c7b553c0dc1db58b8a5a4b0733267",
+        "origin/feature/shuvi41-blender-worker": "a9a9f230ced3fb518b3d903b36d8a43fad1f4077c86db3a009886b5c367edf2d"
+      },
+      "baseline_sha": "d0a6fae539aeb9d538bfdf0a52d893319405cfbabb40fe5123b4382dbac5772b",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi39-windows-vision",
+        "origin/feature/shuvi38-native-scheduler + origin/feature/shuvi41-blender-worker"
+      ]
+    },
+    {
+      "file": "src-tauri/src/native_recovery.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "accc3ade3b5593374f69807359b73e61bfe6cc8c65d19140830d2baf9c646266",
+        "origin/feature/shuvi39-windows-vision": "690c76ab3944a35e81a83d4710501f45171367ff2b8db7339e62375a5840269f"
+      },
+      "baseline_sha": "2c3eaf523d6c7387254133d32a678c05230753cf68c3e422bc863b348085b9ea",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "src-tauri/src/native_task_delivery.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "a4373aa0334838666f214d1e08fb09eebfd011aa2e90d9aad72b4068f764faf9",
+        "origin/feature/shuvi38-native-scheduler": "c3566f8b37aed315847bdfe957bd2e3e5f655a93ff5b601fe8c996a23b970d83"
+      },
+      "baseline_sha": "d9a3fc906350fb46230b39191468b2c7fb9976671d5544cf27498d4d2911134c",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi38-native-scheduler"
+      ]
+    },
+    {
+      "file": "src/main.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "1104818e1bf4d30320bcda0790e022567c8a9c5d429e2c274bde631e86df8c8a",
+        "origin/feature/shuvi38-native-scheduler": "c62b37b7292e9fee97675da5e370215b151bf269fc1d927df3bb6d4b4ba1e6d8"
+      },
+      "baseline_sha": "a9005ea41d9e4ebcdaf2d69e91f82dd8e2ec0ae8f2006ea9553413fee59a2a3c",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi38-native-scheduler"
+      ]
+    },
+    {
+      "file": "web-dashboard/src/native-recovery-journal.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "classification": "genuine_content_conflict",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "ce4ff2e3009e737d2d4e5e3f17b55fe0f939587a54b8e6915ab56e2eafd03cf4",
+        "origin/feature/shuvi39-windows-vision": "7d2e2fe2380f37bda5fb58961b62d37bfcfd69c3ba1e51031c28e0dfbbb67ef4"
+      },
+      "baseline_sha": "1f30a0fed4b538a3aead7f857f08e06ba504a0af97ae49c4e93629aff2024664",
+      "conflicting_pairs": [
+        "origin/feature/shuvi37-master-autonomy + origin/feature/shuvi39-windows-vision"
+      ]
+    }
+  ],
+  "compatible_overlaps": [
+    {
+      "file": ".github/workflows/ci.yml",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "classification": "compatible_divergent_change",
+      "branch_shas": {
+        "origin/feature/shuvi38-native-scheduler": "2cfaec258e0b11fbe46658e861e9eef22cd1fd8aefb1480704bd2eead6a85db0",
+        "origin/feature/shuvi39-windows-vision": "de67eb45575e7381f8975525474c5473e88c67fa15da7200ad4d32cc5cae0e23"
+      },
+      "baseline_sha": "3bf95a57ea62be4b09781d891ee170f29b82f13736f3fff26b0d1dbd39c59900",
+      "conflicting_pairs": []
+    },
+    {
+      "file": "scripts/native-worker-host-status.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "classification": "compatible_divergent_change",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "210c2ff3a47f70cdc0c13c7b4f6ad39bf52af23bfd617bc4102a0a712820e54f",
+        "origin/feature/shuvi38-native-scheduler": "b5cebe50af108d3aac1b1db8d2c9776e940952202e7251a1917b8f18472455e4"
+      },
+      "baseline_sha": "2c5aa74ee8a06d15ffec0a83c146bca2cc5d82aa171f676fb4647a1b03fd6c44",
+      "conflicting_pairs": []
+    },
+    {
+      "file": "scripts/phase1-a01-ui-ipc-parity.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "classification": "compatible_divergent_change",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "8fff0e713f93769b2e25227af66d5c93610a3e5c7373aa27b104250676f7eec0",
+        "origin/feature/shuvi38-native-scheduler": "ecba7ed7ec97973fca2865061d62c5a5dec3f294f2ceecc55ec5a90c57292ffe"
+      },
+      "baseline_sha": "3b3233790ad47f9aa7555a204760c9803099adf465465e7e42e10af9ead0a896",
+      "conflicting_pairs": []
+    },
+    {
+      "file": "src-tauri/src/blender_plan_worker.rs",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "classification": "compatible_divergent_change",
+      "branch_shas": {
+        "origin/feature/shuvi38-native-scheduler": "e90b5c456ebe6256cff54e18ad99acc6da4aa61a07465352466642aac14ea8d7",
+        "origin/feature/shuvi41-blender-worker": "23f1d6dac9d097885cd3bcef3134bc1f8d142d2980fdb53f8ed4ddc73adf80db"
+      },
+      "baseline_sha": "f30c730618109beef08ef01794d52981724b462a7b2b03420415e76634a14edb",
+      "conflicting_pairs": []
+    },
+    {
+      "file": "src/types.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "classification": "compatible_divergent_change",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "e4315ed28f1582e768db4a7a12a2c5c321a5cdc52325cac1eb90eca04456503b",
+        "origin/feature/shuvi38-native-scheduler": "e962c4673729246c5f8a2fbd1b29a23f048398d0f142fc8e02a8e8721455d185"
+      },
+      "baseline_sha": "7eee40c43a4c2a47d2b7137f0d6b67d4b18c10237f3f6bc8b7a7a9c5e92261ad",
+      "conflicting_pairs": []
+    },
+    {
+      "file": "web-dashboard/src/native-agent.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "classification": "compatible_divergent_change",
+      "branch_shas": {
+        "origin/feature/shuvi37-master-autonomy": "51b23ab31dd12c1074c9cd55705d4018d3dc505a2b94655477cb5ecdfc8bde76",
+        "origin/feature/shuvi39-windows-vision": "02f6d1f27e4a232fd3207d72c6f56fb971e36644e25f7989915e22ef16ac700d"
+      },
+      "baseline_sha": "5baf88ce1c65261344585e9d1ad70e73d7876ececc308f9c199f43e28fef454d",
+      "conflicting_pairs": []
+    }
+  ],
+  "overlapping_files": [
+    {
+      "file": ".github/workflows/ci.yml",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "integrations/blender-worker/shuvi_blender_plan.py",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ]
+    },
+    {
+      "file": "scripts/native-master-followup.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "scripts/native-recovery-journal.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "scripts/native-worker-host-status.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ]
+    },
+    {
+      "file": "scripts/phase1-a01-ui-ipc-parity.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ]
+    },
+    {
+      "file": "scripts/premiere-acceptance-execution.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "src-tauri/src/blender_plan_worker.rs",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ]
+    },
+    {
+      "file": "src-tauri/src/lib.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi39-windows-vision",
+        "origin/feature/shuvi40-adobe-editing",
+        "origin/feature/shuvi41-blender-worker"
+      ]
+    },
+    {
+      "file": "src-tauri/src/native_recovery.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "src-tauri/src/native_task_delivery.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ]
+    },
+    {
+      "file": "src/main.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ]
+    },
+    {
+      "file": "src/types.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ]
+    },
+    {
+      "file": "web-dashboard/src/native-agent.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ]
+    },
+    {
+      "file": "web-dashboard/src/native-recovery-journal.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ]
+    }
+  ],
+  "pairwise_results": [
+    {
+      "left": "origin/feature/shuvi37-master-autonomy",
+      "right": "origin/feature/shuvi38-native-scheduler",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": false,
+      "conflicted_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/native_task_delivery.rs",
+        "src/main.ts"
+      ],
+      "tree": "96913f854efc744f15a12ff970d861cad4188a5b"
+    },
+    {
+      "left": "origin/feature/shuvi37-master-autonomy",
+      "right": "origin/feature/shuvi39-windows-vision",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": false,
+      "conflicted_files": [
+        "scripts/native-master-followup.test.mjs",
+        "scripts/native-recovery-journal.test.mjs",
+        "scripts/premiere-acceptance-execution.test.mjs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/native_recovery.rs",
+        "web-dashboard/src/native-recovery-journal.mjs"
+      ],
+      "tree": "0e22f5e59b0804d94cb13e5cd52540b2884475a7"
+    },
+    {
+      "left": "origin/feature/shuvi37-master-autonomy",
+      "right": "origin/feature/shuvi40-adobe-editing",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": true,
+      "conflicted_files": [],
+      "tree": "f6fbf15419a1ed87896cc4dc9ba272ecad660899"
+    },
+    {
+      "left": "origin/feature/shuvi37-master-autonomy",
+      "right": "origin/feature/shuvi41-blender-worker",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": true,
+      "conflicted_files": [],
+      "tree": "91ed8af583037e5da0c4249dcfb90fc2a0d342c3"
+    },
+    {
+      "left": "origin/feature/shuvi38-native-scheduler",
+      "right": "origin/feature/shuvi39-windows-vision",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": true,
+      "conflicted_files": [],
+      "tree": "1c8a4c66660040ef890b9d3d778904283e33d164"
+    },
+    {
+      "left": "origin/feature/shuvi38-native-scheduler",
+      "right": "origin/feature/shuvi40-adobe-editing",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": true,
+      "conflicted_files": [],
+      "tree": "546b050fa4646e27868f363933a2ae19901360fd"
+    },
+    {
+      "left": "origin/feature/shuvi38-native-scheduler",
+      "right": "origin/feature/shuvi41-blender-worker",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": false,
+      "conflicted_files": [
+        "integrations/blender-worker/shuvi_blender_plan.py",
+        "src-tauri/src/lib.rs"
+      ],
+      "tree": "9610e1101fe11fdbfe883f41f56e441544849017"
+    },
+    {
+      "left": "origin/feature/shuvi39-windows-vision",
+      "right": "origin/feature/shuvi40-adobe-editing",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": true,
+      "conflicted_files": [],
+      "tree": "ce3f915a9cb8fba88f265c98863072f955b09e46"
+    },
+    {
+      "left": "origin/feature/shuvi39-windows-vision",
+      "right": "origin/feature/shuvi41-blender-worker",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": true,
+      "conflicted_files": [],
+      "tree": "9abe8b9cb81a15ebe9a190fc0dfc0997d3b31aac"
+    },
+    {
+      "left": "origin/feature/shuvi40-adobe-editing",
+      "right": "origin/feature/shuvi41-blender-worker",
+      "merge_base": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0",
+      "baseline_matches": true,
+      "clean": true,
+      "conflicted_files": [],
+      "tree": "2bf5255143b5f33f59d73434b064d63cd1418d90"
+    }
+  ],
+  "safety": {
+    "read_only_worktree": true,
+    "branches_checked_out": false,
+    "working_tree_modified": false,
+    "actual_git_merge": true,
+    "merge_tree_object_only": true,
+    "live_host_verification": false
+  }
+}

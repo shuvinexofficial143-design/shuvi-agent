@@ -15,7 +15,8 @@
     "verify:frontend": "node scripts/run-attested.mjs --scope frontend",
     "verify:rust": "node scripts/run-attested.mjs --scope rust",
     "verify:full": "node scripts/run-attested.mjs --scope full",
-    "analyze:integration": "node scripts/integration-compatibility-analyzer.mjs --base origin/phase1/safety-reconciliation-oct9 --json reports/shuvi42/integration-report.json --markdown reports/shuvi42/integration-report.md"
+    "analyze:integration": "node scripts/integration-compatibility-analyzer.mjs --base origin/phase1/safety-reconciliation-oct9 --json reports/shuvi42/integration-report.json --markdown reports/shuvi42/integration-report.md",
+    "analyze:git-merge": "node scripts/git-merge-conflict-analyzer.mjs --base origin/phase1/safety-reconciliation-oct9 --json reports/shuvi42/git-merge-conflict-report.json --markdown reports/shuvi42/git-merge-conflict-report.md"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0"
