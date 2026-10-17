@@ -11,6 +11,11 @@ const CREATE_NO_WINDOW:u32=0x08000000;
 const CREATE_UNICODE_ENVIRONMENT:u32=0x400;
 const JOB_EXTENDED_LIMIT:u32=9;
 const JOB_BASIC_ACCOUNTING:u32=1;
+// JOBOBJECTINFOCLASS JobObjectCpuRateControlInformation (Windows 8+).
+const JOB_CPU_RATE_CONTROL:u32=15;
+const CPU_RATE_ENABLE:u32=0x1;
+const CPU_RATE_HARD_CAP:u32=0x4;
+const READ_ONLY_CPU_HARD_RATE:u32=2500; // 25.00% of machine CPU cycles
 const KILL_ON_CLOSE:u32=0x2000;
 const JOB_OBJECT_LIMIT_JOB_MEMORY:u32=0x200;
 const MAX_JOB_MEMORY_BYTES:u64=4*1024*1024*1024;
@@ -33,6 +38,8 @@ struct ExtendedLimit {
     process_memory:usize,job_memory:usize,
     peak_process_memory:usize,peak_job_memory:usize
 }
+#[repr(C)]#[derive(Default)]
+struct CpuRateControl{flags:u32,cpu_rate:u32}
 #[repr(C)]#[derive(Default)]
 struct Accounting {
     user_time:i64,kernel_time:i64,period_user:i64,period_kernel:i64,
@@ -112,6 +119,18 @@ impl OwnedChild{
     // Dedicated read-only background workers can use a lower per-process-tree
     // cap without relaxing the existing 4 GiB GUI-worker ceiling.
     pub(super) fn spawn_capped(exe:&Path,args:&[OsString],cwd:&Path,cap:u64)->Result<Self,String>{
+        Self::spawn_capped_with_cpu(exe,args,cwd,cap,None)
+    }
+    // For the non-GUI SHA sidecar only: Windows Job Object hard-caps CPU
+    // *before* the suspended process can execute. Deny the launch if the OS
+    // cannot enforce the ceiling; never fall back to unrestricted execution.
+    pub(super) fn spawn_readonly_capped(exe:&Path,args:&[OsString],cwd:&Path,cap:u64)->Result<Self,String>{
+        Self::spawn_capped_with_cpu(exe,args,cwd,cap,Some(READ_ONLY_CPU_HARD_RATE))
+    }
+    fn spawn_capped_with_cpu(exe:&Path,args:&[OsString],cwd:&Path,cap:u64,cpu_rate:Option<u32>)->Result<Self,String>{
+        if cpu_rate.is_some_and(|rate|rate<100||rate>10000){
+            return Err("Read-only Windows OS CPU rate exceeds hard safety bounds.".into());
+        }
         if cap==0||cap>MAX_JOB_MEMORY_BYTES{
             return Err("Background Job Object memory cap outside hard safety bounds.".into());
         }
@@ -125,6 +144,13 @@ impl OwnedChild{
         let ok=unsafe{SetInformationJobObject(job.0,JOB_EXTENDED_LIMIT,
             &limit as *const _ as *const c_void,mem::size_of::<ExtendedLimit>() as u32)};
         if ok==0{return Err(error("Worker kill-on-close protection unavailable"));}
+        if let Some(rate)=cpu_rate {
+            let cpu=CpuRateControl{flags:CPU_RATE_ENABLE|CPU_RATE_HARD_CAP,cpu_rate:rate};
+            let ok=unsafe{SetInformationJobObject(job.0,JOB_CPU_RATE_CONTROL,
+                &cpu as *const _ as *const c_void,
+                mem::size_of::<CpuRateControl>() as u32)};
+            if ok==0{return Err(error("Cannot enforce read-only worker CPU hard cap"));}
+        }
         let app=wide(exe.as_os_str());
         let mut cmd=args_to_commandline(exe,args);
         let cwd=wide(cwd.as_os_str());
@@ -194,6 +220,16 @@ impl OwnedChild{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn cpu_rate_structure_is_exact_windows_eight_bytes(){
+        assert_eq!(mem::size_of::<CpuRateControl>(),8);
+        assert_eq!(READ_ONLY_CPU_HARD_RATE,2500);
+        assert_eq!(CPU_RATE_ENABLE|CPU_RATE_HARD_CAP,0x5);
+        let exe=std::env::current_exe().unwrap();
+        let cwd=std::env::temp_dir();
+        assert!(OwnedChild::spawn_capped_with_cpu(&exe,&[],&cwd,512*1024*1024,Some(50)).is_err());
+        assert!(OwnedChild::spawn_capped_with_cpu(&exe,&[],&cwd,512*1024*1024,Some(10001)).is_err());
+    }
     #[test]
     fn win64_layout_contract_for_job_object_calls(){
         #[cfg(target_pointer_width="64")]{
