@@ -607,3 +607,22 @@ New regression tests cover stage classification, fake stages, wrong
 operation sequences, stale metadata, absent plan hashes, and mismatched
 step counts. CI must be evaluated against the exact latest commit;
 previous pass states do not automatically carry forward.
+
+
+## Extended native PNG render integrity gate
+
+The saved PNG artifact is now independently inspected in Rust by
+\`blender_png_integrity::validate\` after SHA-256/path/header verification.
+It streams chunks in bounded buffers (≤32 MiB per chunk, ≤256 chunks,
+≤128 MiB file), rechecks RGBA8 non-interlaced IHDR width/height,
+calculates and compares PNG CRC-32 for **every** chunk, requires IDAT
+data in a contiguous sequence, requires an exact IEND and rejects trailing
+bytes. Unexpected critical and animated PNG control chunks are rejected.
+
+The native unit tests write a structurally correct 64×64 RGBA8 PNG and
+exercise corrupted IHDR CRC, corrupted image data CRC, wrong dimensions,
+truncated IEND, trailing garbage and APNG controls. These cases are
+not Blender pixel-render tests: the validator does **not** decompress
+zlib/IDAT, examine displayed pixels, certify accurate 3D geometry in the
+render, or assess creative quality. PNG structural validity cannot replace
+the separately approved disposable Windows live acceptance.
