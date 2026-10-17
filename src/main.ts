@@ -22,6 +22,7 @@ import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./mas
 import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
 import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
+import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
 import {createMasterRemoteReceiptLane} from "./master-remote-receipt-lane.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
@@ -2209,6 +2210,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   }
 }
 
+const masterProviderSingleFlight=createMasterProviderSingleFlight();
 async function runAgentStep(): Promise<void> {
   if (cancelRequested) {
     revokeTaskScope(activePermissionScope);
@@ -2235,6 +2237,11 @@ async function runAgentStep(): Promise<void> {
     return;
   }
 
+  // Prevent two simultaneous paid model requests from reserving or dispatching
+  // through concurrent Resume/remote/manual continuations in this WebView.
+  const paidFlight=masterProviderSingleFlight.acquire(activePermissionScope);
+  if(!paidFlight)return;
+  try {
   setBusy(true);
   // A model response belongs ONLY to the task that dispatched it. A Stop,
   // Resume, or replacement task rotates/revokes this local owner identity.
@@ -2349,6 +2356,9 @@ async function runAgentStep(): Promise<void> {
         orchestration_context: workerContext+"\n"+masterGoalEvidenceContext(orchestration.owner_request)
       }
     });
+    // The provider call has settled; release before same-task recursive
+    // tool/worker continuation. Stale reply acceptance is independently fenced.
+    paidFlight.release();
 
     // Do not use a stale provider reply to mutate task history, token UI,
     // checkpoints, or stage a tool for a different owner request.
@@ -2456,6 +2466,11 @@ async function runAgentStep(): Promise<void> {
     await saveActiveCheckpoint();
     if(remoteTask)await closeRemoteTask("outcome_unknown");
     setBusy(false);
+  }
+  } finally {
+    // Covers preflight denial, Rust checkpoint readback failure and provider
+    // IPC rejection without leaking a future paid-model dispatch permit.
+    paidFlight.release();
   }
 }
 
