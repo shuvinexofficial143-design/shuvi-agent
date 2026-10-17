@@ -108,7 +108,7 @@ test("post-open readback rejects tampered original native caption style",async()
     _expected:f.expected,mapping:f.manifest,videoTrack:0,
     items:[{seconds:4,duration_seconds:2,fields:{caption_text:"Original"}}],
     receipts:[receipt]
-  }}),/readback mismatch|does not match/i);
+  }}),/readback.*(mismatch|differs)|does not match/i);
   assert.equal(f.calls.writes,0);
 });
 test("failed explicit open does not create a false receipt or save/reopen success",async()=>{
