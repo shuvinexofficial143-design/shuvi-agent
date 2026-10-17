@@ -273,7 +273,7 @@ mod tests {
                 "owner_approval_reauthenticated":false,
                 "runtime_execution_proven_by_this_digest":false}})
     }
-    fn fixtures()(work:&Workspace)->Value{
+    fn fixtures(work:&Workspace)->Value{
         let first=blend_receipt(work,0,A1,S1);
         let second=blend_receipt(work,1,A2,S1);
         let mut render=render_receipt(work,A3,S3);
