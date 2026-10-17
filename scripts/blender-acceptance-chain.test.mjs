@@ -7,6 +7,7 @@ const main=read("src-tauri/src/lib.rs");
 const chain=read("src-tauri/src/blender_acceptance_chain.rs");
 const manifest=read("src-tauri/src/blender_artifact_manifest.rs");
 const gate=read("src-tauri/src/blender_plan_worker.rs");
+const png=read("src-tauri/src/blender_png_integrity.rs");
 
 test("three-stage receipt reviewer is wired into normal approval/audit and never executes Blender",()=>{
   assert.match(main,/mod blender_acceptance_chain;/);
@@ -54,6 +55,19 @@ test("native proof refuses fake Blender header and PNG IHDR despite matching ext
     'hasher.update(&prefix[..prefix_len])',
     'format!("{:x}",hasher.finalize())'
   ])assert.ok(gate.includes(guard),guard);
+});
+test("render verification checks chunk CRC, IDAT continuity, bounded IEND and no trailing payload",()=>{
+  assert.match(main,/mod blender_png_integrity;/);
+  assert.match(gate,/blender_png_integrity::validate\(/);
+  for(const marker of [
+    "fn crc_step(", "const MAX_CHUNKS:usize=256", "const MAX_CHUNK:u64=32*1024*1024",
+    "Blender PNG chunk CRC mismatch", "Blender PNG IDAT chunks are not contiguous",
+    "Blender PNG has trailing bytes after IEND", "Unsupported critical/animated PNG chunk",
+    "fn accepts_complete_crc_valid_non_interlaced_blender_png(",
+    "fn rejects_corrupt_header_crc_image_crc_and_wrong_dimensions(",
+    "fn rejects_truncated_chunks_removed_iend_and_trailing_garbage(",
+    "fn rejects_animated_png_even_with_correct_chunk_crc("
+  ])assert.ok(png.includes(marker),"Missing PNG invariant: "+marker);
 });
 test("four native unit scenarios cover valid files, swapped sessions, altered data and wrong paths",()=>{
   for(const name of [
