@@ -1893,7 +1893,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     await auditGraphOutcome(proposal);
     // Rust-audited failures legitimately set replan_required or stopped.
     // They may be classified ONLY for the exact same owner/scope/DAG.
-    if(!isNativeActionOwnershipCurrent(postOutcomeOwnership,{
+    if(remoteTask!==actionRemoteTask||!isNativeActionOwnershipCurrent(postOutcomeOwnership,{
       scope:activePermissionScope,graph:orchestration.task_graph,
       ownerRequest:orchestration.owner_request,actionId,
       cancelRequested,recoveryMode:orchestration.recovery_mode
@@ -2024,7 +2024,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     const confirmedFailure = confirmedNativeActionFailure(proposal.tool, actionId, receipt);
     // Revocation here is intentional fail-closed and must remain valid for
     // this task's failure classification, but NEVER for a replacement scope.
-    if(!isNativeActionOwnershipCurrent(actionOwnership,{
+    if(remoteTask!==actionRemoteTask||!isNativeActionOwnershipCurrent(actionOwnership,{
       scope:activePermissionScope,graph:orchestration.task_graph,
       ownerRequest:orchestration.owner_request,actionId,
       cancelRequested,recoveryMode:orchestration.recovery_mode
@@ -2047,7 +2047,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     const failedOutcomeOwnership=captureNativeActionOwnership(activePermissionScope,
       orchestration.task_graph,orchestration.owner_request,actionId,true);
     await auditGraphOutcome(proposal);
-    if(!isNativeActionOwnershipCurrent(failedOutcomeOwnership,{
+    if(remoteTask!==actionRemoteTask||!isNativeActionOwnershipCurrent(failedOutcomeOwnership,{
       scope:activePermissionScope,graph:orchestration.task_graph,
       ownerRequest:orchestration.owner_request,actionId,
       cancelRequested,recoveryMode:orchestration.recovery_mode
@@ -3228,13 +3228,26 @@ el<HTMLButtonElement>("#remoteAgentConnect").addEventListener("click",async()=>{
 });
 el<HTMLButtonElement>("#remoteAgentDisconnect").addEventListener("click",async()=>{
   remoteAgentEnabled=false;
-  if(remoteTask){
-    cancelRequested=true;
-    if(pendingAction){
-      try{await invoke("deny_action",{actionId:pendingAction.id});}catch{/* fail closed */}
-      clearChatPermission();
+  const disconnectScope=activePermissionScope;
+  const disconnectRemote=remoteTask;
+  if(disconnectRemote){
+    if(executingActionId){
+      // Disconnect does not prove a native Windows action has stopped.
+      // Request the normal exact action cancellation first.
+      el<HTMLButtonElement>("#stopButton").click();
+    }else{
+      cancelRequested=true;
+      revokeTaskScope(disconnectScope);
+      const denyId=pendingAction?.id??null;
+      if(denyId)clearChatPermission();
+      if(denyId)try{await invoke("deny_action",{actionId:denyId});}
+        catch{/* uncertain native approval remains non-executable locally */}
+      if(remoteTask===disconnectRemote&&activePermissionScope===disconnectScope){
+        await closeRemoteTask("outcome_unknown");
+        if(activePermissionScope===disconnectScope)
+          await stopAgentForSafety("Remote agent disconnected; previous task was not completed.");
+      }
     }
-    await closeRemoteTask("outcome_unknown");
   }
   try{await invoke("remote_agent_disconnect");}
   catch{remoteStatusLabel("Could not revoke OS credential. Verify in Windows credential manager.");return;}
