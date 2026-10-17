@@ -45,7 +45,7 @@ test("Desktop holds one finalization permit from before scheduler IPC through di
  const release=body.indexOf("finalizationFlight.release();",clear);
  assert.ok(acquire>=0&&schedule>acquire&&rust>schedule&&terminal>rust&&clear>terminal&&release>clear);
  assert.match(body,/if\(!finalizationFlight\)return;/);
- assert.match(body,/finally\s*\{\s*finalizationFlight\.release\(\);\s*\}/);
+ assert.match(body,/finally\s*\{[\s\S]*?finalizationFlight\.release\(\);\s*\}/);
 });
 test("pure finalization admission does not forge native delivery or bypass high-risk permission",()=>{
  const s=readFileSync(new URL("../src/master-finalization-single-flight.mjs",import.meta.url),"utf8");

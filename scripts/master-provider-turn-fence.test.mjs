@@ -50,7 +50,9 @@ test("Desktop pins task DAG and provider reservation AFTER purchase, then checks
  assert.match(part,/isMasterProviderTurnFenceCurrent\(providerTurnFence/);
  assert.match(part,/if \(staleModelRequest\(\)\) return;/);
  assert.match(part,/await saveActiveCheckpoint\(\);\s*\/\/ Even if the provider returned correctly[\s\S]*if\(staleModelRequest\(\)\)return;/);
- assert.match(part,/if\(remoteTask&&!staleModelRequest\(\)\)await closeRemoteTask\("outcome_unknown"\)/);
+ assert.match(part,/if\(remoteTask&&responseCleanupOwnerCurrent\(\)\)\{/);
+ assert.match(part,/if\(!\(await closeRemoteTask\("outcome_unknown"\)\)\)return;/);
+ assert.match(part,/if\(!responseCleanupOwnerCurrent\(\)\|\|remoteTask!==null\)return;/);
  assert.doesNotMatch(part,/const masterEditing = Boolean\(editingMasterContext/);
 });
 test("the pure provider lease never opens network, grants native actions or accesses host secrets",()=>{

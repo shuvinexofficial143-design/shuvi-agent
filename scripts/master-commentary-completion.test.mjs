@@ -52,7 +52,12 @@ test("commentary on completed DAG never clears recovery before native Rust SHA v
  assert.match(body,/await continueAfterOutcome\(\);\s*return;/);
  assert.match(body,/if\(completionRoute.mode==="preserve_checkpoint"\)\{/);
  assert.match(body,/await stopAgentForSafety\("A native task DAG is not safely finalizable from AI commentary/);
- assert.match(body,/else\s*\{\s*await clearActiveCheckpoint\(\);/);
+ assert.match(body,/const completionRoute=classifyMasterCommentaryCompletion\(orchestration\.task_graph\)/);
+ const unresolved=body.indexOf('if(completionRoute.mode==="preserve_checkpoint")');
+ const abort=body.indexOf('await stopAgentForSafety("A native task DAG is not safely finalizable',unresolved);
+ const cleanup=body.indexOf("await clearActiveCheckpoint();",abort);
+ assert.ok(unresolved>=0&&abort>unresolved&&cleanup>abort,
+   "only graph-free chat may reach ordinary clear after native graph finalization decisions");
 });
 test("pure classifier never grants owner consent or makes a claim about creative acceptance",()=>{
  const source=readFileSync(new URL("../src/master-commentary-completion.mjs",import.meta.url),"utf8");
