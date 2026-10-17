@@ -826,3 +826,27 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   `Add-Type -AssemblyName UIAutomationClient`, using `Assembly.GetType`.
   This is a runtime-type lookup fix; no weakening, removing or skipping
   the actual UIA type assertion, control tests or Rust verification.
+
+## Milestone 18 — Screenshot cleanup and PNG container-integrity barrier
+
+- `target_window_capture.rs` now unlinks the temporary screenshot when
+  Windows PowerShell invocation itself fails, including ambiguous launch
+  and partial execution failure where a file may already have been written.
+  Existing cleanup on native process failure, invalid receipt or dimensions
+  remains in place. No captured pixels or app names are uploaded on failure.
+- A Rust *streaming* PNG structural verifier now runs after the HWND/PID/
+  OS-generation receipt check and before any image path is released for
+  provider upload. Bounds capture files to 96 MiB, checks PNG signature,
+  IHDR-first and single, actual IDAT, final IEND with no trailing data,
+  length/chunk count bounds and every PNG chunk CRC32. It buffers only
+  64 KiB at once, rather than duplicating a potentially large screenshot
+  in Shuvi memory.
+- Synthetic Rust unit tests deliberately corrupt CRC, truncate IEND,
+  append payload, duplicate headers, inject unknown critical chunks and
+  exceed the byte limit; they do NOT test deflate pixel validity, screen
+  occlusion, Adobe output or real Windows user desktop acceptance.
+- Source contract tests in
+  `scripts/shuvi39-screenshot-png-integrity.test.mjs` verify final
+  safety-check ordering and bounded streaming behavior. Existing live
+  Windows target capture remains owner-permission gated. UIA mutations,
+  scheduler, approvals and unrelated branches are not modified.

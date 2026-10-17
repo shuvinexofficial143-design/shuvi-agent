@@ -7,6 +7,10 @@
 use super::{now_ms, prune_screenshot_dir, ps_single_quote, run_hidden_powershell, ui_root_script, MAX_SCREENSHOT_FILES};
 use serde_json::Value;
 use std::{fs, io::Read, path::PathBuf};
+
+// Bounding the PNG on disk also bounds screenshot integrity verification
+// without allocating a second full-resolution bitmap in Shuvi's process.
+const MAX_CAPTURE_PNG_BYTES: u64 = 96 * 1024 * 1024;
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
@@ -202,8 +206,15 @@ try {
 "#
         .replace("__SHUVI_ROOT_SCRIPT__", &root_script)
         .replace("__SHUVI_SCREENSHOT_PATH__", &escaped_path);
-    let output = run_hidden_powershell(&script)
-        .map_err(|error| format!("Target window capture failed: {error}"))?;
+    let output = match run_hidden_powershell(&script) {
+        Ok(output) => output,
+        Err(error) => {
+            // A failed/interrupted PowerShell invocation may have saved a
+            // sensitive screenshot before erroring. Never leave it behind.
+            let _ = fs::remove_file(&path);
+            return Err(format!("Target window capture failed: {error}"));
+        }
+    };
     if !output.status.success() || !path.exists() {
         let _ = fs::remove_file(&path);
         return Err(format!(
@@ -221,7 +232,12 @@ try {
         let mut header = [0_u8; 24];
         fs::File::open(&path).and_then(|mut f| f.read_exact(&mut header))
             .map_err(|e| format!("Screenshot header invalid; no image sent: {e}"))?;
-        verify_capture_receipt(&receipt, &header, size)
+        let identity = verify_capture_receipt(&receipt, &header, size)?;
+        // ImageFormat.Png output must be complete, CRC-checked and bounded.
+        // A plausible 24-byte header is not sufficient to send pixels to AI.
+        verify_png_structure(fs::File::open(&path)
+            .map_err(|e| format!("Screenshot unreadable; no image sent: {e}"))?, size)?;
+        Ok(identity)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&path);
@@ -245,6 +261,98 @@ fn png_dimensions(header: &[u8]) -> Result<(u32, u32), String> {
         return Err("Screenshot PNG dimensions invalid; no image sent.".into());
     }
     Ok((width, height))
+}
+
+
+// CRC-32 of a PNG chunk (IEEE polynomial). Checked incrementally so a
+// maliciously large output never needs to be held entirely in memory.
+fn png_crc_update(mut crc: u32, bytes: &[u8]) -> u32 {
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+        }
+    }
+    crc
+}
+
+// Validates the PNG container emitted by Windows System.Drawing, not pixels
+// or an Adobe editing outcome. Rejects truncated/corrupt/oversize files,
+// impossible chunk order, duplicate IHDR, empty data and trailing payload.
+fn verify_png_structure(mut reader: impl Read, bytes: u64) -> Result<(), String> {
+    if bytes < 57 || bytes > MAX_CAPTURE_PNG_BYTES {
+        return Err("Screenshot file size out of bounds; no image sent.".into());
+    }
+    let mut signature = [0_u8; 8];
+    reader.read_exact(&mut signature)
+        .map_err(|_| "Screenshot PNG signature missing; no image sent.".to_string())?;
+    if &signature != b"\x89PNG\r\n\x1a\n" {
+        return Err("Screenshot PNG signature invalid; no image sent.".into());
+    }
+    let mut pos = 8_u64;
+    let mut seen_ihdr = false;
+    let mut seen_idat = false;
+    let mut finished_idat = false;
+    let mut chunk_count = 0_u32;
+    let mut buffer = [0_u8; 64 * 1024];
+    while pos < bytes {
+        chunk_count += 1;
+        if chunk_count > 10_000 || bytes - pos < 12 {
+            return Err("Screenshot PNG chunk boundary invalid; no image sent.".into());
+        }
+        let mut chunk_header = [0_u8; 8];
+        reader.read_exact(&mut chunk_header)
+            .map_err(|_| "Screenshot PNG chunk header truncated; no image sent.".to_string())?;
+        let len = u64::from(u32::from_be_bytes(chunk_header[..4].try_into().unwrap()));
+        let kind = &chunk_header[4..8];
+        if len > bytes - pos - 12 || !kind.iter().all(u8::is_ascii_alphabetic) {
+            return Err("Screenshot PNG chunk length/type invalid; no image sent.".into());
+        }
+        if kind == b"IHDR" {
+            if seen_ihdr || chunk_count != 1 || len != 13 {
+                return Err("Screenshot has duplicate or malformed IHDR; no image sent.".into());
+            }
+            seen_ihdr = true;
+        } else if !seen_ihdr {
+            return Err("Screenshot PNG lacks first IHDR; no image sent.".into());
+        } else if kind == b"IDAT" {
+            if finished_idat || len == 0 {
+                return Err("Screenshot PNG image data invalid; no image sent.".into());
+            }
+            seen_idat = true;
+        } else if kind == b"IEND" {
+            if !seen_idat || len != 0 || pos + 12 != bytes {
+                return Err("Screenshot PNG missing clean final IEND; no image sent.".into());
+            }
+        } else {
+            if seen_idat { finished_idat = true; }
+            // Accept permitted ancillary metadata, and PLTE only before
+            // IDAT. Unknown *critical* chunks are unsafe to interpret.
+            if kind == b"PLTE" {
+                if seen_idat { return Err("Screenshot PNG palette after image data.".into()); }
+            } else if kind[0] & 0x20 == 0 {
+                return Err("Screenshot contains unknown critical PNG chunk.".into());
+            }
+        }
+        let mut crc = png_crc_update(!0_u32, kind);
+        let mut remaining = len;
+        while remaining > 0 {
+            let n = (remaining as usize).min(buffer.len());
+            reader.read_exact(&mut buffer[..n])
+                .map_err(|_| "Screenshot PNG chunk data truncated; no image sent.".to_string())?;
+            crc = png_crc_update(crc, &buffer[..n]);
+            remaining -= n as u64;
+        }
+        let mut saved = [0_u8; 4];
+        reader.read_exact(&mut saved)
+            .map_err(|_| "Screenshot PNG chunk checksum truncated; no image sent.".to_string())?;
+        if !crc != u32::from_be_bytes(saved) {
+            return Err("Screenshot PNG CRC mismatch; no image sent.".into());
+        }
+        pos += len + 12;
+        if kind == b"IEND" { return Ok(()); }
+    }
+    Err("Screenshot missing final PNG IEND; no image sent.".into())
 }
 
 fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<String, String> {
@@ -280,9 +388,65 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{png_dimensions, verify_capture_receipt};
+    use super::{png_crc_update, png_dimensions, verify_capture_receipt, verify_png_structure};
+    use std::io::Cursor;
     use serde_json::json;
 
+    // The CRC tests use a tiny synthetic PNG container, not a desktop shot.
+    // IDAT contents are intentionally artificial: this test checks structure
+    // and checksum, not zlib pixel decoding or application acceptance.
+    fn chunk(name: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        output.extend_from_slice(name);
+        output.extend_from_slice(data);
+        let mut crc = png_crc_update(!0_u32, name);
+        crc = png_crc_update(crc, data);
+        output.extend_from_slice(&(!crc).to_be_bytes());
+        output
+    }
+    fn sample_png() -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&2_u32.to_be_bytes());
+        ihdr.extend_from_slice(&2_u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        bytes.extend(chunk(b"IHDR", &ihdr));
+        bytes.extend(chunk(b"IDAT", &[1, 2, 3, 4]));
+        bytes.extend(chunk(b"IEND", &[]));
+        bytes
+    }
+    #[test]
+    fn png_structure_accepts_bounded_complete_crc_valid_container() {
+        let bytes = sample_png();
+        assert!(verify_png_structure(Cursor::new(&bytes), bytes.len() as u64).is_ok());
+    }
+    #[test]
+    fn png_structure_rejects_corrupted_crc_truncated_data_or_trailing_bytes() {
+        let valid = sample_png();
+        let mut corrupt = valid.clone();
+        corrupt[45] ^= 0x40;
+        assert!(verify_png_structure(Cursor::new(&corrupt), corrupt.len() as u64).is_err());
+        for n in [8, 24, valid.len()-1] {
+            assert!(verify_png_structure(Cursor::new(&valid[..n]), n as u64).is_err());
+        }
+        let mut trailing = valid.clone();
+        trailing.push(17);
+        assert!(verify_png_structure(Cursor::new(&trailing), trailing.len() as u64).is_err());
+    }
+    #[test]
+    fn png_structure_rejects_duplicate_header_unknown_critical_and_oversize() {
+        let valid = sample_png();
+        let mut duplicated = valid[..33].to_vec();
+        duplicated.extend(chunk(b"IHDR", &valid[16..29]));
+        duplicated.extend_from_slice(&valid[33..]);
+        assert!(verify_png_structure(Cursor::new(&duplicated), duplicated.len() as u64).is_err());
+        let mut unknown = valid[..33].to_vec();
+        unknown.extend(chunk(b"ABCD", &[1]));
+        unknown.extend_from_slice(&valid[33..]);
+        assert!(verify_png_structure(Cursor::new(&unknown), unknown.len() as u64).is_err());
+        assert!(verify_png_structure(Cursor::new(&valid), 96*1024*1024+1).is_err());
+    }
     fn png_header(width: u32, height: u32) -> [u8; 24] {
         let mut bytes = [0_u8; 24];
         bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
