@@ -34,7 +34,7 @@ test("native recipe is fixed, typed, bounded and never invokes a process or read
   assert.match(rust,/let plan=json!\(\{"timeout_ms":90_000,"steps":steps\}\)/);
   assert.match(rust,/if serde_json::to_vec\(&plan\).*\.len\(\)>65536/);
   for(const operation of [
-    "mesh.create","mesh.inspect","mesh.translate_vertices","objects.list",
+    "mesh.create","mesh.inspect","mesh.translate_vertices","objects.list","device.create",
     "scene.inspect","file.checkpoint","render.configure","render.execute",
   ])assert.ok(rust.includes('"'+operation+'"'),operation);
   assert.match(lineage,/fn valid_stage\(/);
@@ -60,8 +60,8 @@ test("independent Python plan-only recipe provides the same expected upstream op
   skip:python?false:"Python interpreter not installed on runner",
 },()=>{
   const expected={
-    model1:["mesh.create","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"],
-    model2:["objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"],
+    model1:["mesh.create","mesh.translate_vertices","scene.inspect","device.create","scene.inspect","file.checkpoint"],
+    model2:["device.create","objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"],
     render:["render.configure","scene.inspect","render.execute"],
   };
   const [exe,...args]=python;
@@ -74,7 +74,7 @@ test("independent Python plan-only recipe provides the same expected upstream op
     const value=JSON.parse(call.stdout);
     assert.equal(value.mode,"PLAN_ONLY_NO_BLENDER_LAUNCH");
     assert.deepEqual(value.plan.steps.map(x=>x.request.operation),steps);
-    assert.equal(value.plan.steps.length,stage==="render"?3:5);
+    assert.equal(value.plan.steps.length,stage==="render"?3:6);
     assert.equal(value.requires_separate_native_owner_approval,true);
     assert.equal(value.render_action_approval_required,stage==="render");
   }
