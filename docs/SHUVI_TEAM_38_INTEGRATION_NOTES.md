@@ -267,3 +267,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 38 test robustness
 - Kernel contention and forged-lock-path tests now use the actual `model/blender_run_plan` ready DAG step instead of a deliberately invalid step identifier; preflight proves the same request passes before adding the conflicting lock. With lock removed, the identical action succeeds. This prevents false-positive tests that would pass even with broken locking.
+
+## Milestone 40 — two global OS-backed slots for real read-only hash workers
+- The actual final-delivery SHA256 verification threads now acquire one of exactly TWO per-user kernel-exclusive slots across all Shuvi instances for the whole streaming artifact read. Two desktop app instances cannot each start two independent file-stream hashers and overload the host. All existing exact audited UUID, 512 MiB artifact cap, 64 KiB buffer, disk identity and same-file serializing checks remain.
+- Windows uses reparse-safe zero-share OS handles; Unix uses flock. A third parallel verifier, forged lock directory, or inaccessible slot fails closed without publishing delivery. A crashed process automatically releases its handle but never proves task success. No new OS child process, GUI action, permission or automatic retry is introduced.
+- Added real Rust thread/slot exhaustion/release/corrupt sidecar tests and Node wiring regressions. This makes **Rust background hashing concurrency** cross-process bounded, not full independent OS subprocess execution.

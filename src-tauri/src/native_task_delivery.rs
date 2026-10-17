@@ -10,6 +10,8 @@ const MAX_BYTES:usize=32_768;
 const MAX_STEPS:usize=48;
 const MAX_ARTIFACT_BYTES:u64=512*1024*1024;
 static IO:Mutex<()>=Mutex::new(());
+#[path = "native_global_hash_slots.rs"]
+mod global_hash_slots;
 
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -276,7 +278,12 @@ where F:Fn(&DeliveryArtifact,&str)->Result<(),String>+Sync{
     Ok(())
 }
 fn verify<F>(schedule:&crate::native_scheduler::Schedule,steps:&[DeliveryStep],
-    mut audit:F)->Result<(),String>
+    audit:F)->Result<(),String>
+where F:FnMut(&str)->Result<crate::AuditEntry,String>{
+    verify_with_pool(schedule,steps,audit,None)
+}
+fn verify_with_pool<F>(schedule:&crate::native_scheduler::Schedule,steps:&[DeliveryStep],
+    mut audit:F,pool:Option<&Path>)->Result<(),String>
 where F:FnMut(&str)->Result<crate::AuditEntry,String>{
     if schedule.jobs.is_empty()||schedule.jobs.len()!=steps.len()||steps.len()>MAX_STEPS
         ||schedule.jobs.iter().any(|j|j.phase!="audited"){
@@ -299,7 +306,10 @@ where F:FnMut(&str)->Result<crate::AuditEntry,String>{
     }
     // Only after all exact UUID/tool audit receipts match, verify independently
     // readable artifacts with a strictly bounded read-only Rust worker pool.
-    verify_artifacts_bounded(steps,check_artifact)?;
+    verify_artifacts_bounded(steps,|artifact,tool|{
+        let _slot=match pool{Some(dir)=>Some(global_hash_slots::HashSlot::take(dir)?),None=>None};
+        check_artifact(artifact,tool)
+    })?;
     Ok(())
 }
 fn write_at(path:&Path,receipt:&DeliveryReceipt)->Result<(),String>{
@@ -405,9 +415,14 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
         recorded_at_ms:crate::now_ms(),steps
     };
     check_structure(&receipt)?;
-    verify(&schedule,&receipt.steps,|id|
+    let global_pool=app.path().app_data_dir()
+        .map_err(|_|"Native hash worker pool directory unavailable.")?;
+    fs::create_dir_all(&global_pool)
+        .map_err(|_|"Cannot create native hash worker pool directory.")?;
+    verify_with_pool(&schedule,&receipt.steps,|id|
         crate::read_action_audit_receipt(app,id)?
-            .ok_or("Delivery requires an exact Rust action audit.".to_string()))?;
+            .ok_or("Delivery requires an exact Rust action audit.".to_string()),
+        Some(&global_pool))?;
     // An externally existing .blend plus an arbitrary matching hash is not
     // evidence that the exact scheduled worker produced it.
     verify_blender_certificates(app,&receipt.steps)?;
