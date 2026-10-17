@@ -12,6 +12,7 @@ mod blender_input_checkpoint;
 mod blender_acceptance_chain;
 mod blender_action_audit;
 mod blender_plan_lineage;
+mod blender_acceptance_recipe;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
@@ -214,6 +215,7 @@ Available tools:
 - blender_session_inspect: {"session_id":"exact UUID returned by blender_session_start"} — read-only authenticated health and scene revision.
 - blender_session_objects: {"session_id":"exact UUID","expected_scene_revision":"fresh scene_revision from inspect","offset":0,"limit":5,"name_prefix":"","object_type":null} — read-only authenticated paginated discovery, at most 5 object IDs/names/types/revisions with no edits; re-inspect if scene changes.
 - blender_session_plan: {"session_id":"exact UUID","expected_scene_revision":"exact scene_revision from blender_session_inspect","allow_render":false,"plan":{"timeout_ms":90000,"steps":[...]}} — HIGH RISK: up to six typed Blender operations ending in verified .blend checkpoint or PNG; render needs action-level approval and prior session policy ceiling; never automatically retry.
+- blender_build_acceptance_recipe: {"stage":"model1|model2|render","expected_scene_revision":"exact fresh sha256 from blender_session_inspect"} — read-only native plan-only recipe generator, no Blender launch or action approval. To execute, submit the returned plan through a DISTINCT owner-approved blender_session_plan with same current session/revision. Render requires a NEW source-hash-verified session.
 - blender_review_acceptance_chain: {"approved_output_dir":"existing absolute output folder","receipts":[{...native Blender stage1 receipt...},{...native Blender stage2 receipt...},{...native Blender render receipt...}]} — read-only 3-stage on-disk SHA/mesh/session consistency review; does NOT prove historic action approval, that render loaded stage2, or live creative quality
 - blender_verify_artifact_manifest: {"approved_output_dir":"existing absolute folder containing exact output","manifest":{"schema_version":1,"producer":"shuvi41.blender","source_action_id":"canonical UUID","artifact":{...},"evidence":{...},"handoff":{...}}} — read-only, re-hash current .blend/PNG bytes and confirm path within the caller-selected output folder; prior approval/reopen are NOT re-authenticated and no import occurs
 - blender_session_close: {"session_id":"exact UUID"} — retire only that owned process and its authenticated Blender child.
@@ -694,6 +696,7 @@ enum ToolAction {
     BlenderSessionClose { session_id:String },
     BlenderVerifyArtifactManifest { approved_output_dir:String, manifest:Value },
     BlenderReviewAcceptanceChain { approved_output_dir:String, receipts:Value },
+    BlenderBuildAcceptanceRecipe { stage:String, expected_scene_revision:String },
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
     MotionGraphicsPlanAfterEffectsOutput { request: motion_graphics::AfterEffectsOutputPlanRequest },
@@ -1699,6 +1702,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "blender_session_close"
         | "blender_verify_artifact_manifest"
         | "blender_review_acceptance_chain"
+        | "blender_build_acceptance_recipe"
         | "motion_graphics_validate_plan"
         | "motion_graphics_plan_after_effects"
         | "motion_graphics_plan_after_effects_output"
@@ -3807,6 +3811,21 @@ fn stage_tool(
                 "Run one approved plan in owned Blender session".into(),
                 format!("Execute up to 6 typed operations only if the live Blender scene still has exact inspected revision {expected_scene_revision}; approved render={allow_render}; independently verified saved artifact and no automatic retries."),
                 RiskLevel::High)
+        }
+        "blender_build_acceptance_recipe" => {
+            let stage=arg_string(&proposal.arguments,"stage")?;
+            if !matches!(stage.as_str(),"model1"|"model2"|"render") {
+                return Err("Native Blender plan recipe stage must be model1, model2 or render.".into());
+            }
+            let expected_scene_revision=arg_string(&proposal.arguments,"expected_scene_revision")?;
+            if expected_scene_revision.len()!=64 ||
+                !expected_scene_revision.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase()){
+                return Err("Use a fresh lowercase 64-character Blender scene revision from inspect.".into());
+            }
+            (ToolAction::BlenderBuildAcceptanceRecipe{stage,expected_scene_revision},
+                "Build Blender acceptance plan preview".into(),
+                "Read only: generate exact typed, bounded model1/model2/render plan with fresh UUIDs. Never starts Blender, edits a project or grants approval. A separate high-risk approved blender_session_plan action is always required.".into(),
+                RiskLevel::Low)
         }
         "blender_review_acceptance_chain" => {
             let approved_output_dir=absolute_path(arg_string(&proposal.arguments,"approved_output_dir")?)?;
@@ -10760,6 +10779,10 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             let response=blender_session_worker::plan(&state.blender_session,state,&session_id,
                 &plan,allow_render,&expected_scene_revision,execution_action_id)?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::BlenderBuildAcceptanceRecipe {stage,expected_scene_revision} => {
+            let preview=blender_acceptance_recipe::build(&stage,&expected_scene_revision)?;
+            Ok(ActionResult{success:true,tool,stdout:preview.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::BlenderReviewAcceptanceChain {approved_output_dir,receipts} => {
             let mut result=blender_acceptance_chain::review(&receipts,Path::new(&approved_output_dir))?;
