@@ -26,7 +26,7 @@ function matchesArtifact(step,actual){
     typeof a.sha256!=="string"||!SHA.test(a.sha256)||
     !Number.isSafeInteger(a.bytes)||a.bytes<1)return false;
  if(tool==="premiere_create_project")
-  return /\\.prproj$/i.test(a.path);
+  return /\.prproj$/i.test(a.path);
  const evidence=step.evidence?.filter(e=>e?.success===true&&
    e.action_id===actual.actionId&&e.tool===tool);
  if(evidence?.length!==1||!obj(evidence[0].artifact))return false;
