@@ -18868,6 +18868,59 @@ fn native_task_delivery_verify_history(
 )->Result<native_task_delivery::VerifiedHistoricalDelivery,String>{
     native_task_delivery::verify_historical(&app,&first_action_id)
 }
+/// Local owner-only observation of independent read-only Windows SHA jobs.
+/// This cannot approve, restart, cancel, or prove application editing results.
+/// The absent first-run data directory is empty; unexpected disk shapes fail
+/// closed and remain visible as unavailable instead of fabricated success.
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeBackgroundOwnerStatus{
+    schema_version:u32,
+    workers:Vec<NativeBackgroundOwnerWorker>,
+    process_liveness_verified:bool,
+    application_verified:bool,
+    safe_to_auto_retry:bool,
+}
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeBackgroundOwnerWorker{
+    action_id:String,
+    recorded_phase:String,
+    evidence_health:String,
+    current_file_rehashed:bool,
+    safe_to_auto_retry:bool,
+}
+#[tauri::command]
+fn native_background_readonly_status(app:AppHandle)->Result<NativeBackgroundOwnerStatus,String>{
+    #[cfg(windows)]
+    {
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Native background status directory unavailable.")?;
+        let items=match fs::symlink_metadata(&root){
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Vec::new(),
+            Err(_)=>return Err("Native background directory cannot be inspected.".into()),
+            Ok(_)=>native_scheduler::background_os_workers::inspect_readonly_health(&root)?,
+        };
+        Ok(NativeBackgroundOwnerStatus{
+            schema_version:1,
+            workers:items.into_iter().map(|item|NativeBackgroundOwnerWorker{
+                action_id:item.action_id,
+                recorded_phase:item.recorded_phase,
+                evidence_health:item.evidence_health,
+                current_file_rehashed:item.current_file_rehashed,
+                safe_to_auto_retry:false,
+            }).collect(),
+            process_liveness_verified:false,
+            application_verified:false,
+            safe_to_auto_retry:false,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _=app;
+        Err("Independent Windows OS background worker status requires Windows.".into())
+    }
+}
 #[tauri::command]
 fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
     native_scheduler::verified_status(&app)
@@ -19719,6 +19772,7 @@ pub fn run() {
             native_task_delivery_verify_history,
             finalize_native_task_delivery,
             native_scheduler_status,
+            native_background_readonly_status,
             review_native_scheduler_failure,
             reconcile_native_worker_job,
             prepare_tool,
