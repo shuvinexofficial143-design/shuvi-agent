@@ -54,6 +54,8 @@ fn validate(q:&Queue)->Result<(),String>{
     let mut seen_orders=HashSet::<u64>::new();
     let mut active_paths=HashSet::<&str>::new();
     let mut active_count=0;
+    let mut prior_ordinal=0u64;
+    let mut prior_round=0u64;
     for p in &q.parents{
         if !super::valid_uuid(&p.parent_id)||!seen_orders.insert(p.ordinal)
             ||p.ordinal==0||p.ordinal>=q.next_ordinal
@@ -67,6 +69,11 @@ fn validate(q:&Queue)->Result<(),String>{
         {
             return Err("Parent queue identity/class/state is invalid.".into());
         }
+        if p.ordinal<=prior_ordinal||p.enqueued_round<prior_round{
+            return Err("Parent queue append-only ordering was altered.".into());
+        }
+        prior_ordinal=p.ordinal;
+        prior_round=p.enqueued_round;
         if p.depends_on.windows(2).any(|x|x[0]>=x[1])
             ||p.depends_on.iter().any(|d|!seen.contains(d)){
             return Err("Parent dependencies must be distinct, sorted, earlier approved UUIDs.".into());
@@ -225,6 +232,35 @@ pub(crate) fn claim_next_at(root:&Path)->Result<Option<Parent>,String>{
     let _os=OsLock::take(&file)?;
     let mut q=load(&file)?;
     let Some(index)=ready_index(&q) else{return Ok(None)};
+    // A historical sha256_verified phase is never proof of CURRENT bytes.
+    // Verify EVERY transitive prerequisite against the exact OS admission
+    // and independently rehash its current input before admitting work.
+    fn check_deps(root:&Path,q:&Queue,id:&str,seen:&mut HashSet<String>)
+        ->Result<(),String>{
+        if !seen.insert(id.to_owned()){return Ok(());}
+        let parent=q.parents.iter().find(|p|p.parent_id==id)
+            .ok_or("Parent dependency disappeared.")?;
+        if parent.phase!="sha256_verified"{
+            return Err("Parent dependency is not SHA-verified.".into());
+        }
+        let claim=super::admission::snapshot_detailed_at(root)?
+            .into_iter().find(|x|x.action_id==id)
+            .ok_or("Parent dependency has no authenticated OS record.")?;
+        if claim.phase!="sha256_verified"
+            ||claim.input_path!=parent.input_path
+            ||claim.expected_sha256!=parent.expected_sha256{
+            return Err("Parent dependency OS identity does not match.".into());
+        }
+        let receipt=root.join(format!("native-bg-hash-{id}.json"));
+        super::hash_readback::verify(&receipt,id,Path::new(&parent.input_path),
+            &parent.expected_sha256)?;
+        for dep in &parent.depends_on{check_deps(root,q,dep,seen)?;}
+        Ok(())
+    }
+    let mut seen=HashSet::new();
+    for dep in &q.parents[index].depends_on{
+        check_deps(root,&q,dep,&mut seen)?;
+    }
     // Durable parent claim BEFORE any M46 launch. Crash is UNKNOWN, not idle.
     q.parents[index].phase="admitted".into();
     q.dispatch_round=q.dispatch_round.checked_add(1)
