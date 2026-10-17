@@ -61,6 +61,7 @@ test("Desktop source queues every task checkpoint write and clear, no direct con
  assert.match(writer,/structuredClone\(currentCheckpoint\(\)\)/);
  assert.match(writer,/taskCheckpointLane\.enqueue\(/);
  assert.match(writer,/invoke\("save_session_checkpoint",\{checkpoint\}\)/);
+ assert.match(writer,/const reloaded=await invoke<SessionCheckpoint\|null>\("load_session_checkpoint"\)/);
  assert.match(clearer,/taskCheckpointLane\.enqueue\(/);
  assert.match(clearer,/invoke\("clear_session_checkpoint"\)/);
  assert.equal((main.match(/invoke\("save_session_checkpoint"/g)||[]).length,1);

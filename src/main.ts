@@ -20,6 +20,7 @@ import {assessNativeFinalizationPreflight} from "./master-finalization-preflight
 import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from "./master-project-proof-fence.mjs";
 import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./master-native-action-ownership.mjs";
 import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
+import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -856,7 +857,7 @@ function renderOrchestrationStatus(): void {
 // Serialize every native checkpoint save AND clear from this WebView, never
 // letting a delayed older task clear/overwrite a newer task's snapshot.
 const taskCheckpointLane=createTaskCheckpointLane();
-async function guardedSaveNativeCheckpoint():Promise<boolean>{
+async function guardedSaveNativeCheckpoint(verifyReadback=false):Promise<boolean>{
   const scope=activePermissionScope;
   const graph=orchestration.task_graph;
   const owner=orchestration.owner_request;
@@ -866,7 +867,19 @@ async function guardedSaveNativeCheckpoint():Promise<boolean>{
   return taskCheckpointLane.enqueue(
     ()=>activePermissionScope===scope&&
       orchestration.task_graph===graph&&orchestration.owner_request===owner,
-    ()=>invoke("save_session_checkpoint",{checkpoint})
+    async()=>{
+      await invoke("save_session_checkpoint",{checkpoint});
+      // Keep save+readback in ONE serialized lane turn so another WebView
+      // action cannot publish a different checkpoint between them.
+      if(verifyReadback){
+        const reloaded=await invoke<SessionCheckpoint|null>("load_session_checkpoint");
+        const verified=assessNativeCheckpointReadback(checkpoint,reloaded);
+        if(!verified.verified)throw Error(
+          "Native checkpoint readback refused. No provider/action may continue: "+
+          verified.reason
+        );
+      }
+    }
   );
 }
 async function guardedClearNativeCheckpoint(
@@ -908,8 +921,16 @@ async function clearActiveCheckpoint(): Promise<void> {
 }
 
 async function loadRecoveryCheckpoint(): Promise<void> {
+  const readingScope=activePermissionScope;
+  const readingGraph=orchestration.task_graph;
+  const readingOwner=orchestration.owner_request;
+  const stillReading=()=>readingScope===activePermissionScope&&
+    readingGraph===orchestration.task_graph&&
+    readingOwner===orchestration.owner_request;
   try {
-    savedCheckpoint = await invoke<SessionCheckpoint | null>("load_session_checkpoint");
+    const loaded=await invoke<SessionCheckpoint | null>("load_session_checkpoint");
+    if(!stillReading())return;
+    savedCheckpoint=loaded;
 
     if (!savedCheckpoint || savedCheckpoint.messages.length === 0) {
       resumeBanner.classList.add("hidden");
@@ -922,6 +943,7 @@ async function loadRecoveryCheckpoint(): Promise<void> {
     resumeSummary.textContent = "Saved " + ageText + " ago · " + savedCheckpoint.provider + " · " + orchestrationSummary(savedOrchestration);
     resumeBanner.classList.remove("hidden");
   } catch {
+    if(!stillReading())return;
     savedCheckpoint = null;
     resumeBanner.classList.add("hidden");
   }
@@ -1249,7 +1271,7 @@ async function persistRequiredContinuationCheckpoint(
   stillCurrent:()=>boolean=()=>true
 ): Promise<boolean> {
   try {
-    if(!(await guardedSaveNativeCheckpoint()))return false;
+    if(!(await guardedSaveNativeCheckpoint(true)))return false;
     return stillCurrent();
   } catch {
     // A failed old checkpoint must not stop a newly rotated user task.
@@ -1519,7 +1541,7 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   // Persist the in-flight receipt before permission staging/execution. Failure closes the graph path.
   if (orchestration.task_graph) {
     try {
-      if(!(await guardedSaveNativeCheckpoint()))return;
+      if(!(await guardedSaveNativeCheckpoint(true)))return;
     } catch {
       if(staleStage())return;
       await stopAgentForSafety("Could not save task progress before staging the action. A new instruction or safe resume is required.");
@@ -1581,7 +1603,7 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     // showing approval UI or auto-executing a session-scoped low-risk action.
     if (orchestration.task_graph && proposal.task_step_id != null) {
       try {
-        if(!(await guardedSaveNativeCheckpoint())){
+        if(!(await guardedSaveNativeCheckpoint(true))){
           await denyStaleAction(preparedId);
           return;
         }
@@ -2267,7 +2289,7 @@ async function runAgentStep(): Promise<void> {
   orchestration = reservation.state;
   // A12: if the durable reservation cannot be saved, do NOT call the provider.
   try {
-    if(!(await guardedSaveNativeCheckpoint()))return;
+    if(!(await guardedSaveNativeCheckpoint(true)))return;
   } catch {
     if(staleModelRequest())return;
     await stopAgentForSafety("Shuvi could not persist its model-request reservation. No AI provider request was sent.");
@@ -2369,11 +2391,10 @@ async function runAgentStep(): Promise<void> {
     // before the mobile UI can display a completed task.
     const masterEditing = Boolean(editingMasterContext(messages));
     const graphSatisfied = progress.total > 0 && progress.completed === progress.total;
-    if(remoteTask)await closeRemoteTask(
-      remoteTask.evidenceActionId && !remoteTask.hadFailure && !needsDragReview &&
-      (masterEditing ? graphSatisfied : (!progress.total || graphSatisfied))
-        ? "succeeded" : "outcome_unknown"
-    );
+    // A native action receipt is not original user-goal acceptance. Only the
+    // strict final Rust/goal verifier in continueAfterOutcome may mark the
+    // remote task succeeded; this generic provider turn cannot.
+    if(remoteTask)await closeRemoteTask("outcome_unknown");
     setBusy(false);
   } catch {
     if (staleModelRequest()) return;
@@ -2428,6 +2449,9 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   if (restored.recovery_mode !== "stopped" && !window.confirm(
     "Resuming may resend an unfinished AI request. The prior provider request may have been billed. Verify provider usage before continuing. Send a new request?"
   )) return;
+  // Even a saved STOPPED task may have been discarded/replaced while the
+  // owner reviewed it. Never resurrect the older checkpoint after rotation.
+  if(savedCheckpoint!==checkpoint||busy)return;
   savedCheckpoint = null;
   resumeBanner.classList.add("hidden");
 
