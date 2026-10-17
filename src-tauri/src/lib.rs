@@ -19093,6 +19093,77 @@ fn review_native_approved_parent_uncertain(
         Err("Parent unknown recovery review requires Windows.".into())
     }
 }
+/// M57: exact owner consent + a separately approved read-only process
+/// inspection + PRIOR M56 UNKNOWN owner review + matching M46 OS terminal
+/// journal and native OS Job receipt. Any missing proof retains held claim.
+/// This does NOT prove application success, file SHA, or PID liveness.
+#[tauri::command]
+fn reconcile_native_approved_parent_terminal(
+    parent_id:String,
+    inspection_action_id:String,
+    confirmation:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<bool,String>{
+    #[cfg(windows)]{
+        if confirmation!="RECONCILE TERMINAL UNKNOWN" {
+            return Err("Exact owner confirmation RECONCILE TERMINAL UNKNOWN is required.".into());
+        }
+        let valid=|id:&str|uuid::Uuid::parse_str(id)
+            .map(|u|u.to_string()==id).unwrap_or(false);
+        if !valid(&parent_id)||!valid(&inspection_action_id)
+            ||parent_id==inspection_action_id {
+            return Err("Reconciliation requires distinct canonical parent and inspection UUIDs.".into());
+        }
+        let _lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+        if !state.running_action_tools.lock()
+            .map_err(|_|"Current native action status inaccessible.")?.is_empty()
+            ||!state.pending.lock()
+                .map_err(|_|"Native permission queue unreadable.")?.is_empty(){
+            return Err("No active or unresolved permissioned actions may overlap reconciliation.".into());
+        }
+        let parent=read_action_audit_receipt(&app,&parent_id)?
+            .ok_or("Missing independently owner-approved parent enqueue audit.")?;
+        if parent.event!="executed"||!parent.success
+            ||parent.tool!="queue_readonly_sha_parent"{
+            return Err("Exact parent lacks owner-approved durable queue enrollment.".into());
+        }
+        let inspection=read_action_audit_receipt(&app,&inspection_action_id)?
+            .ok_or("Missing separately approved read-only process inspection audit.")?;
+        if inspection.event!="executed"||!inspection.success
+            ||inspection.timestamp_ms<=parent.timestamp_ms
+            ||inspection.tool!="list_processes"{
+            return Err("A later, separate owner-approved list_processes inspection is mandatory.".into());
+        }
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Cannot locate exact parent OS recovery journal.")?;
+        // A refused operation must not silently clear a held claim. Store
+        // intent with success=false even if evidence subsequently mismatches.
+        append_audit(&app,&AuditEntry{
+            timestamp_ms:now_ms(),
+            event:"native_parent_terminal_reconciliation_requested".into(),
+            tool:"queue_readonly_sha_parent".into(),
+            detail:format!("Owner requests OS-terminal-only reconciliation for exact parent {}; no application success, retry or PID liveness asserted.",parent_id),
+            success:false,
+            action_id:Some(parent_id.clone()),
+        })?;
+        let changed=native_scheduler::background_os_workers::parent_queue::
+            reconcile_owned_terminal_at(&root,&parent_id)?;
+        append_audit(&app,&AuditEntry{
+            timestamp_ms:now_ms(),
+            event:"native_parent_os_terminal_reconciled_unverified".into(),
+            tool:"queue_readonly_sha_parent".into(),
+            detail:format!("Exact parent {} OS terminal double-journal evidence owner reconciled; original parent UUID spent. Resource was released ONLY for new separate owner-approved jobs. SHA/app verification false.",parent_id),
+            success:false,
+            action_id:Some(parent_id),
+        })?;
+        Ok(changed)
+    }
+    #[cfg(not(windows))]{
+        let _=(parent_id,inspection_action_id,confirmation,state,app);
+        Err("Parent terminal reconciliation requires Windows.".into())
+    }
+}
 #[tauri::command]
 fn native_approved_parent_queue_status(app:AppHandle)->Result<NativeApprovedParentQueueStatus,String>{
     #[cfg(windows)]{
@@ -20160,6 +20231,7 @@ pub fn run() {
             native_approved_parent_queue_status,
             native_approved_parent_recovery_status,
             review_native_approved_parent_uncertain,
+            reconcile_native_approved_parent_terminal,
             review_native_scheduler_failure,
             reconcile_native_worker_job,
             prepare_tool,
