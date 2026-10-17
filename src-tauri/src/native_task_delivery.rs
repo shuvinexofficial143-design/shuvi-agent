@@ -381,6 +381,12 @@ fn verify_blender_certificates(app:&AppHandle,steps:&[DeliveryStep])
 }
 pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryReceipt,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    // Reserve the same two cross-instance read-only SHA slots for EVERY
+    // artifact-hash path in this finalization, not just the parallel batch.
+    let global_pool=app.path().app_data_dir()
+        .map_err(|_|"Native hash worker pool directory unavailable.")?;
+    fs::create_dir_all(&global_pool)
+        .map_err(|_|"Cannot create native hash worker pool directory.")?;
     let schedule=crate::native_scheduler::read(app)?
         .ok_or("No durable Rust scheduler exists for the final task.")?;
     let mut steps=steps;
@@ -388,6 +394,7 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
     // from the worker's exact UUID-bound, rehashed on-disk certificate.
     // Explicitly supplied artifact claims are checked against it later.
     fill_missing_blender_artifacts(&mut steps,|id|{
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
         let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
         Ok(DeliveryArtifact{kind:"blender_artifact".into(),
             path:cert.path,sha256:cert.sha256,bytes:cert.bytes,
@@ -396,6 +403,7 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
     // Explicit paths/hashes are never replaced, but the approved-plan
     // provenance is filled from exact UUID evidence when it is available.
     fill_blender_plan_provenance(&mut steps,|id|{
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
         let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
         Ok(DeliveryArtifact{kind:"blender_artifact".into(),
             path:cert.path,sha256:cert.sha256,bytes:cert.bytes,
@@ -406,6 +414,7 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
     for step in &mut steps {
         if let Some(a)=step.artifact.as_mut(){
             if a.bytes==0 {
+                let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
                 a.bytes=file_hash(Path::new(&a.path),MAX_ARTIFACT_BYTES)?.0;
             }
         }
@@ -415,22 +424,25 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
         recorded_at_ms:crate::now_ms(),steps
     };
     check_structure(&receipt)?;
-    let global_pool=app.path().app_data_dir()
-        .map_err(|_|"Native hash worker pool directory unavailable.")?;
-    fs::create_dir_all(&global_pool)
-        .map_err(|_|"Cannot create native hash worker pool directory.")?;
     verify_with_pool(&schedule,&receipt.steps,|id|
         crate::read_action_audit_receipt(app,id)?
             .ok_or("Delivery requires an exact Rust action audit.".to_string()),
         Some(&global_pool))?;
     // An externally existing .blend plus an arbitrary matching hash is not
     // evidence that the exact scheduled worker produced it.
-    verify_blender_certificates(app,&receipt.steps)?;
+    {
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+        verify_blender_certificates(app,&receipt.steps)?;
+    }
     write_at(&path(app)?,&receipt)?;
     Ok(receipt)
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let global_pool=app.path().app_data_dir()
+        .map_err(|_|"Read-only delivery verification pool unavailable.")?;
+    fs::create_dir_all(&global_pool)
+        .map_err(|_|"Cannot prepare read-only delivery verification pool.")?;
     let path=path(app)?;
     if !path.exists(){
         if path.with_extension("json.bak").exists()||path.with_extension("json.tmp").exists(){
@@ -452,11 +464,17 @@ pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
             ||entry.tool!=step.tool||entry.event!="executed"||!entry.success{
             return Err("Last delivery no longer has the matching Rust audit.".into());
         }
-        if let Some(a)=step.artifact.as_ref(){check_artifact(a,&step.tool)?;}
+        if let Some(a)=step.artifact.as_ref(){
+            let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+            check_artifact(a,&step.tool)?;
+        }
     }
     // A historical task is not verified solely because its final JSON
     // receipt is intact. Recheck exact worker provenance on every read.
-    verify_blender_certificates(app,&stored.steps)?;
+    {
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+        verify_blender_certificates(app,&stored.steps)?;
+    }
     Ok(Some(stored))
 }
 #[cfg(test)]

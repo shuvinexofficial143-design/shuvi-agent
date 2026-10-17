@@ -278,3 +278,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 38 fixture compile repair
 - On latest M40 HEAD the Windows rustc `E0382` in a **test fixture** used `lock:PathBuf` after `remove_dir(lock)` consumed it. Changed to `remove_dir(&lock)` to preserve the PathBuf for later cleanup. The production OS lock, concurrency behavior and verified actual-step fixture were not altered. Recheck exact new SHA CI.
+
+## Milestone 41 — globally budget every Final Delivery rehash, not only parallel workers
+- Fixed actual cross-instance worker-budget coverage: earlier M40 guarded the two-thread batch but other final-delivery reads could hash bytes outside the two kernel slots. `finalize` now acquires an exclusive global hash slot for the missing-Blender-artifact certificate readback, the separately verified full-plan provenance hydration, optional trusted byte-count SHA read, and final certificate verification. The already-audited parallel artifact verification still uses per-worker independent slots.
+- The read-only **historical receipt inspection** also acquires a hash slot around each actual artifact SHA read and the subsequent Blender certificate rehash. No file contents, native permissions, DAG ordering, exit statuses, or recovery states are synthesized from the lock. Slot exhaustion fails closed and never commits a delivery receipt.
+- Source-contract tests assert coverage across all final-delivery hashing entrypoints. This is a constrained OS-wide background verification workload, not independently running Adobe/Blender OS subprocesses.
