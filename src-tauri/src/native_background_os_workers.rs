@@ -259,6 +259,9 @@ where F:FnMut()->Result<bool,String>{
     // Completely separate host rehash is indispensable: OS exit zero and
     // JSON emitted by the worker alone must never certify application work.
     let bytes=hash_readback::verify(&output,id,input,expected_sha256)?;
+    // Only THIS independent host readback can upgrade OS-exit-unverified
+    // to SHA-verified. This does NOT certify any application/UI action.
+    admission::verified_sha_at(root,id,pid)?;
     Ok(VerifiedReadOnlyHash{
         action_id:id.into(),sha256:expected_sha256.into(),bytes,os_pid:pid,
     })
