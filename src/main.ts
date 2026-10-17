@@ -937,7 +937,9 @@ async function loadRecoveryCheckpoint(): Promise<void> {
       loaded=await invoke<SessionCheckpoint|null>("load_session_checkpoint");
     });
     if(!accepted||!stillReading())return;
-    savedCheckpoint=loaded;
+    // TypeScript cannot observe the assignment from the serialized IPC
+    // callback; retain the actual Rust-returned union after awaited lane.
+    savedCheckpoint=loaded as SessionCheckpoint|null;
 
     if (!savedCheckpoint || savedCheckpoint.messages.length === 0) {
       resumeBanner.classList.add("hidden");
