@@ -621,6 +621,24 @@ mod tests{
         // Without aging, the new high-priority B would win instead.
     }
     #[test]
+    fn m55_durable_exact_stop_for_matching_os_admission_is_idempotent_not_termination(){
+        let d=dir();let a=input(&d,"exact-stop-a");let b=input(&d,"other-input");
+        add(&d,A,&a,0,&[]).unwrap();add(&d,B,&b,0,&[]).unwrap();
+        assert_eq!(claim_next_at(&d).unwrap().unwrap().parent_id,A);
+        // A recorded M46 os_running child is enough to REQUEST Stop,
+        // not to prove a live PID or an actual OS tree termination.
+        super::super::admission::reserve_at(&d,A,&a,&"a".repeat(64)).unwrap();
+        super::super::admission::started_at(&d,A,5843).unwrap();
+        assert!(!super::super::inspect_stop_intent(&d,A).unwrap());
+        assert!(request_exact_parent_stop_at(&d,A).unwrap());
+        assert!(super::super::inspect_stop_intent(&d,A).unwrap());
+        assert!(request_exact_parent_stop_at(&d,A).unwrap()); // idempotent
+        assert_eq!(snapshot_at(&d).unwrap()[0].phase,"admitted");
+        assert!(!request_exact_parent_stop_at(&d,B).unwrap());
+        assert!(!super::super::inspect_stop_intent(&d,B).unwrap());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
     fn parent_stop_cannot_claim_process_termination_without_owned_os_pid(){
         let d=dir();let a=input(&d,"owner-stop");
         add(&d,A,&a,0,&[]).unwrap();
