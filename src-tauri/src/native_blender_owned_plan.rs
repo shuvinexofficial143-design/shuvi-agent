@@ -164,13 +164,19 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     let expected_plan_sha256=format!("{:x}",Sha256::digest(&bytes));
     let input=prepare_plan(&root,&bytes)?;
     let evidence=TemporaryFile(root.join(format!("{}.json",Uuid::new_v4())));
+    let mut progress=crate::native_scheduler::worker_progress::ProgressChannel::create(
+        &root,action_id,&expected_plan_sha256)?;
     let cwd=script.parent().ok_or("Bundled Blender plan script has no parent directory.")?;
     let mut args=vec![
         OsString::from("-B"),script.as_os_str().to_os_string(),
         OsString::from("--python-plan"),input.0.as_os_str().to_os_string(),
         OsString::from("--blender-exe"),blender.as_os_str().to_os_string(),
         OsString::from("--output-dir"),OsString::from(output_dir),
-        OsString::from("--result-file"),evidence.0.as_os_str().to_os_string()
+        OsString::from("--result-file"),evidence.0.as_os_str().to_os_string(),
+        OsString::from("--worker-progress-file"),progress.pulse_path().as_os_str().to_os_string(),
+        OsString::from("--worker-progress-key-file"),progress.key_path().as_os_str().to_os_string(),
+        OsString::from("--worker-action-id"),OsString::from(action_id),
+        OsString::from("--worker-plan-sha256"),OsString::from(&expected_plan_sha256)
     ];
     if let Some(file)=blend_file{
         args.push(OsString::from("--blend-file"));
@@ -181,7 +187,8 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     let mut child=crate::native_scheduler::owned_process::spawn_for_active_action(
         app,lease,action_id,"blender_run_plan",&python,&args,cwd,Duration::from_secs(120))?;
     let tracked=crate::native_scheduler::owned_process::RegisteredOwnedPid::start(state,child.pid())?;
-    let result=child.wait_bounded_with_host_budget(state);
+    let result=child.wait_bounded_with_host_budget_and_progress(
+        state,||progress.observe());
     // Do not restore native lease until all Job Object descendants are gone.
     let recovered=child.reclaim_terminal_lease()?;
     *slot=Some(recovered);
@@ -190,6 +197,9 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     if status.phase!="exited"||status.exit_code!=Some(0)||!status.descendants_contained{
         return Err("Owned Blender plan cancelled/failed/timed out; inspect Blender output before retry.".into());
     }
+    // Actual worker-side ACK is independently authenticated and action-bound.
+    // Supervisor ticks and process exit cannot satisfy this check.
+    progress.require_verified_artifact_ack()?;
     let verified=native_plan_response(&evidence.0,&root,
         Path::new(output_dir),render,expected_operation,expected_steps,
         &expected_plan_sha256)?;

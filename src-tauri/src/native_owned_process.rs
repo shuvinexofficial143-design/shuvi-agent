@@ -330,11 +330,26 @@ impl<'lease> OwnedProcess<'lease> {
         self.wait_bounded_with_probe(||current_runtime_status(state)
             .map(|status|status.over_hard_limit))
     }
+    /// Independent worker-side, authenticated heartbeat; NEVER an OS exit,
+    /// app-success, or license to clear the exclusive Windows desktop lease.
+    pub(crate) fn wait_bounded_with_host_budget_and_progress<F>(
+        &mut self,state:&ActionState,progress:F
+    )->Result<ProcessObservation,String>
+    where F:FnMut()->Result<(),String>{
+        self.wait_bounded_with_probe_and_progress(
+            ||current_runtime_status(state).map(|s|s.over_hard_limit),progress)
+    }
     // Keep OS termination testable without allocating actual gigabytes on a
     // CI runner. Production passes the real registered-process RAM sampler.
-    fn wait_bounded_with_probe<F>(&mut self,mut over_budget:F)
+    fn wait_bounded_with_probe<F>(&mut self,over_budget:F)
         ->Result<ProcessObservation,String>
         where F:FnMut()->Result<bool,String>{
+        self.wait_bounded_with_probe_and_progress(over_budget,||Ok(()))
+    }
+    fn wait_bounded_with_probe_and_progress<F,G>(
+        &mut self,mut over_budget:F,mut progress:G
+    )->Result<ProcessObservation,String>
+    where F:FnMut()->Result<bool,String>,G:FnMut()->Result<(),String>{
         loop{
             let observed=self.poll()?;
             if observed.phase!="running"&&observed.phase!="descendants_running"{
@@ -350,6 +365,12 @@ impl<'lease> OwnedProcess<'lease> {
                     self.stop_owned_tree("cancelled")?;
                     return Err("Cannot independently verify owned Blender memory; stopped worker before further mutations.".into());
                 }
+            }
+            if let Err(error)=progress(){
+                self.stop_owned_tree("cancelled")?;
+                return Err(format!(
+                    "Authenticated worker heartbeat invalid or stalled ({error}); owned tree stopped; inspect application effects."
+                ));
             }
             thread::sleep(Duration::from_millis(250));
         }

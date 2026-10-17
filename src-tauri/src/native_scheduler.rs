@@ -10,6 +10,8 @@ use tauri::{AppHandle,Manager};
 // existing native lease + on-disk UUID journal before launching a child.
 #[path = "native_owned_process.rs"]
 pub(crate) mod owned_process;
+#[path = "native_worker_progress.rs"]
+pub(crate) mod worker_progress;
 const MAX_JOBS:usize=48;
 const MAX_BYTES:usize=32768;
 static LOCK:Mutex<()>=Mutex::new(());
