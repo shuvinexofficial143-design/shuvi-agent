@@ -13,6 +13,8 @@ test("authorized DAG audits precede bounded two-way read-only SHA-256 workers",(
 });
 test("duplicate file alias and mutation still fail safely; no unpermissioned GUI execution",()=>{
  assert.match(source,/if first_path==second_path/);
+ assert.match(source,/candidate=Some\(i\)/);
+ assert.match(source,/queue_skips_aliased_head_and_runs_next_disjoint_output_in_parallel/);
  assert.match(source,/fs::canonicalize\(&first\.0\.path\)/);
  assert.match(source,/if size!=a\.bytes\|\|hash!=a\.sha256/);
  assert.match(source,/independent_artifacts_use_two_bounded_read_only_verification_threads/);

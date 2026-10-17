@@ -236,29 +236,32 @@ where F:Fn(&DeliveryArtifact,&str)->Result<(),String>+Sync{
             artifacts.push((artifact,step.tool.as_str()));
         }
     }
-    let mut remaining=artifacts.as_slice();
+    // Earliest-first, disjoint-first admission across the bounded remaining
+    // queue. Two different paths do not prove different files: compare the
+    // underlying OS identity (hard links, aliases) before spawning a pair.
+    // The verification is read-only and every worker is scoped and joined.
+    let mut remaining=artifacts;
     while !remaining.is_empty(){
-        if remaining.len()==1{
-            verifier(remaining[0].0,remaining[0].1)?;
+        let first=remaining.remove(0);
+        let first_path=fs::canonicalize(&first.0.path)
+            .map_err(|_|"Primary output path cannot be canonicalized.".to_string())?;
+        let mut candidate=None;
+        for (i,second) in remaining.iter().enumerate(){
+            let second_path=fs::canonicalize(&second.0.path)
+                .map_err(|_|"Queued output path cannot be canonicalized.".to_string())?;
+            if first_path==second_path || same_physical_output(&first_path,&second_path)?{
+                continue;
+            }
+            candidate=Some(i);
             break;
         }
-        let first=remaining[0];
-        let second=remaining[1];
-        // Canonicalize before parallel read admission. Missing file, folder
-        // or other invalid path fails closed in check_artifact.
-        let first_path=fs::canonicalize(&first.0.path)
-            .map_err(|_|"First independent output path unavailable.".to_string())?;
-        let second_path=fs::canonicalize(&second.0.path)
-            .map_err(|_|"Second independent output path unavailable.".to_string())?;
-        if first_path==second_path || same_physical_output(&first_path,&second_path)?{
-            verifier(first.0,first.1)?;
-            verifier(second.0,second.1)?;
-        }else{
+        if let Some(index)=candidate{
+            let second=remaining.remove(index);
             std::thread::scope(|scope|{
                 let left=scope.spawn(||verifier(first.0,first.1));
                 let right=scope.spawn(||verifier(second.0,second.1));
-                // ALWAYS join both, even if one detects tampering, so no
-                // verification thread outlives the audit or delivery lock.
+                // Always join both independent threads even on one failure,
+                // without returning a partially verified final DAG receipt.
                 let a=left.join()
                     .map_err(|_|"First bounded verification worker panicked.".to_string());
                 let b=right.join()
@@ -266,8 +269,9 @@ where F:Fn(&DeliveryArtifact,&str)->Result<(),String>+Sync{
                 a??;b??;
                 Ok::<(),String>(())
             })?;
+        }else{
+            verifier(first.0,first.1)?;
         }
-        remaining=&remaining[2..];
     }
     Ok(())
 }
@@ -458,6 +462,49 @@ mod tests{
     fn audit(step:&str,tool:&str)->crate::AuditEntry{
         crate::AuditEntry{timestamp_ms:1,event:"executed".into(),tool:tool.into(),
             detail:step.into(),success:true,action_id:Some(step.into())}
+    }
+    #[test]
+    fn queue_skips_aliased_head_and_runs_next_disjoint_output_in_parallel(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        use std::time::Duration;
+        let root=std::env::temp_dir().join(format!("shuvi-alias-queue-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let a=root.join("a.blend");
+        let alias=root.join("alias.blend");
+        let b=root.join("b.blend");
+        fs::write(&a,b"BLENDER same source").unwrap();
+        fs::hard_link(&a,&alias).unwrap();
+        fs::write(&b,b"BLENDER unrelated output").unwrap();
+        let build=|step:&str,path:&Path|DeliveryStep{
+            step_id:step.into(),tool:"blender_run_plan".into(),
+            action_id:match step{
+                "a"=>"e8b36b21-1c6a-459e-9b6f-75dd5692ab81",
+                "alias"=>"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172",
+                _=>"3ac5c21a-8407-4ed7-b4b7-f51ba437a491",
+            }.into(),
+            artifact:Some({
+                let (bytes,sha256)=file_hash(path,MAX_ARTIFACT_BYTES).unwrap();
+                DeliveryArtifact{kind:"blender_artifact".into(),
+                    path:path.to_str().unwrap().into(),bytes,sha256,
+                    approved_plan_sha256:None}
+            })
+        };
+        let jobs=vec![build("a",&a),build("alias",&alias),build("b",&b)];
+        let active=AtomicUsize::new(0);
+        let peak=AtomicUsize::new(0);
+        let started=AtomicUsize::new(0);
+        verify_artifacts_bounded(&jobs,|artifact,tool|{
+            let count=active.fetch_add(1,Ordering::SeqCst)+1;
+            peak.fetch_max(count,Ordering::SeqCst);
+            started.fetch_add(1,Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            let done=check_artifact(artifact,tool);
+            active.fetch_sub(1,Ordering::SeqCst);
+            done
+        }).unwrap();
+        assert_eq!(started.load(Ordering::SeqCst),3);
+        assert_eq!(peak.load(Ordering::SeqCst),2);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn real_hard_links_share_one_physical_identity_and_never_enter_two_workers(){
