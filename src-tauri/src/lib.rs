@@ -70,6 +70,7 @@ mod premiere_delivery_spec;
 mod premiere_selective_captions;
 mod premiere_caption_graphics;
 mod premiere_caption_save_binding;
+mod premiere_caption_reopen;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -358,6 +359,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_insert_verified_mogrt: {"request":{"path":"absolute existing .mogrt path","expected_sha256":"64 hex from premiere_inspect_mogrt_artifact or separately verified AE output","seconds":0,"video_track":0,"audio_track":0}} — approved high-risk insertion with exact project/sequence expectation, checkpoint, SHA256 pre/post proof, native inserted-clip readback and independently persisted .prproj; no auto retry.
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
+- premiere_verify_reopened_caption_graphics: {"request":"original selected SRT/MOGRT request","receipt":"approved native insert receipt","save_receipt":"separate approved save receipt","open_receipt":"separate approved premiere_open_project receipt"} — READ ONLY independently inspect exact opened saved .prproj SHA, current native caption fields/timings + unchanged source; explicitly DOES NOT open project, prove new process, or export
 - premiere_verify_saved_caption_graphics: {"request":"same original SRT + saved MOGRT manifest","receipt":"exact earlier approved premiere_apply_caption_graphics response","save_receipt":"exact earlier approved premiere_save_project response"} — READ ONLY correlate native caption reinspection with independently observed exact .prproj save, FNV change receipt and stable current SHA256 file bytes; fresh-session reopen/render still NOT verified
 - premiere_verify_caption_graphics: {"request":"exact original selected SRT+MOGRT source-bound manifest","receipt":"exact response JSON from earlier separately-approved premiere_apply_caption_graphics"} — READ ONLY independent re-scan of every actual native clip/field/timing including shifted timeline indexes, source SHA256 recheck; does NOT claim project saved/reopened or exported
 - premiere_apply_caption_graphics: {"request":"same exact typed request as premiere_plan_caption_graphics"} — separately approved HIGH risk native MOGRT graphics run, recheck SRT hash + mapping before every insertion, partial results, checkpoint and no automatic retries; no simulated Adobe runtime
@@ -999,6 +1001,7 @@ enum ToolAction {
     PremiereApplyCaptionGraphics {request:premiere_caption_graphics::Request},
     PremiereVerifyCaptionGraphics {request:premiere_caption_graphics::Request,receipt:Value},
     PremiereVerifySavedCaptionGraphics {request:premiere_caption_graphics::Request,receipt:Value,save_receipt:Value},
+    PremiereVerifyReopenedCaptionGraphics {request:premiere_caption_graphics::Request,receipt:Value,save_receipt:Value,open_receipt:Value},
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
@@ -1897,6 +1900,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_apply_caption_graphics"
         | "premiere_verify_caption_graphics"
         | "premiere_verify_saved_caption_graphics"
+        | "premiere_verify_reopened_caption_graphics"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
         | "premiere_replace_with_subsequence"
@@ -7188,6 +7192,30 @@ fn stage_tool(
                 "Verify isMulticamClip() first, checkpoint the project, insert through native SequenceEditor, then require exact insertion delta.".into(),
                 RiskLevel::High,
             )
+        }
+        "premiere_verify_reopened_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Original selective caption manifest required.")?
+            ).map_err(|e|format!("Invalid post-open caption audit request: {e}"))?;
+            request.validate()?;
+            let receipt=proposal.arguments.get("receipt").cloned()
+                .ok_or("Original approved graphics insertion receipt is required.")?;
+            let save_receipt=proposal.arguments.get("save_receipt").cloned()
+                .ok_or("Separately approved saved-project receipt is required.")?;
+            let open_receipt=proposal.arguments.get("open_receipt").cloned()
+                .ok_or("Separately approved native Premiere open-project receipt is required.")?;
+            for (name,value,limit) in [
+                ("insert",&receipt,128*1024),("save",&save_receipt,32*1024),
+                ("open",&open_receipt,32*1024)
+            ] {
+                if serde_json::to_vec(value).map_err(|e|e.to_string())?.len()>limit {
+                    return Err(format!("Post-open caption audit {name} receipt is oversized."));
+                }
+            }
+            (ToolAction::PremiereVerifyReopenedCaptionGraphics{request,receipt,save_receipt,open_receipt},
+                "Audit captions after separately approved Premiere open".into(),
+                "READ ONLY: compare approved insert/save/open receipts, exact saved-project SHA256, source SRT and real current Premiere caption fields; does not invoke open/save/export or falsely attest fresh process/session.".into(),
+                RiskLevel::Low)
         }
         "premiere_verify_saved_caption_graphics" => {
             let request:premiere_caption_graphics::Request=serde_json::from_value(
@@ -16831,6 +16859,66 @@ try {{
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
+        }
+        ToolAction::PremiereVerifyReopenedCaptionGraphics {request,receipt,save_receipt,open_receipt} => {
+            let expected=premiere_bridge.expected
+                .ok_or("Post-open caption audit needs freshly inspected project and sequence expectation.")?;
+            let sequence_guid=expected.sequence_guid.as_deref()
+                .ok_or("Post-open caption audit requires an exact saved sequence GUID.")?;
+            if !expected.clips.is_empty() {
+                return Err("Post-open caption audit cannot use stale sequence clip indexes.".into());
+            }
+            let path=expected.project_path.as_deref()
+                .ok_or("Post-open caption audit needs an existing project file path.")?;
+            let saved_file=premiere_caption_save_binding::saved_after(
+                &save_receipt,&expected.project_guid,path)?;
+            let before_disk=premiere_caption_save_binding::snapshot(path)?;
+            if before_disk.fingerprint!=saved_file {
+                return Err("Project bytes changed after saved-project approval, before post-open audit.".into());
+            }
+            premiere_caption_reopen::validate_open_receipt(
+                &open_receipt,&expected.project_guid,path,&saved_file,&before_disk)?;
+            let saved_mapping=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("Original inspected MOGRT mapping no longer exists.")?;
+            let original=premiere_caption_graphics::plan(&request,&saved_mapping)?;
+            let batch:premiere_graphics::Batch=serde_json::from_value(
+                original.get("generated_batch").cloned()
+                    .ok_or("Exact previously selected caption manifest not available.")?
+            ).map_err(|e|format!("Invalid post-open caption batch: {e}"))?;
+            premiere_caption_graphics::validate_audit_receipt(&batch,&receipt,
+                original["source_srt_sha256"].as_str().ok_or("Missing original SRT SHA256.")?)?;
+            let context_before=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let audit=premiere_bridge.request("verify_caption_graphics",json!({
+                "mapping":saved_mapping.mapping,"items":batch.items,
+                "receipts":receipt["batch"]["items"],
+                "videoTrack":batch.video_track,
+                "_expected":expected
+            }),Duration::from_secs(90)).await?;
+            let context_after=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let latest=premiere_caption_graphics::plan(&request,&saved_mapping);
+            let unchanged=latest.as_ref().is_ok_and(|v|
+                v.get("source_srt_sha256")==original.get("source_srt_sha256")
+                    &&v.get("generated_batch")==original.get("generated_batch"));
+            let after_disk=premiere_caption_save_binding::snapshot(path)?;
+            let assessment=premiere_caption_reopen::assess(
+                &before_disk,&after_disk,unchanged,&audit,batch.items.len(),
+                &context_before,&context_after,&expected.project_guid,sequence_guid,path);
+            let success=assessment["post_approved_open_saved_caption_evidence_consistent"]==true;
+            Ok(ActionResult{success,tool,
+                stdout:json!({
+                    "verification":assessment,
+                    "source_srt_sha256":original["source_srt_sha256"],
+                    "native_post_open_caption_audit":audit,
+                    "original_open_receipt_source_authenticated":false,
+                    "fresh_session_reopen_verified":false,
+                    "automatically_opened_or_saved":false,
+                    "mp4_export_verified":false,
+                    "retry_automatically":false
+                }).to_string(),
+                stderr:if success{String::new()}else{
+                    "Exact approved-open and persisted caption readback evidence mismatch; manual inspection required.".into()
+                },exit_code:Some(if success{0}else{1})})
         }
         ToolAction::PremiereVerifySavedCaptionGraphics {request,receipt,save_receipt} => {
             let expected=premiere_bridge.expected
