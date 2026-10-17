@@ -32,7 +32,7 @@ impl CrossProcessReceiptLock {
         }
         #[cfg(windows)]
         {
-            use std::os::windows::fs::OpenOptionsExt;
+            use std::os::windows::fs::{OpenOptionsExt,MetadataExt};
             const OPEN_REPARSE_POINT:u32=0x0020_0000;
             let handle=OpenOptions::new().read(true).write(true).create(true)
                 .share_mode(0).custom_flags(OPEN_REPARSE_POINT)
