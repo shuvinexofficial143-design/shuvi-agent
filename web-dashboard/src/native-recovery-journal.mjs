@@ -1,7 +1,7 @@
 // Recoverable inspection metadata only, NEVER permission to run an old action.
 export const NATIVE_JOURNAL_KEY="shuvi.native.task.recovery.v1";
 const ACTIONS=new Set([8,24,48]);
-const PHASES=new Set(["model_reserved","awaiting_approval","audit_verified","paused","outcome_unknown","executing"]);
+const PHASES=new Set(["model_reserved","readback_reserved","awaiting_approval","audit_verified","paused","outcome_unknown","executing"]);
 const ACTION_ID=/^[A-Za-z0-9_-]{1,128}$/;
 const TASK_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_AGE=7200000;
@@ -52,6 +52,13 @@ export function writeNativeRecovery(store,record,now=Date.now()){
    if(safe.phase==="paused"&&["executing","outcome_unknown"].includes(old.phase))return false;
    if(safe.phase==="model_reserved"&&
     !["paused","audit_verified"].includes(old.phase))return false;
+   // Model-free inspection must create a durable, owner-goal-bound
+   // reservation AFTER an exact audited predecessor. This does not
+   // increment billed model requests or stage/execute a Windows action.
+   if(safe.phase==="readback_reserved"&&
+    (old.phase!=="audit_verified"||safe.modelRequests!==old.modelRequests||
+     safe.stagedActions!==old.stagedActions||safe.actionId!==old.actionId))
+    return false;
    // Mirror Rust's high-risk event ordering before touching localStorage.
    if(safe.phase==="executing"&&
     (old.phase!=="awaiting_approval"||safe.actionId!==old.actionId||
@@ -60,8 +67,9 @@ export function writeNativeRecovery(store,record,now=Date.now()){
     (old.phase!=="executing"||safe.actionId!==old.actionId||
      safe.stagedActions!==old.stagedActions))return false;
    if(safe.phase==="awaiting_approval"&&
-    (!["model_reserved","outcome_unknown"].includes(old.phase)||
-     safe.stagedActions!==old.stagedActions+1||safe.actionId===old.actionId))return false;
+    (!["model_reserved","outcome_unknown","readback_reserved"].includes(old.phase)||
+     safe.stagedActions!==old.stagedActions+1||safe.actionId===old.actionId||
+     (old.phase==="readback_reserved"&&safe.modelRequests!==old.modelRequests)))return false;
    if(safe.phase==="model_reserved"&&safe.modelRequests!==old.modelRequests+1)return false;
   }
  }else if(previous.kind==="valid"&&previous.record.version===2&&previous.record.revision!==undefined){

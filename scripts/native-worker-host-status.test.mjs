@@ -67,7 +67,13 @@ test("supervisor pulse cannot fabricate progress, cancel a desktop task or clear
  assert.doesNotMatch(jobs,/execute_tool_with_action_id|claim_single_execution|send_chat/);
 });
 test("all native bridge lifecycle mutators check the durable job without bypassing OS lease",()=>{
- assert.equal((lib.match(/claim_monitored_native_execution\(state.inner\(\),&app\)\?/g)??[]).length,14);
+ assert.equal((lib.match(/claim_monitored_native_execution\(state.inner\(\),&app\)\?/g)??[]).length,15);
+ // Shuvi 37 added a bounded read-only project SHA inspector, and deliberately
+ // requires the SAME global native lease/unknown-job protection as mutators.
+ const projectSha=lib.slice(lib.indexOf("fn verify_premiere_project_sha256("),
+   lib.indexOf("fn native_scheduler_status("));
+ assert.match(projectSha,/claim_monitored_native_execution\(state.inner\(\),&app\)\?/);
+ assert.match(projectSha,/native_premiere_project_sha::verify\(/);
  assert.equal((lib.match(/fn (?:premiere|photoshop|illustrator|animate|audition)_bridge_(?:start|stop)\(\n    state: State<'_, ActionState>,\n    app: AppHandle,/g)??[]).length,10);
 });
 

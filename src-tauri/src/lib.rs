@@ -11,7 +11,10 @@ mod native_worker_status;
 mod native_worker_job;
 mod native_job_history;
 mod native_scheduler;
+mod native_task_grant;
 mod native_task_delivery;
+mod session_checkpoint_guard;
+mod native_premiere_project_sha;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
@@ -561,6 +564,8 @@ struct SessionCheckpoint {
     // from the original user-selected Master route, never model-supplied.
     #[serde(default)]
     worker_models:Option<HashMap<String,String>>,
+    #[serde(default)]
+    checkpoint_nonce:Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1002,6 +1007,7 @@ enum ToolAction {
 #[derive(Debug, Clone)]
 struct PendingAction {
     created_at_ms: u64,
+    grant_signature: Option<String>,
     premiere_expectation: Option<PremiereExpectation>,
     task_graph: Option<Value>,
     task_step_id: Option<String>,
@@ -1061,6 +1067,7 @@ struct BrowserSession {
 #[derive(Default)]
 struct ActionState {
     native_execution_owned: AtomicBool,
+    task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
@@ -8116,6 +8123,11 @@ fn stage_tool(
         _ => return Err("Unsupported tool.".into()),
     };
 
+    // Only native-validated LOW-risk typed reads can participate in an
+    // optional, short-lived owner's task grant. Mutations remain Allow once.
+    let grant_signature=if matches!(&risk,RiskLevel::Low){
+        native_task_grant::read_signature(&tool,&proposal.arguments)
+    }else{None};
     let id = Uuid::new_v4().to_string();
 
     let prepared_at_ms = now_ms();
@@ -8135,6 +8147,7 @@ fn stage_tool(
         id.clone(),
         PendingAction {
             created_at_ms: prepared_at_ms,
+            grant_signature,
             premiere_expectation,
             task_graph: proposal.task_graph.clone(),
             task_step_id: proposal.task_step_id.as_ref()
@@ -9716,6 +9729,10 @@ fn session_checkpoint_path(app: &AppHandle) -> Result<std::path::PathBuf, String
 }
 
 fn validate_session_checkpoint_payload(checkpoint: &SessionCheckpoint) -> Result<(), String> {
+    if checkpoint.checkpoint_nonce.as_ref().is_some_and(|id|
+        Uuid::parse_str(id).map(|x|x.to_string()!=*id).unwrap_or(true)){
+        return Err("Saved checkpoint revision nonce is invalid.".into());
+    }
     validate_provider_fields(
         checkpoint.provider.as_str(),
         checkpoint.model.as_str(),
@@ -9759,6 +9776,15 @@ fn validate_session_checkpoint_payload(checkpoint: &SessionCheckpoint) -> Result
 
 fn write_session_checkpoint(
     app: &AppHandle,
+    checkpoint: SessionCheckpoint,
+) -> Result<(), String> {
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        ensure_unversioned_checkpoint_only(read_session_checkpoint_unlocked(app)?.as_ref())?;
+        write_session_checkpoint_unlocked(app,checkpoint)
+    })
+}
+fn write_session_checkpoint_unlocked(
+    app: &AppHandle,
     mut checkpoint: SessionCheckpoint,
 ) -> Result<(), String> {
     if checkpoint.messages.len() > 120 {
@@ -9768,6 +9794,7 @@ fn write_session_checkpoint(
 
     checkpoint.version = 2;
     checkpoint.updated_at_ms = now_ms();
+    checkpoint.checkpoint_nonce=Some(Uuid::new_v4().to_string());
     validate_session_checkpoint_payload(&checkpoint)?;
 
     let content = serde_json::to_vec_pretty(&checkpoint)
@@ -9803,6 +9830,7 @@ mod session_checkpoint_durability_tests {
             version, updated_at_ms: 1,
             provider: provider.into(), model: "local-test".into(),
             base_url: None, messages: vec![], orchestration: None, worker_models:None,
+            checkpoint_nonce:None,
         }).unwrap()
     }
 
@@ -9841,6 +9869,11 @@ mod session_checkpoint_durability_tests {
 }
 
 fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>, String> {
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        read_session_checkpoint_unlocked(app)
+    })
+}
+fn read_session_checkpoint_unlocked(app: &AppHandle) -> Result<Option<SessionCheckpoint>, String> {
     let path = session_checkpoint_path(app)?;
     let backup = path.with_extension("json.bak");
 
@@ -9881,6 +9914,12 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
     Ok(Some(checkpoint))
 }
 fn remove_session_checkpoint(app: &AppHandle) -> Result<(), String> {
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        ensure_unversioned_checkpoint_only(read_session_checkpoint_unlocked(app)?.as_ref())?;
+        remove_session_checkpoint_unlocked(app)
+    })
+}
+fn remove_session_checkpoint_unlocked(app: &AppHandle) -> Result<(), String> {
     let path = session_checkpoint_path(app)?;
     // A10: serialize checkpoint clear with its snapshot writer.
     // Delete only regular files, never reparse entries or directories.
@@ -16910,7 +16949,7 @@ try {{
                     component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
                     param_display_name:target.param_display_name.clone(),value:v}}
             };
-            let inner=PendingAction{created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let inner=PendingAction{created_at_ms:now_ms(),grant_signature:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Disposable native parameter delta calibration".into(),action:make_action(value.clone())};
             let changed=Box::pin(execute_tool(inner,state,app)).await;
             let changed=match changed {Ok(result) if result.success=>result,Err(error)=>{
@@ -16937,7 +16976,7 @@ try {{
                         "reason":"After-delta native inspection missing; restoration not attempted blindly."}).to_string(),stderr:String::new(),exit_code:None});
                 }
             };
-            let restore=PendingAction{created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let restore=PendingAction{created_at_ms:now_ms(),grant_signature:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Restore original disposable native value".into(),action:make_action(baseline.clone())};
             let restored=Box::pin(execute_tool(restore,state,app)).await;
             if !restored.is_ok_and(|r|r.success) {
@@ -17063,7 +17102,7 @@ try {{
                 "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
                 "delete_ripple"=>"premiere_delete_clip","scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
             };
-            let inner=PendingAction {created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+            let inner=PendingAction {created_at_ms:now_ms(),grant_signature:None,task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
                 detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
             let native_result=match native {
@@ -18802,6 +18841,27 @@ fn finalize_native_task_delivery(
 fn native_task_delivery_status(app:AppHandle)->Result<Option<native_task_delivery::DeliveryReceipt>,String>{
     native_task_delivery::read(&app)
 }
+// Read-only post-create cryptographic file inspection. Never dispatches a
+// Premiere command; requires exact successful owner-approved create audit
+// and existing scheduler UUID/path identity, then rehashes actual disk bytes.
+#[tauri::command]
+fn verify_premiere_project_sha256(
+    action_id:String,
+    project_path:String,
+    expected_fnv1a64:String,
+    expected_size_bytes:u64,
+    state:State<'_,ActionState>,
+    app:AppHandle
+)->Result<native_premiere_project_sha::ProjectShaReceipt,String>{
+    let _lease=claim_monitored_native_execution(state.inner(),&app)?;
+    if !state.pending.lock()
+        .map_err(|_|"Native approval state unavailable.")?.is_empty(){
+        return Err("Resolve pending owner approvals before project file proof.".into());
+    }
+    native_premiere_project_sha::verify(
+        &app,&action_id,&project_path,&expected_fnv1a64,expected_size_bytes
+    )
+}
 #[tauri::command]
 fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
     native_scheduler::verified_status(&app)
@@ -18905,6 +18965,38 @@ fn prepare_powershell(
     stage_tool(proposal, None, state.inner())
 }
 
+/// Only the native UI's explicit "Allow exact read for task" click calls
+/// this; AI/provider replies cannot issue Rust grant commands.
+#[tauri::command]
+fn issue_task_read_grant(
+    task_id: String,
+    action_id: String,
+    state: State<'_, ActionState>,
+) -> Result<String, String> {
+    let pending=state.pending.lock()
+        .map_err(|_|"Native prepared-action state is unavailable.".to_string())?;
+    let action=pending.get(&action_id)
+        .ok_or("Read permission requires a live, explicitly reviewed native action.")?;
+    if now_ms().saturating_sub(action.created_at_ms)>PENDING_ACTION_TTL_MS{
+        return Err("Prepared read action has expired.".into());
+    }
+    let sig=action.grant_signature.as_deref()
+        .ok_or("This action is not an eligible low-risk exact typed read.")?;
+    let mut grants=state.task_read_grants.lock()
+        .map_err(|_|"Rust read grant state is unavailable.".to_string())?;
+    grants.issue(&task_id,sig,now_ms())
+}
+#[tauri::command]
+fn revoke_task_read_grants(
+    task_id: String,
+    state: State<'_, ActionState>,
+) -> Result<(), String> {
+    Uuid::parse_str(&task_id).map_err(|_|"Invalid native task grant identity.")?;
+    let mut grants=state.task_read_grants.lock()
+        .map_err(|_|"Rust read grant state is unavailable.".to_string())?;
+    grants.revoke(&task_id);
+    Ok(())
+}
 #[tauri::command]
 fn deny_action(
     action_id: String,
@@ -19054,6 +19146,8 @@ fn cancel_running_action(
 #[tauri::command]
 async fn execute_action(
     action_id: String,
+    grant_id: Option<String>,
+    task_id: Option<String>,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
@@ -19080,6 +19174,19 @@ async fn execute_action(
             if let Some(step)=prepared.task_step_id.as_deref(){
                 native_scheduler::preflight(&app,prepared.task_graph.as_ref(),
                     step,&active_tool,&action_id)?;
+            }
+            // Fail closed if the UI requests task-scoped execution without
+            // a currently valid Rust grant for THIS prepared action's exact
+            // typed arguments. No permission extends to a second action or
+            // across restart; the grant is consumed before native dispatch.
+            if grant_id.is_some()||task_id.is_some() {
+                let id=grant_id.as_deref().ok_or("Missing native read grant ID.")?;
+                let task=task_id.as_deref().ok_or("Missing native grant task ID.")?;
+                let sig=prepared.grant_signature.as_deref()
+                    .ok_or("Task grant cannot execute a mutating or unscoped native tool.")?;
+                let mut grants=state.task_read_grants.lock()
+                    .map_err(|_|"Rust read grant state unavailable.".to_string())?;
+                grants.consume(task,id,sig,now_ms())?;
             }
             // Publish the durable, action-bound worker record BEFORE any tool
             // can run. If disk state is unresolved, keep approval pending.
@@ -19197,7 +19304,7 @@ async fn execute_powershell(
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, state, app).await
+    execute_action(action_id, None, None, state, app).await
 }
 
 #[tauri::command]
@@ -19253,6 +19360,96 @@ fn set_workspace(
 #[tauri::command]
 fn get_workspace(app: AppHandle) -> Result<Option<String>, String> {
     read_workspace(&app)
+}
+
+
+// Legacy executable may still invoke unconditional save/clear. An existing
+// checkpoint with a CAS revision nonce belongs to the versioned store, and
+// no legacy process may mutate it even while holding the common OS lock.
+fn ensure_unversioned_checkpoint_only(checkpoint:Option<&SessionCheckpoint>)->Result<(),String>{
+    if checkpoint.is_some_and(|c|c.checkpoint_nonce.is_some()){
+        return Err("Legacy checkpoint mutation refused: use conditional revision CAS.".into());
+    }
+    Ok(())
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeCheckpointSnapshot{
+    revision:Option<String>,
+    checkpoint:Option<SessionCheckpoint>,
+}
+fn native_checkpoint_revision(checkpoint:&SessionCheckpoint)->Result<String,String>{
+    // Hash sorted serde_json::Value rather than potentially unordered
+    // HashMap serialization; every write also has a cryptographic nonce.
+    let value=serde_json::to_value(checkpoint)
+        .map_err(|_|"Cannot canonicalize checkpoint revision.".to_string())?;
+    let bytes=serde_json::to_vec(&value)
+        .map_err(|_|"Cannot encode native checkpoint revision.".to_string())?;
+    Ok(format!("{:x}",Sha256::digest(&bytes)))
+}
+fn native_checkpoint_snapshot_unlocked(app:&AppHandle)->Result<NativeCheckpointSnapshot,String>{
+    let checkpoint=read_session_checkpoint_unlocked(app)?;
+    let revision=checkpoint.as_ref().map(native_checkpoint_revision).transpose()?;
+    Ok(NativeCheckpointSnapshot{revision,checkpoint})
+}
+#[tauri::command]
+fn session_checkpoint_snapshot(app:AppHandle)->Result<NativeCheckpointSnapshot,String>{
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(&app)?,||{
+        native_checkpoint_snapshot_unlocked(&app)
+    })
+}
+#[tauri::command]
+fn save_session_checkpoint_if_revision(
+    checkpoint:SessionCheckpoint,expected_revision:Option<String>,app:AppHandle
+)->Result<NativeCheckpointSnapshot,String>{
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(&app)?,||{
+        let current=native_checkpoint_snapshot_unlocked(&app)?;
+        if current.revision!=expected_revision{
+            return Err("Checkpoint changed in another Shuvi process: stale save refused.".into());
+        }
+        write_session_checkpoint_unlocked(&app,checkpoint)?;
+        native_checkpoint_snapshot_unlocked(&app)
+    })
+}
+#[tauri::command]
+fn clear_session_checkpoint_if_revision(
+    expected_revision:Option<String>,app:AppHandle
+)->Result<NativeCheckpointSnapshot,String>{
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(&app)?,||{
+        let current=native_checkpoint_snapshot_unlocked(&app)?;
+        if expected_revision.is_none()||current.revision!=expected_revision{
+            return Err("Checkpoint changed in another Shuvi process: stale clear refused.".into());
+        }
+        remove_session_checkpoint_unlocked(&app)?;
+        native_checkpoint_snapshot_unlocked(&app)
+    })
+}
+#[cfg(test)]
+mod native_checkpoint_cas_tests{
+    use super::*;
+    #[test]
+    fn legacy_unconditional_writer_cannot_overwrite_or_delete_versioned_checkpoint(){
+        let current=SessionCheckpoint{
+            version:2,updated_at_ms:1,provider:"ollama".into(),model:"test".into(),
+            base_url:None,messages:vec![],orchestration:None,worker_models:None,
+            checkpoint_nonce:Some(Uuid::new_v4().to_string()),
+        };
+        assert!(ensure_unversioned_checkpoint_only(Some(&current)).is_err());
+        let old=SessionCheckpoint{checkpoint_nonce:None,..current};
+        assert!(ensure_unversioned_checkpoint_only(Some(&old)).is_ok());
+        assert!(ensure_unversioned_checkpoint_only(None).is_ok());
+    }
+    #[test]
+    fn canonical_digest_changes_with_nonce_and_rejects_aba(){
+        let mut a=SessionCheckpoint{
+            version:2,updated_at_ms:1,provider:"ollama".into(),
+            model:"test".into(),base_url:None,messages:vec![],
+            orchestration:None,worker_models:None,checkpoint_nonce:Some(Uuid::new_v4().to_string()),
+        };
+        let first=native_checkpoint_revision(&a).unwrap();
+        a.checkpoint_nonce=Some(Uuid::new_v4().to_string());
+        assert_ne!(first,native_checkpoint_revision(&a).unwrap());
+    }
 }
 
 #[tauri::command]
@@ -19541,12 +19738,15 @@ pub fn run() {
             native_worker_status,
             native_worker_history,
             native_task_delivery_status,
+            verify_premiere_project_sha256,
             finalize_native_task_delivery,
             native_scheduler_status,
             review_native_scheduler_failure,
             reconcile_native_worker_job,
             prepare_tool,
             prepare_powershell,
+            issue_task_read_grant,
+            revoke_task_read_grants,
             deny_action,
             cancel_running_action,
             execute_action,
@@ -19559,6 +19759,9 @@ pub fn run() {
             save_session_checkpoint,
             load_session_checkpoint,
             clear_session_checkpoint,
+            session_checkpoint_snapshot,
+            save_session_checkpoint_if_revision,
+            clear_session_checkpoint_if_revision,
             native_recovery::save_native_recovery,
             native_recovery::load_native_recovery,
             native_recovery::clear_native_recovery,

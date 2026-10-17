@@ -1,8 +1,39 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
+import {validateMasterPlan,validateMasterAction,assessMasterGoalDelivery} from "./master-autonomy-graph.mjs";
 import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
+import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
+import {attachNativePremiereOpeningBlueprint} from "./master-opening-blueprint.mjs";
+import {captureMasterOpeningObservation,verifyMasterOpeningDelivery} from "./master-goal-window-acceptance.mjs";
+import {assessMasterFinalOutcome,summarizeMasterMissingProof,masterGoalEvidenceContext} from "./master-final-outcome.mjs";
+import {inspectPremiereProjectCreateCandidate,projectCandidateStatus} from "./premiere-project-evidence-candidate.mjs";
+import type {PremiereProjectEvidenceCandidate} from "./premiere-project-evidence-candidate.mjs";
+import {bindNativePremiereShaProof,nativePremiereShaProgress} from "./native-project-sha-proof.mjs";
+import type {NativePremiereShaReceipt,BoundPremiereProjectShaProof} from "./native-project-sha-proof.mjs";
+import {inspectPremiereProjectReopenCandidate,bindPremiereReopenShaAfterReadback} from "./premiere-project-reopen-evidence.mjs";
+import type {PremiereReopenEvidence} from "./premiere-project-reopen-evidence.mjs";
+import {assessPremiereProjectProofProgress} from "./master-project-proof-progress.mjs";
+import {assessPremiereProjectDeliveryContract} from "./master-project-delivery-contract.mjs";
+import {assessNativeFinalizationPreflight} from "./master-finalization-preflight.mjs";
+import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from "./master-project-proof-fence.mjs";
+import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./master-native-action-ownership.mjs";
+import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
+import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
+import {isNativeCheckpointAbsent} from "./master-checkpoint-absent.mjs";
+import {checkedNativeCheckpointRevision} from "./master-native-checkpoint-cas.mjs";
+import {classifyNativeResumeReplay} from "./master-native-resume-replay.mjs";
+import {classifyMasterCommentaryCompletion} from "./master-commentary-completion.mjs";
+import {createMasterFinalizationSingleFlight} from "./master-finalization-single-flight.mjs";
+import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
+import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
+import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
+import {createMasterRemoteReceiptLane} from "./master-remote-receipt-lane.mjs";
+import {terminalRemoteReceiptClearAllowed} from "./master-remote-terminal-fence.mjs";
+import {captureRemoteInboxOwner,isRemoteInboxOwnerCurrent} from "./master-remote-inbox-owner.mjs";
+import {createMasterNativeSingleFlight} from "./master-native-single-flight.mjs";
+import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
   ActionResult,
@@ -36,7 +67,7 @@ import {
 } from "./agent-orchestrator";
 
 import { taskGraphProgress, handoffContractFailure, type GraphAuditEvent } from "./task-graph.mjs";
-import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
+import { orchestrationWithMasterEditor } from "./master-editor.mjs";
 import { workerQueueView, nextWorkerTurn, workerSupervisorView } from "./master-worker-queue.mjs";
 import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
 import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
@@ -93,8 +124,44 @@ let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
 let activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
+// Volatile read-only window proof. Crash/restart deliberately loses this;
+// a fresh independent observation is then required rather than trusting a
+// stale user/AI-authored checkpoint.
+let openingWindowObservation:AuditedOpeningObservation|null=null;
+// Only a volatile, task-bound Team 40 interoperability candidate. The
+// main Rust task-delivery allowlist does NOT attest Premiere .prproj bytes.
+let projectCreationEvidence:PremiereProjectEvidenceCandidate|null=null;
+let projectShaFileProof:BoundPremiereProjectShaProof|null=null;
+let projectReopenEvidence:PremiereReopenEvidence|null=null;
+function renderPremiereProjectProofProgress():void{
+ const target=document.querySelector<HTMLElement>("#premiereProjectProofStatus");
+ if(!target)return;
+ const progress=assessPremiereProjectProofProgress(
+  activePermissionScope.taskId,projectCreationEvidence,
+  projectShaFileProof,projectReopenEvidence);
+ // Only task-scoped observed evidence. No untrusted path, host title or
+ // model-generated HTML is inserted, and this UI never authorizes work.
+ target.textContent=progress.label+". "+progress.remaining;
+}
+// Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
+// alone is NEVER authority to dispatch a consented follow-up action.
+const nativeReadGrantIds=new Map<string,string>();
+async function revokeNativeTaskReads(taskId:string):Promise<boolean>{
+ try{await invoke("revoke_task_read_grants",{taskId});return true;}
+ catch{return false; /* Local reuse disabled; Rust grant expires in <=5 minutes. */}
+}
 function rotatePermissionScope():void{
+ const oldId=activePermissionScope.taskId;
+ openingWindowObservation=null;
+ projectCreationEvidence=null;
+ projectShaFileProof=null;
+ projectReopenEvidence=null;
+ renderPremiereProjectProofProgress();
  revokeTaskScope(activePermissionScope);
+ nativeReadGrantIds.clear();
+ const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
+ if(revokeButton){revokeButton.disabled=true;revokeButton.textContent="Revoke read consent";}
+ void revokeNativeTaskReads(oldId);
  activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
 }
 function activeReadGrant(proposal:ToolProposal,risk:string){
@@ -156,6 +223,10 @@ root.innerHTML = `
       <small id="nativeSchedulerSummary" class="ram-children">Native scheduler: not yet checked</small>
       <button id="checkNativeTaskDelivery" type="button">Verify last delivered task</button>
       <small id="nativeDeliverySummary" class="ram-children">Previous delivery: not yet checked</small>
+      <details id="premiereProjectProof" class="ram-children">
+        <summary>Premiere project verification</summary>
+        <div id="premiereProjectProofStatus" role="status">No task-bound project evidence. Original goal UNVERIFIED.</div>
+      </details>
       <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
       <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
       <details id="nativeActionHistory" class="ram-children">
@@ -207,6 +278,7 @@ root.innerHTML = `
           </select>
         </label>
         <button id="stopButton" class="stop-button hidden" type="button">Stop</button>
+        <button id="revokeTaskReadGrants" type="button" disabled title="Revoke reusable, exact low-risk read consent without stopping the current task">Revoke read consent</button>
         <button id="sendButton" type="submit">Send</button>
       </form>
     </section>
@@ -794,26 +866,124 @@ function renderOrchestrationStatus(): void {
     `Agent ${Math.min(orchestration.next_step, orchestration.max_steps)}/${orchestration.max_steps}${coding}${mode} · ${nativeWorkerDisplay()}`;
 }
 
+// Serialize every native checkpoint save AND clear from this WebView, never
+// letting a delayed older task clear/overwrite a newer task's snapshot.
+type NativeCheckpointSnapshot={revision:string|null;checkpoint:SessionCheckpoint|null};
+const taskCheckpointLane=createTaskCheckpointLane();
+// One sticky token per WebView, never refreshed after a CAS conflict.
+let nativeCheckpointRevision:string|null|undefined=undefined;
+async function nativeExpectedCheckpointRevision():Promise<string|null>{
+  if(nativeCheckpointRevision===undefined){
+    const snapshot=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+    nativeCheckpointRevision=checkedNativeCheckpointRevision(snapshot.revision);
+  }
+  return nativeCheckpointRevision;
+}
+async function guardedSaveNativeCheckpoint(verifyReadback=false):Promise<boolean>{
+  const scope=activePermissionScope;
+  const graph=orchestration.task_graph;
+  const owner=orchestration.owner_request;
+  const sameOwner=()=>activePermissionScope===scope&&
+    orchestration.task_graph===graph&&orchestration.owner_request===owner;
+  // Snapshot BEFORE queueing; old task cannot capture the next owner's state.
+  const checkpoint=structuredClone(currentCheckpoint());
+  return taskCheckpointLane.enqueue(sameOwner,async()=>{
+    await nativeExpectedCheckpointRevision();
+    if(!sameOwner())throw Error("Task owner rotated before native CAS save.");
+    const written=await invoke<NativeCheckpointSnapshot>(
+      "save_session_checkpoint_if_revision",
+      {checkpoint,expectedRevision:nativeCheckpointRevision}
+    );
+    nativeCheckpointRevision=checkedNativeCheckpointRevision(written.revision);
+    if(!sameOwner())throw Error("Old task checkpoint save finished after owner rotation.");
+    if(verifyReadback){
+      const reloaded=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+      if(reloaded.revision!==nativeCheckpointRevision)
+        throw Error("Native checkpoint revision changed after conditional save.");
+      const verified=assessNativeCheckpointReadback(checkpoint,reloaded.checkpoint);
+      if(!verified.verified)throw Error(
+        "Native checkpoint readback refused. No provider/action may continue: "+
+        verified.reason
+      );
+    }
+  });
+}
+async function guardedClearNativeCheckpoint(
+  scope:typeof activePermissionScope,graph:typeof orchestration.task_graph,
+  owner:string|null,verifyReadback=false
+):Promise<boolean>{
+  const sameOwner=()=>activePermissionScope===scope&&
+    orchestration.task_graph===graph&&orchestration.owner_request===owner;
+  return taskCheckpointLane.enqueue(sameOwner,async()=>{
+    await nativeExpectedCheckpointRevision();
+    if(!sameOwner())throw Error("Task owner rotated before native CAS clear.");
+    const cleared=await invoke<NativeCheckpointSnapshot>(
+      "clear_session_checkpoint_if_revision",
+      {expectedRevision:nativeCheckpointRevision}
+    );
+    nativeCheckpointRevision=checkedNativeCheckpointRevision(cleared.revision);
+    if(!sameOwner())throw Error("Old task checkpoint clear finished after owner rotation.");
+    if(verifyReadback){
+      const observed=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+      if(observed.revision!==null||!isNativeCheckpointAbsent(observed.checkpoint))
+        throw Error("Native checkpoint erasure not independently verified.");
+    }
+  });
+}
 async function saveActiveCheckpoint(): Promise<void> {
   try {
-    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    await guardedSaveNativeCheckpoint();
   } catch {
     // Recovery is best-effort and must never block the active task.
   }
 }
 
-async function clearActiveCheckpoint(): Promise<void> {
-  revokeTaskScope(activePermissionScope);
+async function clearActiveCheckpoint(verifyReadback=false): Promise<boolean> {
+  const clearingScope=activePermissionScope;
+  const clearingGraph=orchestration.task_graph;
+  const clearingOwner=orchestration.owner_request;
+  const finishedTaskId=clearingScope.taskId;
+  revokeTaskScope(clearingScope);
+  nativeReadGrantIds.clear();
+  await revokeNativeTaskReads(finishedTaskId);
+  // The previous task's Rust grant revoke can finish after task rotation.
+  // Never intentionally delete a NEW task's durable recovery checkpoint.
+  if(activePermissionScope!==clearingScope||
+     orchestration.task_graph!==clearingGraph||
+     orchestration.owner_request!==clearingOwner)return false;
   try {
-    await invoke("clear_session_checkpoint");
+    return await guardedClearNativeCheckpoint(clearingScope,clearingGraph,clearingOwner,verifyReadback);
   } catch {
-    // Best-effort cleanup only.
+    // Required terminal cleanup remains unresolved without exact Rust proof.
+    // Other cleanup paths are best effort. Native cross-process CAS is separate.
+    return false;
   }
 }
 
 async function loadRecoveryCheckpoint(): Promise<void> {
+  const readingScope=activePermissionScope;
+  const readingGraph=orchestration.task_graph;
+  const readingOwner=orchestration.owner_request;
+  const stillReading=()=>readingScope===activePermissionScope&&
+    readingGraph===orchestration.task_graph&&
+    readingOwner===orchestration.owner_request;
   try {
-    savedCheckpoint = await invoke<SessionCheckpoint | null>("load_session_checkpoint");
+    // An old native read must not overtake this WebView's queued durable
+    // write or clear. Queue the read under the same original task scope.
+    let loaded:SessionCheckpoint|null=null;
+    const accepted=await taskCheckpointLane.enqueue(stillReading,async()=>{
+      const snapshot=await invoke<NativeCheckpointSnapshot>("session_checkpoint_snapshot");
+      loaded=snapshot.checkpoint;
+      if(stillReading()){
+        const observedRevision=checkedNativeCheckpointRevision(snapshot.revision);
+        if(nativeCheckpointRevision!==undefined&&
+           nativeCheckpointRevision!==observedRevision)
+          throw Error("Native checkpoint changed in another process; owner review required.");
+        nativeCheckpointRevision=observedRevision;
+      }
+    });
+    if(!accepted||!stillReading())return;
+    savedCheckpoint=loaded as SessionCheckpoint|null;
 
     if (!savedCheckpoint || savedCheckpoint.messages.length === 0) {
       resumeBanner.classList.add("hidden");
@@ -826,8 +996,16 @@ async function loadRecoveryCheckpoint(): Promise<void> {
     resumeSummary.textContent = "Saved " + ageText + " ago · " + savedCheckpoint.provider + " · " + orchestrationSummary(savedOrchestration);
     resumeBanner.classList.remove("hidden");
   } catch {
+    if(!stillReading())return;
+    // Rust read/unlock or CAS revision mismatch is not an absent checkpoint.
+    // Do not silently suppress the original owner recovery warning: a stale
+    // Desktop must not infer that another process's task can be discarded.
     savedCheckpoint = null;
-    resumeBanner.classList.add("hidden");
+    resumeSummary.textContent =
+      "Recovery blocked: native checkpoint unavailable or changed in another "+
+      "Shuvi process. Saved task not loaded. Inspect the original Windows "+
+      "session and Rust audit before resuming or clearing any work.";
+    resumeBanner.classList.remove("hidden");
   }
 }
 
@@ -1082,8 +1260,14 @@ function revokeBrowserSessionPermissions(pid?: number): void {
   for (const key of [...activePermissionScope.grants.keys()]) {
     if (exactMarker ? key.includes(exactMarker) : key.includes("|pid:")) {
       activePermissionScope.grants.delete(key);
+      nativeReadGrantIds.delete(key);
     }
   }
+  // Native permissions are also invalidated; rotating a browser PID must not
+  // preserve any stale Rust read grant from the prior process identity.
+  activePermissionScope.grants.clear();
+  nativeReadGrantIds.clear();
+  void revokeNativeTaskReads(activePermissionScope.taskId);
 }
 
 function hiddenToolFailure(
@@ -1114,26 +1298,54 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  const stoppedScope=activePermissionScope;
+  const stoppedTaskId=stoppedScope.taskId;
   revokeTaskScope(activePermissionScope);
+  nativeReadGrantIds.clear();
+  // An owner Stop invalidates all volatile evidence before Rust revocation awaits.
+  openingWindowObservation=null;
+  projectCreationEvidence=null;
+  projectShaFileProof=null;
+  projectReopenEvidence=null;
+  renderPremiereProjectProofProgress();
+  await revokeNativeTaskReads(stoppedTaskId);
+  // A Rust grant-revocation IPC reply can arrive after a new owner task.
+  // Never stop/modify that newer task using the old task's failure result.
+  if(activePermissionScope!==stoppedScope)return;
   if (remoteTask) await closeRemoteTask("stopped");
+  if(activePermissionScope!==stoppedScope)return;
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
-  if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
+  const stopGraph=orchestration.task_graph,stopOwner=orchestration.owner_request;
+  const stopStillCurrent=()=>activePermissionScope===stoppedScope&&
+    orchestration.task_graph===stopGraph&&orchestration.owner_request===stopOwner;
+  if (orchestration.task_graph) {
+    await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
+    if(!stopStillCurrent())return;
+  }
   renderOrchestrationStatus();
   await recordOrchestrationAudit("orchestration_stopped", reason, orchestration.last_tool);
+  if(!stopStillCurrent())return;
   messages.push({ role: "assistant", content: reason });
   renderMessages();
   await saveActiveCheckpoint();
+  // Saving a stopped checkpoint can race task rotation. Never clear the new
+  // task's Busy state from the old safety-stop callback after its last await.
+  if(!stopStillCurrent())return;
   setBusy(false);
 }
 
 // A confirmed Rust receipt is not durable Master progress until THIS
 // orchestration checkpoint is fsync-published. Never purchase the next model
 // request after an unsuccessful write, including read-only inspection turns.
-async function persistRequiredContinuationCheckpoint(): Promise<boolean> {
+async function persistRequiredContinuationCheckpoint(
+  stillCurrent:()=>boolean=()=>true
+): Promise<boolean> {
   try {
-    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
-    return true;
+    if(!(await guardedSaveNativeCheckpoint(true)))return false;
+    return stillCurrent();
   } catch {
+    // A failed old checkpoint must not stop a newly rotated user task.
+    if(!stillCurrent())return false;
     await stopAgentForSafety(
       "Could not durably save the last audited action and worker handoff. "+
       "Task stopped; review Rust audit/checkpoint before another provider request."
@@ -1142,16 +1354,35 @@ async function persistRequiredContinuationCheckpoint(): Promise<boolean> {
   }
 }
 
+const masterFinalizationSingleFlight=createMasterFinalizationSingleFlight();
 async function continueAfterOutcome(): Promise<void> {
-  renderOrchestrationStatus();
-  if (!await persistRequiredContinuationCheckpoint()) return;
-  if (orchestration.recovery_mode === "stopped") {
+  // Scheduler and native delivery await: never continue or clear another task.
+  const continuationScope=activePermissionScope;
+  const continuationGraph=orchestration.task_graph;
+  const continuationOwner=orchestration.owner_request;
+  const continuationRemote=remoteTask;
+  const continuationOwnerCurrent=()=>continuationScope===activePermissionScope&&
+    orchestration.task_graph===continuationGraph&&
+    orchestration.owner_request===continuationOwner&&
+    remoteTask===continuationRemote;
+  const continuationCurrent=()=>continuationOwnerCurrent()&&
+    !continuationScope.revoked&&!cancelRequested&&
+    orchestration.recovery_mode!=="stopped";
+  // A STOPPED state is terminal, not a replan. Handle it BEFORE the
+  // live-permission continuation fence deliberately rejects stopped work.
+  // An already revoked same-task scope can still publish its safety stop;
+  // it cannot acquire a new native approval or paid provider call.
+  if(orchestration.recovery_mode==="stopped"){
+    if(!continuationOwnerCurrent())return;
     await stopAgentForSafety(
       orchestration.stop_reason ??
         "Shuvi stopped this task because the local safety orchestrator requires a new user instruction."
     );
     return;
   }
+  renderOrchestrationStatus();
+  if (!await persistRequiredContinuationCheckpoint(continuationCurrent)) return;
+  if(!continuationCurrent())return;
 
   // Never buy another AI turn just because a Rust action returned.
   // Only dependency-ready work proceeds. An all-audited DAG ends here.
@@ -1162,13 +1393,19 @@ async function continueAfterOutcome(): Promise<void> {
     return;
   }
   if (continuation.mode==="complete") {
+    const finalizationFlight=masterFinalizationSingleFlight.acquire(
+      continuationScope,continuationGraph,continuationOwner);
+    if(!finalizationFlight)return;
+    try {
     let schedule: NativeSchedule | null;
     try {
       schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
     } catch {
+      if(!continuationCurrent())return;
       await stopAgentForSafety("Cannot verify terminal Rust task schedule. Final output is not certified.");
       return;
     }
+    if(!continuationCurrent())return;
     const admission=assessMasterSchedulerAdmission(schedule,orchestration.task_graph);
     if(!schedule || !admission.ok ||
         schedule.jobs.length!==orchestration.task_graph?.steps.length ||
@@ -1179,16 +1416,72 @@ async function continueAfterOutcome(): Promise<void> {
     // Finalization is NOT merely UI state: Rust rechecks EVERY stored action
     // ID against its audit and hashes actual Blender/Remotion deliverables.
     // Failure preserves the checkpoint and refuses a "completed" claim.
-    const claims=nativeTaskDeliveryClaims(orchestration.task_graph,schedule);
+    const claims=nativeTaskDeliveryClaims(orchestration.task_graph,schedule,{
+      taskId:activePermissionScope.taskId,created:projectCreationEvidence,
+      sha:projectShaFileProof,reopened:projectReopenEvidence
+    });
     if(!claims){
       await stopAgentForSafety("Cannot construct a SHA-256-bound native delivery from audited worker steps.");
       return;
     }
+    // A Premiere project requires its separately verified Create/SHA/Reopen
+    // evidence before any claimed .prproj path enters Rust. Native Rust still
+    // independently hashes the exact bytes and binds every action UUID.
+    const preflight=assessNativeFinalizationPreflight(
+      orchestration.owner_request,orchestration.task_graph,schedule,claims,
+      activePermissionScope.taskId,projectCreationEvidence,projectShaFileProof,
+      projectReopenEvidence);
+    if(!preflight.allowed){
+      await stopAgentForSafety("Final native delivery withheld: "+preflight.reason+
+        " Proof stage: "+preflight.projectProofStage+
+        ". No original Premiere creative goal was marked complete.");
+      return;
+    }
+    if(!continuationCurrent())return;
     let nativeDelivery:NativeTaskDelivery;
     try{
       nativeDelivery=await invoke<NativeTaskDelivery>("finalize_native_task_delivery",{steps:claims});
     }catch{
+      if(!continuationCurrent())return;
       await stopAgentForSafety("Native delivery verification failed. Audit or output files require inspection; checkpoint retained.");
+      return;
+    }
+    if(!continuationCurrent())return;
+    // Even a real native .prproj SHA-256 delivery is NONTERMINAL until
+    // original Adobe project/creative-goal acceptance is independently shown.
+    const projectDelivery=assessPremiereProjectDeliveryContract(
+      orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
+      activePermissionScope.taskId,projectCreationEvidence,projectShaFileProof,projectReopenEvidence);
+    // Rust hashes native delivery files, but cannot certify the user's
+    // original creative objective from generic step success alone.
+    const goalAcceptance=assessMasterGoalDelivery(orchestration.owner_request,orchestration.task_graph);
+    const openingAcceptance=verifyMasterOpeningDelivery(
+      orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
+      openingWindowObservation,activePermissionScope.taskId);
+    // All native actions can be perfectly audited and still leave the
+    // ORIGINAL GOAL unfinished. Unsupported app/coding/creative goals must
+    // not fall through to 'success' merely because they lacked a verifier.
+    const finalOutcome=assessMasterFinalOutcome(
+      orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
+      openingWindowObservation,activePermissionScope.taskId);
+    if(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified){
+      if(projectCreationEvidence&&projectCreationEvidence.taskId===activePermissionScope.taskId){
+        messages.push({role:"assistant",content:
+          projectCandidateStatus(projectCreationEvidence,activePermissionScope.taskId)+
+          " Project delivery contract: "+projectDelivery.reason+
+          (projectShaFileProof
+            ? " "+nativePremiereShaProgress(projectShaFileProof,activePermissionScope.taskId)+
+              (projectReopenEvidence?.sha256AfterReopenVerified===true
+               ? " Separately approved Premiere project OPEN was Rust-audited and the unchanged SHA-256 was independently re-read after it. Final native delivery remains UNVERIFIED."
+               : " Separately approved project-reopen acceptance is not yet verified.")
+            : " Independent Rust SHA-256 file readback unavailable; project completion not claimed.")});
+        renderMessages();
+      }
+      await stopAgentForSafety(summarizeMasterMissingProof(finalOutcome));
+      return;
+    }
+    if(!finalOutcome.verified){
+      await stopAgentForSafety(summarizeMasterMissingProof(finalOutcome));
       return;
     }
     const completed=taskGraphProgress(orchestration.task_graph);
@@ -1196,27 +1489,163 @@ async function continueAfterOutcome(): Promise<void> {
       "All "+completed.total+" audited native steps are now in a durable delivery receipt; "+
       nativeDelivery.steps.filter(s=>s.artifact).length+
       " output files were rehashed by Rust. No more AI calls were sent. "+
-      "Final video or 3D quality still requires real Windows application acceptance."});
+      (openingAcceptance.verified
+        ?"The requested Premiere window was independently observed (PID "+
+         openingAcceptance.window.pid+"). Project editing/export is NOT inferred."
+        :"Final video or 3D quality still requires real Windows application acceptance.")});
     el<HTMLElement>("#nativeDeliverySummary").textContent=
       "Last native delivery: "+nativeDelivery.steps.length+" audited steps, "+
       nativeDelivery.steps.filter(s=>s.artifact).length+" SHA-256 checked files.";
     renderMessages();
-    if(remoteTask)await closeRemoteTask(remoteTask.evidenceActionId&&!remoteTask.hadFailure
-      ?"succeeded":"outcome_unknown");
-    await clearActiveCheckpoint();
+    // A confirmed remote receipt intentionally retires remoteTask. The
+    // earlier continuationCurrent() fence therefore no longer applies;
+    // finalization needs a separately pinned POST-terminal owner fence.
+    const hadTerminalRemote=remoteTask!==null;
+    if(hadTerminalRemote){
+      const terminalStatus=remoteTask!.evidenceActionId&&!remoteTask!.hadFailure
+        ?"succeeded":"outcome_unknown";
+      if(!(await closeRemoteTask(terminalStatus)))return;
+    }
+    const terminalStillOwned=()=>activePermissionScope===continuationScope&&
+      orchestration.task_graph===continuationGraph&&
+      orchestration.owner_request===continuationOwner&&
+      remoteTask===null&&!cancelRequested&&
+      orchestration.recovery_mode!=="stopped";
+    if(!terminalStillOwned())return;
+    // The async Rust checkpoint clear may finish after another task begins.
+    const checkpointErased=await clearActiveCheckpoint(true);
+    if(!checkpointErased){
+      if(activePermissionScope===continuationScope&&
+         orchestration.task_graph===continuationGraph&&
+         orchestration.owner_request===continuationOwner&&remoteTask===null){
+        messages.push({role:"assistant",content:
+          "Native task delivery was verified, but Rust checkpoint deletion was NOT verified. "+
+          "The previous saved session may remain; do not Resume or repeat Windows actions. "+
+          "Inspect recovery state before starting another task."});
+        renderMessages();
+      }
+      // Intentionally keep Busy until owner recovery. No false verified
+      // terminal cleanup or automatic repeat of a completed OS mutation.
+      return;
+    }
+    // clearActiveCheckpoint intentionally revokes the old scope; identity,
+    // graph and owner equality, not an unrevoked consent flag, guard UI reset.
+    if(activePermissionScope!==continuationScope||
+       orchestration.task_graph!==continuationGraph||
+       orchestration.owner_request!==continuationOwner||
+       remoteTask!==null)return;
     setBusy(false);
+    return;
+    } finally {
+      // Protect the entire Rust finalizer, mobile terminal receipt AND native
+      // checkpoint erasure. Repeated callbacks cannot finalize a DAG twice.
+      finalizationFlight.release();
+    }
+  }
+  // A dependency-ready native INSPECTION can be staged without buying
+  // another AI model request. Only original-brief-bound graph steps backed by
+  // exact previous native receipts qualify; NEVER auto-execute a mutation.
+  const safeReadback=planVerifiedNativeReadback(
+    orchestration.task_graph,orchestration.owner_request,{
+      lastOutcome:orchestration.last_outcome,
+      recoveryMode:orchestration.recovery_mode,
+      cancelRequested,remoteTask:remoteTask!==null
+    });
+  if(safeReadback) {
+    // Protect every async Rust-status await from Stop, revoked consent,
+    // new task admission and crash/recovery checkpoint replacement.
+    const readbackScope=activePermissionScope;
+    const readbackGraph=orchestration.task_graph;
+    const readbackOwner=orchestration.owner_request;
+    const readbackStale=()=>readbackScope!==activePermissionScope||
+      readbackScope.revoked||cancelRequested||
+      orchestration.recovery_mode==="stopped"||
+      orchestration.task_graph!==readbackGraph||
+      orchestration.owner_request!==readbackOwner||
+      remoteTask!==null;
+    if(readbackStale())return;
+    // Do not elide the existing host lease/Rust scheduler comparison simply
+    // because the next proposal is deterministic rather than model-authored.
+    let host:NativeWorkerStatus;
+    try {host=await invoke<NativeWorkerStatus>("native_worker_status");}
+    catch {
+      if(readbackStale())return;
+      await stopAgentForSafety("Native worker lease is unreadable before a deterministic readback; no provider or tool dispatched.");
+      return;
+    }
+    if(readbackStale())return;
+    if(host.state!=="idle"||host.requiresOwnerReview||host.durableJobPhase==="running"){
+      await stopAgentForSafety("Native worker lease or recovery is unresolved. Inspection-only owner review required before another readback.");
+      return;
+    }
+    let native:NativeSchedule|null;
+    try {native=await invoke<NativeSchedule|null>("native_scheduler_status");}
+    catch {
+      if(readbackStale())return;
+      await stopAgentForSafety("Native scheduler status unavailable before an audited readback. No tool or provider dispatched.");
+      return;
+    }
+    if(readbackStale())return;
+    const admission=assessMasterSchedulerAdmission(native,orchestration.task_graph);
+    if(!admission.ok){
+      await stopAgentForSafety("Native scheduler readback refused: "+
+        (admission.reason??"Rust state unresolved.")+" No tool or provider dispatched.");
+      return;
+    }
+    // The same UI path still requires native prepare, a fresh action UUID,
+    // bounded task accounting and explicit owner Allow once (or narrow,
+    // previously owner-issued and Rust-validated exact read consent).
+    if(readbackStale())return;
+    const route=taskModelRoute??{...defaultModelRoute(),role:"default"};
+    await stageProposal(safeReadback,route);
     return;
   }
   await runAgentStep();
 }
 
 async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Promise<void> {
+  // An AI response is not authority to redefine the original owner brief.
+  // Check the durable task identity and every proposed graph/step BEFORE
+  // touching Rust prepare_tool, approval UI or provider-driven continuation.
+  const ownerBrief=orchestration.owner_request;
+  const proposalScope=activePermissionScope;
+  const proposalRemote=remoteTask;
+  const originalProposalTaskCurrent=()=>activePermissionScope===proposalScope&&
+    !proposalScope.revoked&&!cancelRequested&&
+    orchestration.owner_request===ownerBrief&&
+    remoteTask===proposalRemote;
+  if(!ownerBrief){
+    await stopAgentForSafety("Original owner brief is absent/oversized in the task checkpoint. No native action staged; start a new bounded task.");
+    return;
+  }
+  // The ONLY locally synthesized graph is the two-step, readback-only
+  // Premiere opening workflow; don't accept this shortcut for remote jobs,
+  // project/edit requests or any already staged/recovered native graph.
+  if(!remoteTask&&!cancelRequested){
+    proposal=attachNativePremiereOpeningBlueprint(ownerBrief,proposal,orchestration);
+  }
+  const actionScope=validateMasterAction(ownerBrief,proposal);
+  if(!actionScope.ok){
+    await stopAgentForSafety("Master tool scope refused: "+actionScope.reason+" No native action staged.");
+    return;
+  }
+  if(proposal.task_graph!=null){
+    const planScope=validateMasterPlan(ownerBrief,proposal.task_graph);
+    if(!planScope.ok){
+      await stopAgentForSafety("Master DAG scope refused: "+planScope.reason+" No native action staged.");
+      return;
+    }
+  }
   const decision = evaluateProposal(orchestration, proposal);
   if (!decision.allowed) {
     orchestration = recordProposalBlock(orchestration, proposal, decision);
+    const blockedProposalState=orchestration;
     await recordOrchestrationAudit("orchestration_blocked", decision.reason, proposal.tool);
-    if (orchestration.task_graph || proposal.task_graph != null)
+    if(!originalProposalTaskCurrent()||orchestration!==blockedProposalState)return;
+    if (orchestration.task_graph || proposal.task_graph != null){
       await recordOrchestrationAudit("task_dependency_blocked", decision.reason.slice(0, 1200), proposal.tool);
+      if(!originalProposalTaskCurrent()||orchestration!==blockedProposalState)return;
+    }
     messages.push(hiddenToolFailure(proposal, {
       orchestration_blocked: true,
       reason: decision.reason,
@@ -1229,13 +1658,19 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   masterEmptyToolReplies=0;
   const accepted = acceptProposalGraph(orchestration, proposal);
   orchestration = accepted.state;
-  if (accepted.event) await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
+  const acceptedProposalState=orchestration;
+  if (accepted.event){
+    await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
+    if(!originalProposalTaskCurrent()||orchestration!==acceptedProposalState)return;
+  }
+  if(!originalProposalTaskCurrent())return;
   orchestration = recordProposalStart(orchestration, proposal);
   // Ownership token + exact state identity prevent a slow native prepare reply
   // from staging a different task after Stop, Resume, or a new instruction.
   const stagingScope = activePermissionScope;
+  const stagingRemote=remoteTask;
   let stagingState = orchestration;
-  const staleStage = () => stagingWasInvalidated(
+  const staleStage = () => remoteTask!==stagingRemote||stagingWasInvalidated(
     stagingScope, activePermissionScope, stagingState, orchestration, cancelRequested
   );
   const denyStaleAction = async (id: unknown): Promise<void> => {
@@ -1248,8 +1683,9 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   // Persist the in-flight receipt before permission staging/execution. Failure closes the graph path.
   if (orchestration.task_graph) {
     try {
-      await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+      if(!(await guardedSaveNativeCheckpoint(true)))return;
     } catch {
+      if(staleStage())return;
       await stopAgentForSafety("Could not save task progress before staging the action. A new instruction or safe resume is required.");
       return;
     }
@@ -1309,8 +1745,17 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     // showing approval UI or auto-executing a session-scoped low-risk action.
     if (orchestration.task_graph && proposal.task_step_id != null) {
       try {
-        await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+        if(!(await guardedSaveNativeCheckpoint(true))){
+          await denyStaleAction(preparedId);
+          return;
+        }
       } catch {
+        if(staleStage()){
+          // Deny only the OLD prepared action UUID. Never clear/stop the
+          // replacement task's pending action after a delayed save error.
+          await denyStaleAction(preparedId);
+          return;
+        }
         try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
         pendingAction = null;
         pendingChatProposal = null;
@@ -1332,7 +1777,13 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       allowsTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk)) &&
       !cancelRequested
     ) {
-      await executePendingProposal(proposal);
+      const exactReadKey=taskReadPermissionKey(proposal);
+      const rustGrantId=exactReadKey?nativeReadGrantIds.get(exactReadKey):null;
+      if(!rustGrantId){
+        await stopAgentForSafety("Local read permission has no corresponding Rust grant. No unattended action dispatched.");
+        return;
+      }
+      await executePendingProposal(proposal,rustGrantId);
       return;
     }
 
@@ -1340,7 +1791,10 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       const approvalId = crypto.randomUUID();
       const approvalExpiresAt = Date.now() + 90_000;
       try {
-        await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt});
+        if(!(await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt}))){
+          await denyStaleAction(preparedId);
+          return;
+        }
         if (staleStage()) {
           await denyStaleAction(preparedId);
           return;
@@ -1446,25 +1900,83 @@ function clearExecutingAction(actionId: string): void {
   if (executingCancellation?.actionId === actionId) executingCancellation = null;
 }
 
-async function executePendingProposal(proposal: ToolProposal): Promise<void> {
+const masterNativeSingleFlight=createMasterNativeSingleFlight();
+async function executePendingProposal(proposal: ToolProposal, rustGrantId:string|null=null): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
+  // Begin native single-flight admission BEFORE the first Rust await.
+  // It survives Stop/rotation until this exact uncertain native IPC settles.
+  const nativeFlight=masterNativeSingleFlight.acquire(activePermissionScope,actionId);
+  if(!nativeFlight)return;
+  try {
   if (!taskDeadlineAllows(orchestration.task_expires_at_ms) || orchestration.next_step > orchestration.max_steps) {
     try { await invoke("deny_action", { actionId }); } catch { /* conservative halt */ }
     clearChatPermission();
     await stopAgentForSafety("Owner-approved task budget expired before execution; no new native action authorized.");
     return;
   }
+  const permissionTaskId=activePermissionScope.taskId;
+  const actionRemoteTask=remoteTask;
+  // Every native action, not only Premiere projects, requires an exact live
+  // owner-task lease across execute, audit and cancellation IPC awaits.
+  const actionOwnership=captureNativeActionOwnership(activePermissionScope,
+    orchestration.task_graph,orchestration.owner_request,actionId);
+  const nativeActionCurrent=(ownership:ReturnType<typeof captureNativeActionOwnership>)=>
+    remoteTask===actionRemoteTask&&isNativeActionOwnershipCurrent(ownership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    });
+  if(!nativeActionCurrent(actionOwnership))return;
+  const protectProjectProof=proposal.tool==="premiere_create_project"||
+    proposal.tool==="premiere_open_project";
+  const actionProofFence=protectProjectProof
+    ? captureNativeProjectProofFence(activePermissionScope,
+      orchestration.task_graph,orchestration.owner_request,actionId):null;
+  const proofFenceCurrent=(fence:ReturnType<typeof captureNativeProjectProofFence>)=>
+    isNativeProjectProofFenceCurrent(fence,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      recoveryMode:orchestration.recovery_mode,cancelRequested
+    });
+  if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
+  if(proposal.tool==="premiere_open_project"){
+    // Preserve the original project create/SHA ONLY for a separately
+    // approved reopen of its exact same path. Opening a different project
+    // can change the active Adobe host identity and invalidates all prior
+    // project evidence rather than allowing cross-project reuse.
+    projectReopenEvidence=null;
+    if(!projectCreationEvidence||!projectShaFileProof||
+       proposal.arguments.path!==projectCreationEvidence.projectPath){
+      projectCreationEvidence=null;
+      projectShaFileProof=null;
+    }
+  }else if(proposal.tool==="premiere_create_project"||
+    !["ui_windows","list_processes","ui_find","ui_discover",
+      "premiere_context","premiere_bridge_status"].includes(proposal.tool)){
+    projectCreationEvidence=null;
+    projectShaFileProof=null;
+    projectReopenEvidence=null;
+  }
+  // A new window read replaces older observed proof, even if it fails.
+  // Non-read native actions may mutate the UI and invalidate the old window.
+  if(proposal.tool==="ui_windows"||
+     !["list_processes","ui_find","ui_discover","premiere_context","premiere_bridge_status"].includes(proposal.tool))
+    openingWindowObservation=null;
+  renderPremiereProjectProofProgress();
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
 
   try {
-    const result = await invoke<ActionResult>("execute_action", { actionId });
+    const result = await invoke<ActionResult>("execute_action",
+      rustGrantId?{actionId,grantId:rustGrantId,taskId:permissionTaskId}:{actionId});
     const receipt = await readActionAuditReceipt(actionId);
     const receiptMatches = verifiedNativeActionResult(proposal.tool, actionId, result, receipt);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
+    if(!nativeActionCurrent(actionOwnership))return;
+    if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
     if (!cancelledByUser && result.success) {
       if (proposal.tool === "browser_start") {
         // A newly launched browser may receive an OS PID used by an older session.
@@ -1490,7 +2002,107 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       actionId,
       receipt
     );
+    // Tool outcome updates the DAG. Capture that NEW exact graph before the
+    // asynchronous Rust audit-log publication, and reject a rotated task.
+    const postOutcomeOwnership=captureNativeActionOwnership(activePermissionScope,
+      orchestration.task_graph,orchestration.owner_request,actionId);
     await auditGraphOutcome(proposal);
+    // Rust-audited failures legitimately set replan_required or stopped.
+    // They may be classified ONLY for the exact same owner/scope/DAG.
+    if(remoteTask!==actionRemoteTask||!isNativeActionOwnershipCurrent(postOutcomeOwnership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    },false,true))return;
+    // A successful audit legitimately replaces the DAG; pin its new identity
+    // for separately awaited SHA create/reopen success AND failure responses.
+    const postAuditProofFence=protectProjectProof
+      ? captureNativeProjectProofFence(activePermissionScope,
+        orchestration.task_graph,orchestration.owner_request,actionId):null;
+    if(protectProjectProof&&!proofFenceCurrent(postAuditProofFence))return;
+    if(proposal.tool==="premiere_create_project"&&result.success&&receiptMatches&&
+       !cancelledByUser&&!cancelRequested&&
+       activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked){
+      projectCreationEvidence=inspectPremiereProjectCreateCandidate(
+        orchestration.owner_request,orchestration.task_graph,proposal,result,
+        actionId,permissionTaskId,true);
+      const candidate=projectCreationEvidence;
+      if(candidate){
+        // Rust does a separate BOUNDED read-only SHA-256 over the actual
+        // approved .prproj. Only the exact previous owner-approved create
+        // audit, its path, and the native scheduler can authorize the read.
+        // The Team 40 executor is on another unmerged branch; this fails
+        // closed until the designated integrator combines those code paths.
+        try{
+          const fileProof=await invoke<NativePremiereShaReceipt>(
+            "verify_premiere_project_sha256",{
+              actionId:candidate.actionId,
+              projectPath:candidate.projectPath,
+              expectedFnv1a64:candidate.fnv1a64,
+              expectedSizeBytes:candidate.sizeBytes
+            });
+          if(proofFenceCurrent(postAuditProofFence)&&
+             activePermissionScope.taskId===permissionTaskId&&
+             projectCreationEvidence===candidate&&!cancelledByUser){
+            projectShaFileProof=bindNativePremiereShaProof(
+              candidate,fileProof,permissionTaskId);
+          }
+        }catch{
+          // A failed verification can mean a changed file or missing native
+          // Team 40 integration. Never retry an uncertain mutation or
+          // manufacture an SHA-256 from the weaker FNV-1a64 value.
+          if(proofFenceCurrent(postAuditProofFence)&&
+             projectCreationEvidence===candidate)projectShaFileProof=null;
+        }
+      }
+    }
+    if(proposal.tool==="premiere_open_project"&&result.success&&receiptMatches&&
+       !cancelledByUser&&!cancelRequested&&
+       activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&
+       projectCreationEvidence&&projectShaFileProof){
+      const candidate=projectCreationEvidence;
+      const originalSha=projectShaFileProof;
+      const reopen=inspectPremiereProjectReopenCandidate(
+        permissionTaskId,candidate,originalSha,orchestration.task_graph,
+        proposal,result,actionId,true);
+      if(reopen){
+        try{
+          // No new Adobe call. Re-read the SAME previously approved path
+          // via the Rust SHA verifier after a separately audited project open.
+          const bytesAfter=await invoke<NativePremiereShaReceipt>(
+            "verify_premiere_project_sha256",{
+              actionId:candidate.actionId,projectPath:candidate.projectPath,
+              expectedFnv1a64:candidate.fnv1a64,
+              expectedSizeBytes:candidate.sizeBytes
+            });
+          const verifiedAfter=bindNativePremiereShaProof(
+            candidate,bytesAfter,permissionTaskId);
+          if(proofFenceCurrent(postAuditProofFence)&&
+             activePermissionScope.taskId===permissionTaskId&&
+             projectCreationEvidence===candidate&&
+             projectShaFileProof===originalSha&&!cancelledByUser){
+            projectReopenEvidence=bindPremiereReopenShaAfterReadback(
+              reopen,verifiedAfter,permissionTaskId);
+          }
+        }catch{
+          // A failed/changed file read never makes a past Adobe acceptance
+          // or FNV read look like a cryptographic post-reopen verification.
+          if(proofFenceCurrent(postAuditProofFence)&&
+             projectCreationEvidence===candidate&&
+             projectShaFileProof===originalSha)projectReopenEvidence=null;
+        }
+      }
+    }
+    // Stop/rotation during either SHA await forbids stale progress messages
+    // or continuation of a different native owner task.
+    if(protectProjectProof&&!proofFenceCurrent(postAuditProofFence))return;
+    renderPremiereProjectProofProgress();
+    if(proposal.tool==="ui_windows"&&receiptMatches&&!cancelledByUser&&
+       activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&!cancelRequested){
+      openingWindowObservation=captureMasterOpeningObservation(
+        orchestration.owner_request,orchestration.task_graph,proposal,result,
+        actionId,permissionTaskId,true);
+    }
     if (cancelledByUser || !result.success || !receiptMatches) revokeTaskScope(activePermissionScope);
     // A returned tool result is not trusted until Rust corroborates the
     // exact action UUID, proposed tool, typed result and executed receipt.
@@ -1517,12 +2129,32 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       return;
     }
     messages.push(toolResultMessage(result));
+    // The exact native execute + Rust receipt + project proof has FINISHED.
+    // Release before a dependency-ready read-only native worker may recurse;
+    // otherwise it would silently fail acquisition under our own lease.
+    clearExecutingAction(actionId);
+    nativeFlight.release();
     await continueAfterOutcome();
   } catch (error) {
+    // A delayed failed IPC call is not evidence against another user task.
+    if(!nativeActionCurrent(actionOwnership))return;
+    if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
     revokeTaskScope(activePermissionScope);
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     const confirmedFailure = confirmedNativeActionFailure(proposal.tool, actionId, receipt);
+    // Revocation here is intentional fail-closed and must remain valid for
+    // this task's failure classification, but NEVER for a replacement scope.
+    if(remoteTask!==actionRemoteTask||!isNativeActionOwnershipCurrent(actionOwnership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    },true))return;
+    if(protectProjectProof&&
+      (activePermissionScope!==actionProofFence?.scope||
+       activePermissionScope.taskId!==permissionTaskId||cancelRequested||
+       orchestration.task_graph!==actionProofFence?.graph||
+       orchestration.owner_request!==actionProofFence?.ownerRequest))return;
     if(remoteTask)remoteTask.hadFailure=true;
     orchestration = recordToolOutcome(
       orchestration,
@@ -1533,7 +2165,14 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       actionId,
       receipt
     );
+    const failedOutcomeOwnership=captureNativeActionOwnership(activePermissionScope,
+      orchestration.task_graph,orchestration.owner_request,actionId,true);
     await auditGraphOutcome(proposal);
+    if(remoteTask!==actionRemoteTask||!isNativeActionOwnershipCurrent(failedOutcomeOwnership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    },true,true))return;
     // Native IPC can throw AFTER a Windows action has executed. Without a
     // matching failed receipt, neither success nor failure is established.
     messages.push(hiddenToolFailure(proposal, {
@@ -1551,9 +2190,16 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       return;
     }
     // The exact failed Rust action receipt permits bounded safety replanning.
+    // The audited native attempt has finished; a subsequent *new* action may
+    // acquire its own Rust permit after safety replan and owner approval.
+    clearExecutingAction(actionId);
+    nativeFlight.release();
     await continueAfterOutcome();
   } finally {
     clearExecutingAction(actionId);
+  }
+  } finally {
+    nativeFlight.release();
   }
 }
 function renderChatPermission(proposal: ToolProposal, step: number): void {
@@ -1561,6 +2207,18 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     clearChatPermission();
     return;
   }
+  const uiScope=activePermissionScope,uiGraph=orchestration.task_graph;
+  const uiOwner=orchestration.owner_request,uiRemote=remoteTask;
+  const uiPending=pendingAction;
+  const uiFence=captureMasterPermissionUiFence(
+    uiScope,uiGraph,uiOwner,uiPending,proposal,uiRemote);
+  const uiCurrent=()=>isMasterPermissionUiFenceCurrent(uiFence,{
+    scope:activePermissionScope,graph:orchestration.task_graph,
+    owner:orchestration.owner_request,pending:pendingAction,
+    proposal:pendingChatProposal,remote:remoteTask,
+    cancelRequested,mode:orchestration.recovery_mode
+  });
+  if(!uiCurrent()){clearChatPermission();return;}
 
   chatPermission.classList.remove("hidden");
   const allowReadGrant = pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
@@ -1608,6 +2266,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
   if (approve) {
     approve.onclick = async () => {
+      if(!uiCurrent())return;
       await executePendingProposal(proposal);
     };
   }
@@ -1615,10 +2274,40 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
   if (allowSession) {
     allowSession.onclick = async () => {
-      if(!pendingAction||!grantTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk))){
-        await stopAgentForSafety("Invalid task-scoped read permission. No action executed.");
+      if(!uiCurrent())return;
+      const pendingId=pendingAction?.id;
+      const ownerTaskId=activePermissionScope.taskId;
+      const key=taskReadPermissionKey(proposal);
+      if(!pendingId||!key||remoteTask||cancelRequested){
+        await stopAgentForSafety("Invalid read grant request; no action was executed.");
         return;
       }
+      // The Rust host rechecks the exact prepared tool, its low native risk,
+      // its canonical argument fingerprint and TTL. AI cannot issue this grant.
+      let grantId:string;
+      try{
+        grantId=await invoke<string>("issue_task_read_grant",
+          {taskId:ownerTaskId,actionId:pendingId});
+      }catch{
+        if(!uiCurrent())return;
+        await stopAgentForSafety("Rust refused this read grant; no action executed.");
+        return;
+      }
+      if(!uiCurrent()||pendingAction?.id!==pendingId||
+          activePermissionScope.taskId!==ownerTaskId||cancelRequested){
+        await revokeNativeTaskReads(ownerTaskId);
+        return;
+      }
+      if(!grantTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk))){
+        await revokeNativeTaskReads(ownerTaskId);
+        if(!uiCurrent())return;
+        await stopAgentForSafety("Local read grant rejected; no action executed.");
+        return;
+      }
+      nativeReadGrantIds.set(key,grantId);
+      el<HTMLButtonElement>("#revokeTaskReadGrants").disabled=false;
+      // The current owner's click authorizes this first action exactly once.
+      // Further identical reads must consume the Rust grant separately.
       await executePendingProposal(proposal);
     };
   }
@@ -1626,57 +2315,65 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const deny = chatPermission.querySelector<HTMLButtonElement>("#chatDeny");
   if (deny) {
     deny.onclick = async () => {
-      if (!pendingAction) return;
-
-      const actionId = pendingAction.id;
-      revokeTaskScope(activePermissionScope);
-      if(remoteTask){
-        clearChatPermission();
-        try{await invoke("deny_action",{actionId});}catch{/* fail closed */}
+      if(!uiCurrent())return;
+      const actionId=uiPending.id;
+      const deniedTaskId=uiScope.taskId;
+      let deniedGraph=orchestration.task_graph;
+      const sameDeniedOwner=()=>activePermissionScope===uiScope&&
+        activePermissionScope.taskId===deniedTaskId&&
+        orchestration.task_graph===deniedGraph&&
+        orchestration.owner_request===uiOwner&&!cancelRequested;
+      const stillDenied=()=>sameDeniedOwner()&&remoteTask===uiRemote;
+      // Remove the old buttons before ANY asynchronous Rust await. Repeated
+      // clicks, Stop and newer task admission must not reuse this approval.
+      clearChatPermission();
+      revokeTaskScope(uiScope);
+      nativeReadGrantIds.clear();
+      openingWindowObservation=null;
+      projectCreationEvidence=null;
+      projectShaFileProof=null;
+      projectReopenEvidence=null;
+      renderPremiereProjectProofProgress();
+      await revokeNativeTaskReads(deniedTaskId);
+      if(!stillDenied())return;
+      if(uiRemote){
+        try {await invoke("deny_action",{actionId});}catch{/* fail closed */}
+        if(!stillDenied())return;
         await closeRemoteTask("stopped");
+        if(!sameDeniedOwner())return;
         await stopAgentForSafety("The remote Windows action was denied locally.");
         return;
       }
-      clearChatPermission();
-
-      let deniedConfirmed = false;
+      let deniedConfirmed=false;
+      let receipt:AuditEntry|null=null;
       try {
-        await invoke("deny_action", { actionId });
-        const receipt = await readActionAuditReceipt(actionId);
-        deniedConfirmed = exactActionReceipt(receipt, actionId, proposal.tool, "denied", false);
+        await invoke("deny_action",{actionId});
+        receipt=await readActionAuditReceipt(actionId);
+        if(!stillDenied())return;
+        deniedConfirmed=exactActionReceipt(receipt,actionId,proposal.tool,"denied",false);
         void refreshAudit();
-        orchestration = recordToolOutcome(
-          orchestration,
-          proposal,
-          deniedConfirmed ? "denied" : "failure",
-          undefined,
-          false,
-          actionId,
-          receipt
-        );
-      } catch {
-        orchestration = recordToolOutcome(
-          orchestration,
-          proposal,
-          "failure",
-          undefined,
-          false,
-          actionId,
-          null
-        );
+      }catch{
+        if(!stillDenied())return;
       }
+      // The original task is still current: only now classify the exact
+      // failed/denied action. Never modify a new task's DAG from old IPC.
+      orchestration=recordToolOutcome(orchestration,proposal,
+        deniedConfirmed?"denied":"failure",undefined,false,actionId,receipt);
+      deniedGraph=orchestration.task_graph;
       await auditGraphOutcome(proposal);
-      messages.push(hiddenToolFailure(proposal, {
-        denied_by_user: deniedConfirmed,
-        denial_audit_confirmed: deniedConfirmed,
-        action_id: actionId,
-        retry_automatically: false
+      if(!stillDenied())return;
+      messages.push(hiddenToolFailure(proposal,{
+        denied_by_user:deniedConfirmed,
+        denial_audit_confirmed:deniedConfirmed,
+        action_id:actionId,
+        retry_automatically:false
       }));
       await continueAfterOutcome();
     };
   }
 }
 
+const masterProviderSingleFlight=createMasterProviderSingleFlight();
 async function runAgentStep(): Promise<void> {
   if (cancelRequested) {
     revokeTaskScope(activePermissionScope);
@@ -1703,12 +2400,45 @@ async function runAgentStep(): Promise<void> {
     return;
   }
 
+  // A native DAG whose every step already has independently correlated
+  // receipts must go straight to the strict Rust/goal finalizer. Never buy
+  // another AI call or clear the checkpoint on a model commentary.
+  if(classifyMasterCommentaryCompletion(orchestration.task_graph).mode==="native_finalizer"){
+    await continueAfterOutcome();
+    return;
+  }
+
+  // Prevent two simultaneous paid model requests from reserving or dispatching
+  // through concurrent Resume/remote/manual continuations in this WebView.
+  const paidFlight=masterProviderSingleFlight.acquire(activePermissionScope);
+  if(!paidFlight)return;
+  try {
   setBusy(true);
   // A model response belongs ONLY to the task that dispatched it. A Stop,
   // Resume, or replacement task rotates/revokes this local owner identity.
   const requestScope = activePermissionScope;
+  const requestGraph = orchestration.task_graph;
+  const requestOwner = orchestration.owner_request;
+  const requestRemote=remoteTask;
+  // Terminal callbacks may intentionally revoke the old scope and retire its
+  // mobile task. Identity (not consent) must still be rechecked after awaits.
+  const responseCleanupOwnerCurrent=()=>requestScope===activePermissionScope&&
+    orchestration.task_graph===requestGraph&&
+    orchestration.owner_request===requestOwner&&!cancelRequested&&
+    (remoteTask===requestRemote||(requestRemote!==null&&remoteTask===null));
+  let providerTurnFence:ReturnType<typeof captureMasterProviderTurnFence>=null;
   const staleModelRequest = () => requestScope !== activePermissionScope ||
-    requestScope.revoked || cancelRequested || orchestration.recovery_mode === "stopped";
+    remoteTask!==requestRemote ||
+    requestScope.revoked || cancelRequested ||
+    orchestration.recovery_mode === "stopped" ||
+    orchestration.task_graph!==requestGraph ||
+    orchestration.owner_request!==requestOwner ||
+    (providerTurnFence!==null&&!isMasterProviderTurnFenceCurrent(providerTurnFence,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      owner:orchestration.owner_request,nextStep:orchestration.next_step,
+      reserved:orchestration.model_requests_reserved,
+      mode:orchestration.recovery_mode,cancelRequested
+    }));
   const route = taskModelRoute ?? { ...defaultModelRoute(), role: "default" };
   // A scheduler READY step may use an explicitly configured specialist model
   // from this task's immutable checkpoint. The exact native typed action
@@ -1737,8 +2467,12 @@ async function runAgentStep(): Promise<void> {
   }
 
   if(remoteTask && remoteTask.status === "admitted"){
-    try {await sendRemoteReceipt("running");}
-    catch {
+    try {
+      if(!(await sendRemoteReceipt("running"))){
+        setBusy(false);
+        return;
+      }
+    } catch {
       await closeRemoteTask("outcome_unknown");
       setBusy(false);
       return;
@@ -1771,10 +2505,19 @@ async function runAgentStep(): Promise<void> {
     return;
   }
   orchestration = reservation.state;
+  providerTurnFence=captureMasterProviderTurnFence(
+    requestScope,orchestration.task_graph,orchestration.owner_request,
+    orchestration.next_step,orchestration.model_requests_reserved,
+    orchestration.recovery_mode);
+  if(!providerTurnFence){
+    await stopAgentForSafety("Original task or paid request reservation is invalid. No provider call dispatched.");
+    return;
+  }
   // A12: if the durable reservation cannot be saved, do NOT call the provider.
   try {
-    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    if(!(await guardedSaveNativeCheckpoint(true)))return;
   } catch {
+    if(staleModelRequest())return;
     await stopAgentForSafety("Shuvi could not persist its model-request reservation. No AI provider request was sent.");
     return;
   }
@@ -1787,9 +2530,12 @@ async function runAgentStep(): Promise<void> {
         model: selectedRoute.model,
         base_url: selectedRoute.base_url || null,
         messages: providerMessageWindow(messages),
-        orchestration_context: workerContext
+        orchestration_context: workerContext+"\n"+masterGoalEvidenceContext(orchestration.owner_request)
       }
     });
+    // The provider call has settled; release before same-task recursive
+    // tool/worker continuation. Stale reply acceptance is independently fenced.
+    paidFlight.release();
 
     // Do not use a stale provider reply to mutate task history, token UI,
     // checkpoints, or stage a tool for a different owner request.
@@ -1817,6 +2563,9 @@ async function runAgentStep(): Promise<void> {
     messages.push({ role: "assistant", content: response.content });
     renderMessages();
     await saveActiveCheckpoint();
+    // Even if the provider returned correctly, a slow checkpoint fsync can
+    // finish after Stop, task rotation or a later DAG revision.
+    if(staleModelRequest())return;
 
     if (response.tool_proposal) {
       // A specialist is NEVER a second Master: it may only prepare the
@@ -1843,7 +2592,9 @@ async function runAgentStep(): Promise<void> {
         "Pointer drag was dispatched, but its visual result has not been verified. The edit is NOT complete. Inspect the screen before continuing." });
       renderMessages();
       await saveActiveCheckpoint();
+      if(staleModelRequest())return;
       await loadRecoveryCheckpoint();
+      if(staleModelRequest())return;
     } else if (progress.total && progress.completed < progress.total) {
       const next=nextWorkerTurn(orchestration.task_graph);
       // Master can continue a bounded approved task even when one provider
@@ -1857,7 +2608,7 @@ async function runAgentStep(): Promise<void> {
           "Next ready step is "+next.step_id+" with exact tool "+next.tool+
           ". Provide one typed tool proposal for that step, keeping normal owner approval and evidence checks. "+
           "If unsafe or unsupported, explain the blocking reason; never assert success without a Rust action receipt."});
-        if (!await persistRequiredContinuationCheckpoint()) return;
+        if (!await persistRequiredContinuationCheckpoint(()=>!staleModelRequest())) return;
         if (staleModelRequest()) return;
         await runAgentStep();
         return;
@@ -1865,20 +2616,36 @@ async function runAgentStep(): Promise<void> {
       messages.push({ role: "assistant", content: `Task paused with ${progress.completed}/${progress.total} steps supported by successful tool evidence. Unfinished steps remain saved.` });
       renderMessages();
       await saveActiveCheckpoint();
+      if(staleModelRequest())return;
       await loadRecoveryCheckpoint();
+      if(staleModelRequest())return;
     } else {
+      const completionRoute=classifyMasterCommentaryCompletion(orchestration.task_graph);
+      if(completionRoute.mode==="native_finalizer"){
+        if(staleModelRequest())return;
+        await continueAfterOutcome();
+        return;
+      }
+      if(completionRoute.mode==="preserve_checkpoint"){
+        if(staleModelRequest())return;
+        await stopAgentForSafety("A native task DAG is not safely finalizable from AI commentary. Original Rust action receipts and owner-goal proof require inspection; checkpoint retained.");
+        return;
+      }
       await clearActiveCheckpoint();
     }
     // A native action receipt proves that action, not an entire creative edit.
-    // Master-edit requests must have a completed evidence-backed task graph
-    // before the mobile UI can display a completed task.
-    const masterEditing = Boolean(editingMasterContext(messages));
-    const graphSatisfied = progress.total > 0 && progress.completed === progress.total;
-    if(remoteTask)await closeRemoteTask(
-      remoteTask.evidenceActionId && !remoteTask.hadFailure && !needsDragReview &&
-      (masterEditing ? graphSatisfied : (!progress.total || graphSatisfied))
-        ? "succeeded" : "outcome_unknown"
-    );
+    // Master-edit requests still require independently verified original
+    // goals; a commentary-only provider turn is never a terminal success.
+    // A native action receipt is not original user-goal acceptance. Only the
+    // strict final Rust/goal verifier in continueAfterOutcome may mark the
+    // remote task succeeded; this generic provider turn cannot.
+    // Ordinary no-graph chat cleanup intentionally revokes consent. The
+    // exact old remote task still needs its terminal server acknowledgement;
+    // staleModelRequest() would falsely reject it due expected revocation.
+    if(remoteTask&&responseCleanupOwnerCurrent()){
+      if(!(await closeRemoteTask("outcome_unknown")))return;
+    }
+    if(!responseCleanupOwnerCurrent()||remoteTask!==null)return;
     setBusy(false);
   } catch {
     if (staleModelRequest()) return;
@@ -1891,8 +2658,17 @@ async function runAgentStep(): Promise<void> {
     messages.push({ role: "assistant", content: caution });
     renderMessages();
     await saveActiveCheckpoint();
-    if(remoteTask)await closeRemoteTask("outcome_unknown");
+    if(!responseCleanupOwnerCurrent())return;
+    if(remoteTask){
+      if(!(await closeRemoteTask("outcome_unknown")))return;
+    }
+    if(!responseCleanupOwnerCurrent()||remoteTask!==null)return;
     setBusy(false);
+  }
+  } finally {
+    // Covers preflight denial, Rust checkpoint readback failure and provider
+    // IPC rejection without leaking a future paid-model dispatch permit.
+    paidFlight.release();
   }
 }
 
@@ -1917,10 +2693,23 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
         const native=await invoke<NativeSchedule|null>("native_scheduler_status");
         const admission=assessMasterSchedulerAdmission(native,restored.task_graph);
         if(!admission.ok){
+          if(savedCheckpoint!==checkpoint||busy)return;
           resumeSummary.textContent="Resume blocked: "+
             (admission.reason??"Rust task state is unresolved.")+
             " Saved checkpoint retained; inspect the original audit before replanning.";
           return;
+        }
+        // A stale, already all-audited native DAG must never launch another
+        // paid provider turn even if crash interrupted checkpoint erasure.
+        // Rust keeps the last independently audited delivery after cleanup.
+        if(decideNativeContinuation(restored.task_graph).mode==="complete"){
+          const lastDelivery=await invoke<NativeTaskDelivery|null>("native_task_delivery_status");
+          if(savedCheckpoint!==checkpoint||busy)return;
+          const replay=classifyNativeResumeReplay(restored.task_graph,lastDelivery);
+          if(replay.blocked){
+            resumeSummary.textContent="Resume blocked: "+replay.reason;
+            return;
+          }
         }
       }
     } catch {
@@ -1933,6 +2722,34 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   if (restored.recovery_mode !== "stopped" && !window.confirm(
     "Resuming may resend an unfinished AI request. The prior provider request may have been billed. Verify provider usage before continuing. Send a new request?"
   )) return;
+  // Even a saved STOPPED task may have been discarded/replaced while the
+  // owner reviewed it. Never resurrect the older checkpoint after rotation.
+  if(savedCheckpoint!==checkpoint||busy)return;
+  if(restored.recovery_mode!=="stopped"){
+    // Owner approval alone is not proof that the saved history is still on
+    // disk. Inspect the exact persisted task just before paid resume.
+    let onDisk:SessionCheckpoint|null=null;
+    try{
+      const accepted=await taskCheckpointLane.enqueue(
+        ()=>savedCheckpoint===checkpoint&&!busy,
+        async()=>{onDisk=await invoke<SessionCheckpoint|null>("load_session_checkpoint");}
+      );
+      if(!accepted||savedCheckpoint!==checkpoint||busy)return;
+      const readback=assessNativeCheckpointReadback(checkpoint,onDisk);
+      if(!readback.verified){
+        resumeSummary.textContent="Resume blocked: saved native task changed or is unreadable. "+
+          "Inspect the current Rust checkpoint; no paid model or action was dispatched.";
+        return;
+      }
+    }catch{
+      if(savedCheckpoint!==checkpoint||busy)return;
+      resumeSummary.textContent="Resume blocked: exact native checkpoint readback unavailable; "+
+        "no paid model or action dispatched.";
+      return;
+    }
+  }
+  // Stopped checkpoints remain inspection-only and never reauthorize tools.
+  if(savedCheckpoint!==checkpoint||busy)return;
   savedCheckpoint = null;
   resumeBanner.classList.add("hidden");
 
@@ -2326,7 +3143,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   cancelRequested = false;
   rotatePermissionScope();
   const selectedActions = Number(el<HTMLSelectElement>("#taskActionBudget").value);
-  orchestration = createAgentOrchestrationState(allowedTaskBudget(selectedActions) ? selectedActions : 8);
+  orchestration = createAgentOrchestrationState(allowedTaskBudget(selectedActions) ? selectedActions : 8, Date.now(), content);
   renderOrchestrationStatus();
   messages.push({ role: "user", content });
   prompt.value = "";
@@ -2458,48 +3275,78 @@ el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
   void refreshAudit();
 });
 
+el<HTMLButtonElement>("#revokeTaskReadGrants").addEventListener("click",async()=>{
+  // Explicit owner revocation. A running native action remains subject to
+  // normal cancellation/unknown-outcome handling; no promise of undo.
+  const taskId=activePermissionScope.taskId;
+  activePermissionScope.grants.clear();
+  nativeReadGrantIds.clear();
+  const button=el<HTMLButtonElement>("#revokeTaskReadGrants");
+  button.disabled=true;
+  const confirmed=await revokeNativeTaskReads(taskId);
+  button.textContent=confirmed?"Read grants revoked":"Read reuse disabled; Rust revoke unconfirmed";
+});
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
-  revokeTaskScope(activePermissionScope);
+  const stoppingScope=activePermissionScope;
+  const stoppingReadTaskId=stoppingScope.taskId;
+  const stoppingOwner=orchestration.owner_request;
+  const stoppingRemote=remoteTask;
+  let stoppingGraph=orchestration.task_graph;
+  const stillStopping=()=>activePermissionScope===stoppingScope&&
+    orchestration.task_graph===stoppingGraph&&
+    orchestration.owner_request===stoppingOwner&&
+    remoteTask===stoppingRemote&&cancelRequested;
+  const stoppingPending=pendingAction;
+  const stoppingProposal=pendingChatProposal;
+  // Hide the previous Allow Once controls before ANY async Rust reply.
+  if(stoppingPending)clearChatPermission();
+  revokeTaskScope(stoppingScope);
+  nativeReadGrantIds.clear();
+  openingWindowObservation=null;
+  projectCreationEvidence=null;
+  projectShaFileProof=null;
+  projectReopenEvidence=null;
+  renderPremiereProjectProofProgress();
+  await revokeNativeTaskReads(stoppingReadTaskId);
+  if(!stillStopping())return;
 
-  if (pendingAction && pendingChatProposal) {
-    const actionId = pendingAction.id;
-    const proposal = pendingChatProposal;
-    if(remoteTask){
-      try{await invoke("deny_action",{actionId});}catch{/* conservative stop */}
-      clearChatPermission();
-      await closeRemoteTask("stopped");
+  if(stoppingPending&&stoppingProposal){
+    const actionId=stoppingPending.id;
+    if(stoppingRemote){
+      try {await invoke("deny_action",{actionId});}
+      catch {/* The original consent was already revoked. */}
+      if(!stillStopping())return;
+      if(!(await closeRemoteTask("stopped")))return;
+      if(activePermissionScope!==stoppingScope||
+         orchestration.task_graph!==stoppingGraph||
+         orchestration.owner_request!==stoppingOwner||
+         remoteTask!==null)return;
       await stopAgentForSafety("Windows owner stopped the remote task before its action.");
       return;
     }
-    clearChatPermission();
-
     let denied = false;
     let receipt: AuditEntry | null = null;
     try {
       await invoke("deny_action", { actionId });
+      if(!stillStopping())return;
       receipt = await readActionAuditReceipt(actionId);
-      denied = exactActionReceipt(receipt, actionId, proposal.tool, "denied", false);
+      if(!stillStopping())return;
+      denied = exactActionReceipt(receipt, actionId, stoppingProposal.tool, "denied", false);
       void refreshAudit();
     } catch {
-      // If Rust cannot confirm denial, keep the graph conservative: the bound
-      // prepared action is failed locally and will still require replan/recovery.
+      if(!stillStopping())return;
     }
-
-    orchestration = recordToolOutcome(
-      orchestration,
-      proposal,
-      denied ? "denied" : "failure",
-      undefined,
-      false,
-      actionId,
-      receipt
-    );
-    await auditGraphOutcome(proposal);
+    if(!stillStopping())return;
+    orchestration = recordToolOutcome(orchestration,stoppingProposal,
+      denied ? "denied" : "failure",undefined,false,actionId,receipt);
+    stoppingGraph=orchestration.task_graph;
+    await auditGraphOutcome(stoppingProposal);
+    if(!stillStopping())return;
     await saveActiveCheckpoint();
-
-    // No provider/tool request is active while waiting for permission.
-    await runAgentStep();
+    if(!stillStopping())return;
+    // A stopped prepared action must never buy another AI continuation.
+    await stopAgentForSafety("Owner stopped this prepared Windows action.");
     return;
   }
 
@@ -2514,8 +3361,15 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
     // cannot race ahead of cancellation confirmation.
     return;
   }
-
+  // An AI request may still be pending even though no Windows action is.
+  // Merely showing "Stopping…" would not audit or durably stop that turn.
+  if(!stillStopping())return;
   el<HTMLButtonElement>("#stopButton").textContent = "Stopping…";
+  await stopAgentForSafety(
+    "Owner stopped the task while no Windows action was executing. "+
+    "A previously dispatched AI provider request may already be billed; "+
+    "its delayed result is not accepted or retried automatically."
+  );
 });
 
 document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
@@ -2559,13 +3413,26 @@ el<HTMLButtonElement>("#remoteAgentConnect").addEventListener("click",async()=>{
 });
 el<HTMLButtonElement>("#remoteAgentDisconnect").addEventListener("click",async()=>{
   remoteAgentEnabled=false;
-  if(remoteTask){
-    cancelRequested=true;
-    if(pendingAction){
-      try{await invoke("deny_action",{actionId:pendingAction.id});}catch{/* fail closed */}
-      clearChatPermission();
+  const disconnectScope=activePermissionScope;
+  const disconnectRemote=remoteTask;
+  if(disconnectRemote){
+    if(executingActionId){
+      // Disconnect does not prove a native Windows action has stopped.
+      // Request the normal exact action cancellation first.
+      el<HTMLButtonElement>("#stopButton").click();
+    }else{
+      cancelRequested=true;
+      revokeTaskScope(disconnectScope);
+      const denyId=pendingAction?.id??null;
+      if(denyId)clearChatPermission();
+      if(denyId)try{await invoke("deny_action",{actionId:denyId});}
+        catch{/* uncertain native approval remains non-executable locally */}
+      if(remoteTask===disconnectRemote&&activePermissionScope===disconnectScope){
+        await closeRemoteTask("outcome_unknown");
+        if(activePermissionScope===disconnectScope)
+          await stopAgentForSafety("Remote agent disconnected; previous task was not completed.");
+      }
     }
-    await closeRemoteTask("outcome_unknown");
   }
   try{await invoke("remote_agent_disconnect");}
   catch{remoteStatusLabel("Could not revoke OS credential. Verify in Windows credential manager.");return;}
@@ -2580,68 +3447,114 @@ function remoteReceipt(status:string,task:RemoteActiveTask,extras:Record<string,
    revision:task.revision+1,occurredAt:Date.now(),status,...extras
   };
 }
-async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={}):Promise<void>{
-  if(!remoteTask)throw Error("No remote task");
-  const receipt=remoteReceipt(status,remoteTask,extras);
-  await invoke("remote_agent_receipt",{receipt});
-  remoteTask.revision=receipt.revision;
-  remoteTask.status=status;
+const remoteReceiptLane=createMasterRemoteReceiptLane();
+async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={}):Promise<boolean>{
+  const exactTask=remoteTask;
+  if(!exactTask)throw Error("No remote task");
+  return remoteReceiptLane.publish(exactTask,
+    task=>remoteTask===task,
+    revision=>invoke("remote_agent_receipt",{
+      receipt:{...remoteReceipt(status,exactTask,extras),revision}
+    }),status);
 }
-async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<void>{
-  if(!remoteTask)return;
-  const extras= status==="succeeded" && remoteTask.evidenceActionId
-    ? {evidence:{kind:"native_audit",id:remoteTask.evidenceActionId}} : {};
-  try {await sendRemoteReceipt(status,extras);}
-  catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
+async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<boolean>{
+  const closingTask=remoteTask;
+  if(!closingTask)return false;
+  const closingScope=activePermissionScope;
+  const extras= status==="succeeded" && closingTask.evidenceActionId
+    ? {evidence:{kind:"native_audit",id:closingTask.evidenceActionId}} : {};
+  let acknowledged=false;
+  try {
+    acknowledged=await sendRemoteReceipt(status,extras);
+  } catch {
+    // A failed terminal receipt is UNKNOWN, not proof of server delivery.
+  }
+  // An old remote response may arrive after a newer inbox/local task.
+  if(remoteTask!==closingTask)return false;
+  if(activePermissionScope!==closingScope)return false;
+  if(!terminalRemoteReceiptClearAllowed(closingTask,remoteTask,acknowledged)){
+    // Retain old task identity: accepting a new inbox command now could
+    // duplicate uncertain OS effects or lose the server-side revision.
+    cancelRequested=true;
+    revokeTaskScope(closingScope);
+    remoteApproval=null;
+    remoteStatusLabel("Remote terminal receipt unconfirmed; previous task held for owner review. No new task admitted.");
+    return false;
+  }
   remoteTask=null;
   remoteApproval=null;
+  return true;
 }
 async function tickRemoteAgent():Promise<void>{
   if(remotePolling)return;
   remotePolling=true;
   try {
-    // The visible Dashboard can pair/revoke the agent after the hidden
-    // coordinator boots. Re-read native pairing before any remote poll.
     await refreshRemoteAgent();
     if(!remoteAgentEnabled)return;
+    // Snapshot BEFORE native poll; local Stop, Resume, admission or pairing
+    // changes cannot be authorized by a delayed older inbox response.
+    const inboxFence=captureRemoteInboxOwner(
+      activePermissionScope,orchestration.owner_request,remoteTask);
+    const inboxCurrent=()=>isRemoteInboxOwnerCurrent(inboxFence,{
+      scope:activePermissionScope,owner:orchestration.owner_request,
+      task:remoteTask,enabled:remoteAgentEnabled
+    });
+    if(!inboxCurrent())return;
     const inbox=await invoke<RemoteInbox>("remote_agent_poll");
-    if(remoteTask) {
+    if(!inboxCurrent())return;
+    if(remoteTask){
       const t=remoteTask;
       if(inbox.pending.some(p=>p.taskId===t.message.taskId&&p.request==="cancel")){
         if(executingActionId){
-          // Stop is a request, not proof that the OS process has stopped.
           el<HTMLButtonElement>("#stopButton").click();
           remoteStatusLabel("Remote stop requested; native cancellation outcome pending");
         }else{
-          if(pendingAction) {
-            try{await invoke("deny_action",{actionId:pendingAction.id});}catch{ /* fail closed */ }
-            clearChatPermission();
-          }
+          // Invalidate any provider/tool permissions synchronously before
+          // native deny/receipt IPC; an old remote cancel never stops a new task.
+          cancelRequested=true;
+          revokeTaskScope(activePermissionScope);
+          const priorAction=pendingAction?.id??null;
+          if(priorAction)clearChatPermission();
+          if(priorAction)try{await invoke("deny_action",{actionId:priorAction});}
+            catch{/* fail closed */}
+          if(!inboxCurrent())return;
           await closeRemoteTask("stopped");
+          // Remote close clears its pointer; inspect the exact local owner.
+          if(activePermissionScope!==inboxFence?.scope||
+             orchestration.owner_request!==inboxFence?.owner)return;
           await stopAgentForSafety("Remote owner cancelled this task before native execution.");
         }
         return;
       }
       const a=remoteApproval;
-      if(a) {
-        if(Date.now()>=a.expiresAt){
-          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+      if(a){
+        const expired=Date.now()>=a.expiresAt;
+        const d=expired?null:inbox.decisions.find(x=>
+          x.taskId===t.message.taskId&&x.approvalId===a.id);
+        if(expired||d?.decision==="deny"){
+          cancelRequested=true;
+          revokeTaskScope(activePermissionScope);
+          // Hide old permission before await, not after it returns.
           clearChatPermission();
+          try{await invoke("deny_action",{actionId:a.actionId});}
+          catch{/* fail closed */}
+          if(!inboxCurrent()||remoteApproval!==a)return;
           await closeRemoteTask("stopped");
-          await stopAgentForSafety("Mobile approval expired; no action was run.");
+          if(activePermissionScope!==inboxFence?.scope||
+             orchestration.owner_request!==inboxFence?.owner)return;
+          await stopAgentForSafety(expired
+            ?"Mobile approval expired; no action was run."
+            :"Mobile owner denied the proposed Windows action.");
           return;
         }
-        const d=inbox.decisions.find(x=>x.taskId===t.message.taskId&&x.approvalId===a.id);
-        if(d?.decision==="deny"){
-          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
-          clearChatPermission();
-          await closeRemoteTask("stopped");
-          await stopAgentForSafety("Mobile owner denied the proposed Windows action.");
-        }else if(d?.decision==="approve"){
-          // The cloud server checks task, approval ID, deadline and single use.
-          // Native Rust still checks its own prepared action UUID.
-          try{await sendRemoteReceipt("running");}
-          catch{await closeRemoteTask("outcome_unknown");return;}
+        if(d?.decision==="approve"){
+          // Server checks task+approval ID+deadline+single use. Rust separately
+          // checks the precise prepared action and current local consent.
+          try {
+            if(!(await sendRemoteReceipt("running")))return;
+          }catch{if(inboxCurrent())await closeRemoteTask("outcome_unknown");return;}
+          if(!inboxCurrent()||remoteApproval!==a||
+             pendingAction?.id!==a.actionId||cancelRequested)return;
           remoteApproval=null;
           await executePendingProposal(a.proposal);
         }
@@ -2650,17 +3563,29 @@ async function tickRemoteAgent():Promise<void>{
     }
     if(busy||manualActionRunning||pendingAction||!inbox.messages.length)return;
     const m=inbox.messages[0];
-    // The durable journal must acknowledge admission before any provider
-    // or Windows action; unknown delivery outcomes fail closed.
+    // Admission must be confirmed while the same original local task scope
+    // still owns this poll, otherwise close the old mobile receipt as UNKNOWN.
+    const admissionScope=activePermissionScope;
     remoteTask={message:m,revision:1,status:"received",evidenceActionId:null,hadFailure:false};
-    try{await sendRemoteReceipt("admitted");}
-    catch{
-      remoteTask=null;remoteStatusLabel("Remote admission unconfirmed; no command executed.");
+    const admittedTask=remoteTask;
+    try {
+      if(!(await sendRemoteReceipt("admitted"))){
+        if(remoteTask===admittedTask)remoteTask=null;
+        return;
+      }
+    }catch{
+      if(remoteTask===admittedTask)remoteTask=null;
+      remoteStatusLabel("Remote admission unconfirmed; no command executed.");
+      return;
+    }
+    if(remoteTask!==admittedTask||activePermissionScope!==admissionScope||
+       busy||manualActionRunning||pendingAction||!remoteAgentEnabled){
+      if(remoteTask===admittedTask)await closeRemoteTask("outcome_unknown");
       return;
     }
     cancelRequested=false;
     rotatePermissionScope();
-    orchestration=createAgentOrchestrationState();
+    orchestration=createAgentOrchestrationState(8,Date.now(),m.text);
     renderOrchestrationStatus();
     messages.push({role:"user",content:m.text});
     beginTaskRoute(m.text);
@@ -2671,5 +3596,4 @@ async function tickRemoteAgent():Promise<void>{
     remoteStatusLabel("Remote transport unavailable; no unverified command executed.");
   }finally{remotePolling=false;}
 }
-
 void boot();

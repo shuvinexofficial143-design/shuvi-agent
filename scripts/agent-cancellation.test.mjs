@@ -74,7 +74,7 @@ test("cancellation classification awaits the exact in-flight cancellation promis
 });
 
 test("late action cleanup preserves a newer action and its cancellation",()=>{
-  const cleanup=main.slice(main.indexOf("function clearExecutingAction("),main.indexOf("async function executePendingProposal"));
+  const cleanup=main.slice(main.indexOf("function clearExecutingAction("),main.indexOf("const masterNativeSingleFlight="));
   const context=vm.createContext({executingActionId:"new",executingCancellation:{actionId:"new",promise:Promise.resolve(true)}});
   vm.runInContext(ts.transpileModule(cleanup,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
   context.clearExecutingAction("old");
