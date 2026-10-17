@@ -40,6 +40,10 @@ pub(crate) struct NativeWorkerStatus {
     pub process_os_liveness_verified:bool,
     pub process_app_progress_verified:bool,
     pub process_health:String,
+    pub resource_ownership_health:String,
+    pub resource_held_count:usize,
+    pub resource_retired_recent_count:usize,
+    pub resource_claims:Vec<crate::native_scheduler::resource_lanes::ResourceClaimObservation>,
 }
 
 /// Called only *after* acquiring Rust's exclusive native desktop lease.
@@ -124,6 +128,9 @@ pub(crate) fn snapshot(
         process_tree_contained:false,process_cancel_requested:false,
         process_os_liveness_verified:false,
         process_app_progress_verified:false,process_health:"not_observed".into(),
+        resource_ownership_health:"not_observed".into(),
+        resource_held_count:0,resource_retired_recent_count:0,
+        resource_claims:Vec::new(),
     }
 }
 
@@ -224,6 +231,25 @@ pub(crate) fn attach_owned_process_receipt(
     status
 }
 
+/// Attach only read-only, OS-lock-serialized durable ownership evidence.
+/// An old claimed path does not mean its worker is still alive.
+pub(crate) fn attach_resource_ownership(
+    mut status:NativeWorkerStatus,
+    evidence:crate::native_scheduler::resource_lanes::ResourceSnapshot,
+)->NativeWorkerStatus{
+    status.resource_ownership_health=evidence.health;
+    status.resource_held_count=evidence.held.len();
+    status.resource_retired_recent_count=evidence.retired_action_count;
+    if evidence.held.iter().any(|h|
+        h.health!="worker_journal_running_os_liveness_unverified"
+        &&h.health!="successful_audit_output_still_held"){
+        status.state="recovery_required".into();
+        status.requires_owner_review=true;
+    }
+    status.resource_claims=evidence.held;
+    status.safe_to_auto_retry=false;
+    status
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -237,6 +263,27 @@ mod tests{
             descendants_contained:phase!="launch_pending",app_progress_verified:false,
             previous_action_ids:vec![],cancel_requested:false
         }
+    }
+    #[test]
+    fn orphaned_resource_forces_recovery_not_idle_or_autoretry(){
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6000);
+        let report=attach_resource_ownership(base,
+            crate::native_scheduler::resource_lanes::ResourceSnapshot{
+                version:1,retired_action_count:0,
+                health:"output_resources_still_reserved".into(),
+                safe_to_auto_retry:false,
+                held:vec![crate::native_scheduler::resource_lanes::ResourceClaimObservation{
+                    action_id:uuid(),tool:"blender_run_plan".into(),
+                    read_paths:vec![],write_paths:vec!["C:/output".into()],
+                    health:"orphaned_or_previous_action_requires_owner_review".into(),
+                    evidence_verified:false,safe_to_auto_retry:false
+                }]
+            });
+        assert_eq!(report.state,"recovery_required");
+        assert!(report.requires_owner_review);
+        assert_eq!(report.resource_held_count,1);
+        assert!(!report.resource_claims[0].evidence_verified);
+        assert!(!report.safe_to_auto_retry);
     }
     #[test]
     fn stopped_on_previous_host_is_a_recovery_case_not_a_verified_process_exit(){

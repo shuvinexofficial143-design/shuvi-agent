@@ -228,6 +228,68 @@ pub(crate) fn reserve_blender_plan(
     }
     reserve_at(&path(app)?,action,resources)
 }
+/// Authenticated, bounded, read-only view of durable output ownership.
+/// Does not rehash files, probe PID, approve work, expire claims or unlock.
+#[derive(Clone,Debug,Serialize,PartialEq,Eq)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct ResourceClaimObservation{
+    pub action_id:String,
+    pub tool:String,
+    pub read_paths:Vec<String>,
+    pub write_paths:Vec<String>,
+    pub health:String,
+    pub evidence_verified:bool,
+    pub safe_to_auto_retry:bool,
+}
+#[derive(Clone,Debug,Serialize,PartialEq,Eq)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct ResourceSnapshot{
+    pub version:u32,
+    pub held:Vec<ResourceClaimObservation>,
+    pub retired_action_count:usize,
+    pub health:String,
+    pub safe_to_auto_retry:bool,
+}
+fn snapshot_at(file:&Path,job:Option<&crate::native_worker_job::NativeJob>)
+    ->Result<ResourceSnapshot,String>{
+    let _guard=IO.lock().map_err(|_|"Resource snapshot lock poisoned.")?;
+    let _os=CrossProcessLedgerLock::take(file)?;
+    let state=read_at(file)?;
+    let held=state.held.iter().map(|claim|{
+        let health=match job{
+            Some(j) if j.action_id==claim.action_id&&j.tool==claim.tool
+                &&j.phase=="running"=>"worker_journal_running_os_liveness_unverified",
+            Some(j) if j.action_id==claim.action_id&&j.tool==claim.tool
+                &&j.phase=="audit_verified"&&j.audit_success==Some(true)=>
+                    "successful_audit_output_still_held",
+            Some(j) if j.action_id==claim.action_id&&j.tool==claim.tool
+                &&j.phase=="audit_verified"&&j.audit_success==Some(false)=>
+                    "failed_action_output_requires_review",
+            Some(j) if j.action_id==claim.action_id&&j.tool==claim.tool
+                &&j.phase=="owner_reviewed_unknown"=>
+                    "reviewed_unknown_output_still_held",
+            _=>"orphaned_or_previous_action_requires_owner_review"
+        };
+        ResourceClaimObservation{
+            action_id:claim.action_id.clone(),tool:claim.tool.clone(),
+            read_paths:claim.resources.iter().filter(|r|r.mode=="read")
+                .map(|r|r.path.clone()).collect(),
+            write_paths:claim.resources.iter().filter(|r|r.mode=="write")
+                .map(|r|r.path.clone()).collect(),
+            health:health.into(),evidence_verified:false,safe_to_auto_retry:false
+        }
+    }).collect::<Vec<_>>();
+    let health=if held.is_empty(){"no_held_output_claims"}
+        else{"output_resources_still_reserved"};
+    Ok(ResourceSnapshot{
+        version:1,held,retired_action_count:state.retired_action_ids.len(),
+        health:health.into(),safe_to_auto_retry:false,
+    })
+}
+pub(crate) fn snapshot(app:&AppHandle)->Result<ResourceSnapshot,String>{
+    let job=crate::native_worker_job::read(app)?;
+    snapshot_at(&path(app)?,job.as_ref())
+}
 fn release_at(file:&Path,action:&str,artifact_path:&str)->Result<(),String>{
     let _guard=IO.lock().map_err(|_|"Resource lock poisoned.")?;
     let _cross_process=CrossProcessLedgerLock::take(file)?;
@@ -331,6 +393,49 @@ mod tests{
             assert_eq!(count,1);
         });
         assert_eq!(read_at(&file).unwrap().held.len(),1);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn resource_snapshot_reports_restart_owner_and_never_proves_application_success(){
+        let (root,file)=temp();
+        reserve_at(&file,A,vec![resource(&root.join("one"),"write"),
+            resource(&root.join("two"),"read")]).unwrap();
+        let report=snapshot_at(&file,None).unwrap();
+        assert_eq!(report.held.len(),1);
+        assert_eq!(report.held[0].action_id,A);
+        assert_eq!(report.held[0].write_paths.len(),1);
+        assert_eq!(report.held[0].read_paths.len(),1);
+        assert_eq!(report.held[0].health,"orphaned_or_previous_action_requires_owner_review");
+        assert!(!report.held[0].evidence_verified);
+        assert!(!report.held[0].safe_to_auto_retry);
+        assert_eq!(snapshot_at(&file,None).unwrap().held.len(),1);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn resource_snapshot_rejects_corruption_and_cross_process_contention(){
+        let (root,file)=temp();
+        let lock=CrossProcessLedgerLock::take(&file).unwrap();
+        assert!(snapshot_at(&file,None).is_err());
+        drop(lock);
+        reserve_at(&file,A,vec![resource(&root.join("one"),"write")]).unwrap();
+        fs::write(&file,b"{").unwrap();
+        assert!(snapshot_at(&file,None).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn resource_snapshot_never_retires_a_held_successful_audit(){
+        let (root,file)=temp();
+        reserve_at(&file,A,vec![resource(&root.join("one"),"write")]).unwrap();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:A.into(),tool:"blender_run_plan".into(),
+            phase:"audit_verified".into(),audit_success:Some(true),
+            started_at_ms:1000,updated_at_ms:1001,heartbeat_seq:0,
+            prior_action_ids:vec![]
+        };
+        let r=snapshot_at(&file,Some(&job)).unwrap();
+        assert_eq!(r.held.len(),1);
+        assert_eq!(r.held[0].health,"successful_audit_output_still_held");
+        assert!(!r.held[0].evidence_verified);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

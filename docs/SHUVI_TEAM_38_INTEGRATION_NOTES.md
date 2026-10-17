@@ -193,3 +193,9 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 30 source-hardening: keep status polling bounded
 - Read-only `verified_status` projects durable Rust audits and checks an individual interrupted Blender recovery, but deliberately does **not** scan/re-SHA256 every historical Blender file on each UI refresh. Active dispatch preflight, immediate begin, crash-success audit and final deliverable still require fresh exact-UUID on-disk proof; a status row's historical audit phase is not an independently current artifact hash.
+
+## Milestone 31 — Owner-visible cross-process resource status
+- Existing read-only native_worker_status now adds bounded canonical read/write path holdings, exact action UUID/tool, recorded reason for each held output, and recent retired action count. No new command or approval bypass.
+- Snapshot uses both IO mutex and OS cross-process ledger lock, and rejects corrupt/missing-with-backup journals; it never rehashes a whole Blender project during UI polling, releases a claim, proves app liveness or authorizes retry.
+- Unknown, orphaned and failed held resources require owner review, while a matching journal success still shows output-held until separately released by the verified-certificate pathway.
+- Rust real-file restart, corruption and cross-process lock tests plus Node native UI status contracts added. Live Windows host acceptance remains unverified.
