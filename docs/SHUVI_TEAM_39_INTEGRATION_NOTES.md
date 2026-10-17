@@ -815,3 +815,14 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - `scripts/shuvi39-contradictory-readback-inventory.test.mjs` proves
   valid 4-action ancestry and fail-closed invalid cases; this is source
   regression, not a production Windows GUI-provider acceptance claim.
+
+### Windows synthetic smoke CI fix — CLR loaded-assembly resolution
+
+- The new Windows CI smoke at c39ca971 parsed native PowerShell fragments,
+  but its first Windows run failed before synthetic behavior tests because
+  `[Type]::GetType('..., UIAutomationClient')` returned null for a
+  UIAutomationClient type on the GitHub Windows PowerShell assembly loader.
+- The smoke now checks types by iterating the assemblies actually loaded by
+  `Add-Type -AssemblyName UIAutomationClient`, using `Assembly.GetType`.
+  This is a runtime-type lookup fix; no weakening, removing or skipping
+  the actual UIA type assertion, control tests or Rust verification.

@@ -41,15 +41,24 @@ foreach ($item in $sourcePieces){
 # Load the same actual Windows UIAutomationClient assembly as the native
 # action. This verifies the expected .NET API types are present on Windows.
 Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
-foreach ($type in @(
+# [Type]::GetType(type + ', UIAutomationClient') is sensitive to .NET
+# assembly-load context on GitHub's Windows PowerShell runner. Resolve
+# each real loaded API type via the assembly that PowerShell actually loaded.
+$loadedAssemblies = [AppDomain]::CurrentDomain.GetAssemblies()
+foreach ($typeName in @(
  'System.Windows.Automation.AutomationElement',
  'System.Windows.Automation.TogglePattern',
  'System.Windows.Automation.ExpandCollapsePattern',
  'System.Windows.Automation.ScrollPattern',
  'System.Windows.Automation.SelectionItemPattern'
 )) {
- if ($null -eq ([Type]::GetType($type + ', UIAutomationClient',$false))) {
-   throw ('Required Windows UIA type not found: ' + $type)
+ $found=$null
+ foreach ($assembly in $loadedAssemblies) {
+  $found=$assembly.GetType($typeName,$false,$false)
+  if ($null -ne $found) {break}
+ }
+ if ($null -eq $found) {
+   throw ('Required Windows UIA type not loaded: ' + $typeName)
  }
 }
 # Synthetic provider: no Form, real window, screen, application or UI action.
