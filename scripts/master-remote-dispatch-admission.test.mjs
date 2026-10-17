@@ -29,6 +29,7 @@ test("approved remote action not dispatched after stale running acknowledgement"
 });
 test("no dangling old Master editor import, and remote closure reports unknown if revision cannot be confirmed",()=>{
  assert.doesNotMatch(ui,/\bimport \{\s*editingMasterContext/);
- assert.match(ui,/Remote task changed before receipt confirmation/);
+ assert.match(ui,/Remote terminal receipt unconfirmed; previous task held for owner review/);
+ assert.match(ui,/terminalRemoteReceiptClearAllowed\(closingTask,remoteTask,acknowledged\)/);
  assert.match(ui,/if\(remoteTask!==closingTask\)return;/);
 });
