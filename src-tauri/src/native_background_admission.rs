@@ -128,18 +128,49 @@ impl Exclusive {
         Ok(Self(f))
     }
 }
+/// Stable Windows BY_HANDLE_FILE_INFORMATION, as used by Shuvi's existing
+/// native delivery verifier. No unstable MetadataExt nightly APIs.
+fn require_single_link(path:&Path)->Result<(),String>{
+    use std::{ffi::c_void,mem::MaybeUninit,os::windows::io::AsRawHandle};
+    #[repr(C)] struct FileTime{low:u32,high:u32}
+    #[repr(C)] struct ByHandleFileInformation{
+        attributes:u32,created:FileTime,accessed:FileTime,written:FileTime,
+        volume_serial:u32,size_high:u32,size_low:u32,links:u32,
+        index_high:u32,index_low:u32
+    }
+    #[link(name="kernel32")]
+    unsafe extern "system"{
+        fn GetFileInformationByHandle(
+            handle:*mut c_void,info:*mut ByHandleFileInformation
+        )->i32;
+    }
+    let opened=OpenOptions::new().read(true).share_mode(1)
+        .open(path).map_err(|_|"Cannot open background input for identity verification.")?;
+    let meta=opened.metadata().map_err(|_|"Cannot inspect background input handle.")?;
+    if !meta.is_file()||meta.file_attributes()&0x400!=0{
+        return Err("Background input handle redirected.".into());
+    }
+    let mut data=MaybeUninit::<ByHandleFileInformation>::zeroed();
+    if unsafe{GetFileInformationByHandle(opened.as_raw_handle(),data.as_mut_ptr())}==0{
+        return Err("Native input identity verification unavailable.".into());
+    }
+    let info=unsafe{data.assume_init()};
+    if info.links!=1{
+        return Err("Background input with unknown/multiple hard links is not isolated.".into());
+    }
+    Ok(())
+}
+
 fn checked_input(file:&Path)->Result<String,String>{
     if !file.is_absolute(){return Err("Background input path must be absolute.".into());}
     let meta=fs::symlink_metadata(file).map_err(|_|"Background input inaccessible.")?;
     if !meta.is_file()||meta.file_type().is_symlink()||meta.file_attributes()&0x400!=0{
         return Err("Background input must be a regular non-reparse file.".into());
     }
-    // A different hard-link path could otherwise evade a path-only
-    // read/resource claim while referring to precisely the same disk object.
-    // Non-NTFS/unknown link count fails closed until physical-ID support.
-    if meta.number_of_links()!=Some(1){
-        return Err("Background input with unknown/multiple hard links is not isolated.".into());
-    }
+    // The stable Rust MetadataExt does not expose Windows link count.
+    // Query it from an actual read-only, deny-write native file handle.
+    // A different hardlink path cannot silently evade the admission claim.
+    require_single_link(file)?;
     let canonical=fs::canonicalize(file).map_err(|_|"Cannot canonicalize background input.")?;
     Ok(canonical.to_string_lossy().to_lowercase())
 }
