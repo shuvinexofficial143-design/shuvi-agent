@@ -80,3 +80,24 @@ test("audited UUIDs cannot launder graph dependency drift into Rust final delive
  const valid=structuredClone(s);valid.jobs[1].dependsOn=["inspect"];
  assert.ok(claims(g,valid));
 });
+
+test("corrupt native scheduler job cannot crash delivery preflight or become a receipt",()=>{
+ const g=dag([
+  node("inspect","read_file",evidence(A,"read_file","inspect",1)),
+  node("check","git_status",evidence(B,"git_status","check",2),["inspect"])
+ ]);
+ const s=schedule([job("inspect","read_file",A),job("check","git_status",B,["inspect"])]);
+ assert.ok(claims(g,s));
+ for(const invalid of [null,undefined,false,42,"audited",[],{}]){
+  const bad={...s,jobs:[s.jobs[0],invalid]};
+  assert.doesNotThrow(()=>claims(g,bad));
+  assert.equal(claims(g,bad),null);
+ }
+ // A malformed or missing native dependency list also fails closed, not
+ // as an unhandled exception inside the terminal finalization callback.
+ for(const invalid of [null,undefined,"inspect",{},[null],[123]]){
+  const bad={...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:invalid}]};
+  assert.doesNotThrow(()=>claims(g,bad));
+  assert.equal(claims(g,bad),null);
+ }
+});

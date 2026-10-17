@@ -9,7 +9,8 @@ export function nativeTaskDeliveryClaims(graph,schedule,projectProof=null){
      ||schedule.objective!==graph.objective
      ||schedule.revision!==graph.revision
      ||!Array.isArray(schedule.jobs)||schedule.jobs.length!==graph.steps.length
-     ||!schedule.jobs.every(job=>job.phase==="audited"))
+     ||!schedule.jobs.every(job=>job&&typeof job==="object"&&
+       !Array.isArray(job)&&job.phase==="audited"))
    return null;
  const ids=new Set(),steps=[];
  for(let i=0;i<graph.steps.length;i++){
