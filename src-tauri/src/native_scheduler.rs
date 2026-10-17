@@ -656,7 +656,7 @@ mod tests{
         let tool=valid["steps"][0]["expected_tool"].as_str().unwrap();
         fs::create_dir(&lock).unwrap();
         assert!(begin_at(&p,Some(&valid),step,tool,A).is_err());
-        assert!(!p.exists());fs::remove_dir(lock).unwrap();
+        assert!(!p.exists());fs::remove_dir(&lock).unwrap();
         begin_at(&p,Some(&valid),step,tool,A).unwrap();
         cleanup(&p);
         let _=fs::remove_file(lock);

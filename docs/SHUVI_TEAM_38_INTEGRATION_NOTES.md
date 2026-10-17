@@ -275,3 +275,6 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 40 inherited source-contract correction
 - Updated the earlier two-worker hash regression to assert that the exact successful UUID/tool audit loop precedes the now-kernel-budgeted `verify_artifacts_bounded` closure. It also requires the production `HashSlot::take` and the same `check_artifact` SHA256 verification rather than matching an obsolete bare function argument.
+
+### Milestone 38 fixture compile repair
+- On latest M40 HEAD the Windows rustc `E0382` in a **test fixture** used `lock:PathBuf` after `remove_dir(lock)` consumed it. Changed to `remove_dir(&lock)` to preserve the PathBuf for later cleanup. The production OS lock, concurrency behavior and verified actual-step fixture were not altered. Recheck exact new SHA CI.
