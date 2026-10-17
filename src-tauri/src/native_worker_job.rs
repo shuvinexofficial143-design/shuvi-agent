@@ -169,6 +169,16 @@ pub(crate) fn reconcile(
     if existing.phase!="running"||existing.action_id!=id||existing.tool!=tool{
         return Err("Owner review cannot acknowledge a different active action.".into());
     }
+    // A recovered Blender edit must not become an audited DAG success unless
+    // the exact action's independently rehashed artifact still exists.
+    // Preflight BEFORE committing owner/process reconciliation: otherwise a
+    // forged successful audit could prematurely satisfy downstream DAG edges.
+    if verified_audit==Some(true)&&tool=="blender_run_plan"{
+        let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
+        if cert.action_id!=id||cert.tool!="blender_run_plan"{
+            return Err("Recovered Blender audit lacks exact verified output identity.".into());
+        }
+    }
     crate::native_scheduler::owned_process::review_process_receipt_for_owner(app,id,tool)?;
     let reviewed=reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)?;
     // An owner-confirmed success after restart is not enough to free output:

@@ -170,3 +170,7 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Extend the **existing** owner-authorized native journal reconciliation, not a second permission system: if an interrupted action is independently reconciled to a genuine Rust audit success, the exact UUID resource claim can release only after native artifact certificate readback and independent SHA-256 file check. Reconciled unknown/failed actions remain held.
 - Reject missing desktop lease **before** a Blender output resource is reserved; never create a permanent claim for a request that fails merely because the native lease was missing. Failed spawn after durable intent stays quarantined as uncertain.
 - Node regression ensures owner-path exact audit, authenticated certificate gate, strict ordering of desktop lease/output reservation and no forged automatic retry. Source testing is not Windows application live acceptance.
+
+### Milestone 27 recovery integrity hardening
+- Before recording a post-crash owner-confirmed SUCCESS for an interrupted \`blender_run_plan\`, the existing reconciliation path now independently verifies the exact native UUID artifact certificate, including actual on-disk SHA256. Failures occur **before** owner process receipt / Rust audit are written, preventing a false successful dependency from unlocking downstream DAG admission. Unknown/failed reviews remain possible but never become verified Blender delivery.
+- Node regression enforces this pre-audit gate precedes the existing recovery mutation and later verified resource release.

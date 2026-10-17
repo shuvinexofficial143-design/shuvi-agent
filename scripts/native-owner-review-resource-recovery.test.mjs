@@ -7,6 +7,10 @@ const resources=read("src-tauri/src/native_resource_lanes.rs");
 const plan=read("src-tauri/src/native_blender_owned_plan.rs");
 test("exact owner-reconciled verified audit can reclaim only rehashed exact resource",()=>{
  const reconcile=job.slice(job.indexOf("pub(crate) fn reconcile("),job.indexOf("pub(crate) fn begin("));
+ assert.match(reconcile,/if verified_audit==Some\(true\)&&tool=="blender_run_plan"/);
+ assert.match(reconcile,/native_blender_action_artifact::read_verified\(app,id\)\?/);
+ assert.ok(reconcile.indexOf("native_blender_action_artifact::read_verified(app,id)")<
+           reconcile.indexOf("review_process_receipt_for_owner(app,id,tool)"));
  assert.match(reconcile,/review_process_receipt_for_owner\(app,id,tool\)\?/);
  assert.match(reconcile,/reconcile_at\(&journal_path\(app\)\?,id,tool,verified_audit,now\)\?/);
  assert.match(reconcile,/if reviewed\.audit_success==Some\(true\)/);
