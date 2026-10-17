@@ -197,7 +197,7 @@ mod tests {
         let artifact=work.write(name,&bytes);
         let evidence=json!({
             "status":"verified","complete":true,"authenticated_blender_plan":true,
-            "destructive_allowed":false,"executed_steps":5,
+            "destructive_allowed":false,"executed_steps":6,
             "artifact":artifact,
             "checkpoint_reopen":{"verified":true,"read_only":true,
                 "fingerprint":if which==0{"a".repeat(64)}else{"b".repeat(64)},
@@ -209,15 +209,15 @@ mod tests {
         let manifest=crate::blender_artifact_manifest::build(&evidence,&work.0,action,Some(session)).unwrap();
         let stage=if which==0{"model1"}else{"model2"};
         let operations=if which==0{
-            vec!["mesh.create","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]
+            vec!["mesh.create","mesh.translate_vertices","scene.inspect","device.create","scene.inspect","file.checkpoint"]
         }else{
-            vec!["objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]
+            vec!["device.create","objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]
         };
         json!({"status":"verified","full_plan_completed":true,"same_blender_session":true,
             "session_id":session,"source_action_id":action,"artifact_manifest":manifest,
-            "plan_steps":5,
+            "plan_steps":6,
             "approved_plan_lineage":{"schema_version":1,"plan_sha256":"3".repeat(64),
-                "operations":operations,"typed_steps":5,"acceptance_stage":stage,
+                "operations":operations,"typed_steps":6,"acceptance_stage":stage,
                 "owner_approval_reauthenticated":false,
                 "runtime_execution_proven_by_this_digest":false}})
     }
