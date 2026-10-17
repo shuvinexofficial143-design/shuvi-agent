@@ -10,9 +10,13 @@ test("scheduled Blender inspector and plan both register exact OS PID in host bu
  assert.match(lib,/native_blender_owned_plan::execute\(\s*&app,state\.inner\(\),&mut native_slot/);
  for(const s of [adapter,plan]){
   assert.match(s,/RegisteredOwnedPid::start\(state,child\.pid\(\)\)\?/);
-  assert.match(s,/child\.wait_bounded_with_host_budget\(state\)/);
   assert.match(s,/drop\(tracked\)/);
  }
+ assert.match(adapter,/child\.wait_bounded_with_host_budget\(state\)/);
+ assert.match(plan,/child\.wait_bounded_with_host_budget_and_progress\(/);
+ assert.match(plan,/state,\|\|progress\.observe\(\)/);
+ assert.match(owned,/wait_bounded_with_probe_and_progress/);
+ assert.match(owned,/current_runtime_status\(state\)/);
 });
 test("supervised process checks original combined RAM guard and fail-closes on unavailable observation",()=>{
  assert.match(owned,/register_managed_process\(state,pid\)\?/);
