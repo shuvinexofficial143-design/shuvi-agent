@@ -100,7 +100,7 @@ class PersistentSessionTests(unittest.TestCase):
 
         packages["shuvi_blender_agent.client"].BlenderController = FakeController
         packages["shuvi_blender_agent.contracts"].Request = FakeRequest
-        packages["shuvi_blender_agent.contracts"].Status = types.SimpleNamespace(SUCCEEDED="succeeded")
+        packages["shuvi_blender_agent.contracts"].Status = types.SimpleNamespace(SUCCEEDED="succeeded", VERIFIED="verified")
         packages["shuvi_blender_agent.process"].LaunchConfig = LaunchConfig
         packages["shuvi_blender_agent.process"].launch = launch
         packages["shuvi_blender_agent.safety"].SafetyPolicy = SafetyPolicy
@@ -360,6 +360,39 @@ class PersistentSessionTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Approved persistent plan output filename"):
                         worker.checked_plan(FakeController(object()), {"steps": [1]},
                                             self.output, self.blender, True, "f" * 64)
+
+    def test_complete_plan_receipt_cannot_skip_early_successful_steps(self):
+        steps = [
+            types.SimpleNamespace(name="inspect"),
+            types.SimpleNamespace(name="configure"),
+            types.SimpleNamespace(name="render"),
+        ]
+        plan = types.SimpleNamespace(steps=steps)
+        complete = types.SimpleNamespace(
+            completed=True, unexecuted_steps=(),
+            results={
+                "inspect": FakeResult("succeeded", {}),
+                "configure": FakeResult("verified", {}),
+                "render": FakeResult("verified", {}),
+            })
+        self.assertEqual(worker.require_complete_step_report(plan, complete), 3)
+        for forged in [
+            {"results": {"render": complete.results["render"]}},
+            {"results": {"inspect": complete.results["inspect"],
+                         "configure": complete.results["configure"],
+                         "wrong": complete.results["render"]}},
+            {"unexecuted_steps": ("configure",)},
+            {"completed": False},
+        ]:
+            with self.subTest(forged=forged):
+                with self.assertRaisesRegex(ValueError, "transcript"):
+                    worker.require_complete_step_report(
+                        plan, types.SimpleNamespace(**{**complete.__dict__, **forged}))
+        malformed = types.SimpleNamespace(
+            steps=[types.SimpleNamespace(name="inspect"),
+                   types.SimpleNamespace(name="inspect")])
+        with self.assertRaisesRegex(ValueError, "transcript"):
+            worker.require_complete_step_report(malformed, complete)
 
     def test_approved_source_is_hash_checked_and_loaded_in_authenticated_blender(self):
         path = self.root / "source.blend"

@@ -77,3 +77,13 @@ test("all native output handoffs verify actual on-disk filename against the fina
   assert.ok(lineage.includes("fn final_artifact_binding_rejects_correct_hash_wrong_filename_and_format("));
   assert.ok(lineage.includes("fn final_artifact_binding_denies_nested_windows_and_alternative_destinations("));
 });
+
+test("native receipt count and final operation cannot be inferred from a completed flag or a verified output file",()=>{
+  for(const x of [
+    'output.get("executed_steps").and_then(Value::as_u64)!=Some(steps.len() as u64)',
+    'output.get("final_operation").and_then(Value::as_str)!=Some(operation)',
+    'fn typed_plan_completion_cannot_be_inferred_from_verified_last_file('
+  ])assert.ok(lineage.includes(x),x);
+  assert.ok(session.includes("verify_final_artifact_binding(plan,&response)?"));
+  assert.ok(oneOff.includes("verify_final_artifact_binding(plan,&value)?"));
+});

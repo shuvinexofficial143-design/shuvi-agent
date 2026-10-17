@@ -96,7 +96,7 @@ test("one-off source and exact output name tested with eight Python regressions"
     "-s","integrations/blender-worker","-p","test_shuvi_blender_plan_input.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 8 tests/);
+  assert.match(run.stderr,/Ran 9 tests/);
 });
 
 test("one-off Blender worker refuses reserved material render lacking the persistent scene/material safety preflight",()=>{
@@ -109,4 +109,11 @@ test("one-off Blender delivery binds the exact plan-requested artifact basename 
   assert.ok(py.includes("actual.name != expected_name"));
   assert.ok(py.includes("final_step.request.payload.get(\"name\")"));
   assert.ok(exec.includes("crate::blender_plan_lineage::verify_final_artifact_binding(plan,&value)?"));
+});
+
+test("one-off worker requires every named typed step to have a successful PlanRunner receipt",()=>{
+  assert.ok(py.includes("executed_steps = require_complete_step_report(plan, report)"));
+  assert.ok(py.includes('"executed_steps": executed_steps'));
+  assert.ok(py.includes('require_complete_step_report'));
+  assert.ok(exec.includes("verify_final_artifact_binding(plan,&value)?"));
 });

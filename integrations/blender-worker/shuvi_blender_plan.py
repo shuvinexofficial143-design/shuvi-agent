@@ -41,7 +41,7 @@ def run(argv: list[str] | None = None) -> int:
         parser.error("An exact source SHA-256 must accompany an input .blend")
 
     try:
-        from shuvi_blender_session import inspect_input_source
+        from shuvi_blender_session import inspect_input_source, require_complete_step_report
         from shuvi_blender_agent.client import BlenderController
         from shuvi_blender_agent.plans import Plan, PlanRunner
         from shuvi_blender_agent.process import LaunchConfig, launch
@@ -89,8 +89,9 @@ def run(argv: list[str] | None = None) -> int:
                 if inspect_input_source(args.blend_file, args.expected_blend_sha256) != source_before:
                     raise ValueError("One-shot Blender source changed while opening it")
             report = PlanRunner(controller).run(plan)
+            executed_steps = require_complete_step_report(plan, report)
             last = report.results.get(final_step.name)
-            if not report.completed or last is None or last.status != Status.VERIFIED:
+            if last is None or last.status != Status.VERIFIED:
                 raise ValueError("Plan incomplete; actual Blender mutations may have occurred")
             if not isinstance(last.data, dict) or not isinstance(last.data.get("after"), dict):
                 raise ValueError("Final Blender output evidence missing")
@@ -140,7 +141,7 @@ def run(argv: list[str] | None = None) -> int:
                 "status": "verified",
                 "authenticated_blender_plan": True,
                 "complete": True,
-                "executed_steps": len(report.results),
+                "executed_steps": executed_steps,
                 "final_operation": final_step.request.operation,
                 "artifact": reread,
                 "destructive_allowed": False,

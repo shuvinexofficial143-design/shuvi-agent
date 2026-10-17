@@ -183,6 +183,30 @@ class OneOffInputTests(unittest.TestCase):
                 self.assertEqual(code, 4)
                 self.assertEqual(output["status"], "outcome_unknown")
 
+    def test_completed_transcript_requires_every_named_step_and_zero_unexecuted(self):
+        import shuvi_blender_session as broker
+        plan = DummyPlan()
+        good = types.SimpleNamespace(completed=True,
+                                     unexecuted_steps=(),
+                                     results={"output": FakeResult("verified", {})})
+        self.assertEqual(broker.require_complete_step_report(plan, good), 1)
+        altered = [
+            {"completed": False},
+            {"unexecuted_steps": ("missing",)},
+            {"results": {}},
+            {"results": {"wrong": FakeResult("verified", {})}},
+            {"results": {"output": FakeResult("failed", {})}},
+            {"results": {"output": FakeResult("verified", {}),
+                         "injected": FakeResult("verified", {})}},
+        ]
+        for changed in altered:
+            data = {**good.__dict__, **changed}
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(ValueError, "transcript"):
+                    broker.require_complete_step_report(
+                        plan, types.SimpleNamespace(**data)
+                    )
+
     def test_wrong_hash_denied_before_authentication_or_blender_launch(self):
         code, output = self.invoke(sha="0" * 64)
         self.assertEqual(code, 4)

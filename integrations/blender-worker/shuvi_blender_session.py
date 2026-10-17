@@ -191,6 +191,33 @@ def validate_material_render_source(controller, input_checkpoint: dict | None,
     }
 
 
+def require_complete_step_report(plan, report):
+    """Validate a completed PlanRunner transcript before any delivery claim.
+
+    Upstream PlanRunner normally supplies exactly one Result for every typed
+    step. Never trust only its boolean completed flag or a verified final
+    output: all distinct declared step names must have an observed successful
+    result and there must be no remaining steps.
+    """
+    from shuvi_blender_agent.contracts import Status
+    steps = getattr(plan, "steps", ())
+    names = [step.name for step in steps]
+    results = getattr(report, "results", None)
+    if (not getattr(report, "completed", False)
+            or not isinstance(results, dict)
+            or not names or len(names) > 6
+            or len(set(names)) != len(names)
+            or len(results) != len(names)
+            or set(results) != set(names)
+            or getattr(report, "unexecuted_steps", ())):
+        raise ValueError("Blender PlanRunner transcript lacks all approved typed steps")
+    for name in names:
+        result = results[name]
+        if getattr(result, "status", None) not in (Status.SUCCEEDED, Status.VERIFIED):
+            raise ValueError("Blender PlanRunner transcript contains an unverified or failed step")
+    return len(names)
+
+
 def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
                  allow_render: bool, expected_scene_revision: str):
     from shuvi_blender_agent.contracts import Status
@@ -217,8 +244,9 @@ def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
             or current.data.get("revision") != expected_scene_revision):
         raise ValueError("Stale Blender scene revision: no plan steps dispatched")
     report = PlanRunner(controller).run(plan)
+    executed_steps = require_complete_step_report(plan, report)
     last = report.results.get(final_step.name)
-    if not report.completed or last is None or last.status != Status.VERIFIED:
+    if last is None or last.status != Status.VERIFIED:
         raise ValueError("Plan partially executed or output not verified")
     if not isinstance(last.data, dict) or not isinstance(last.data.get("after"), dict):
         raise ValueError("Final output evidence missing")
@@ -253,7 +281,8 @@ def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
             raise ValueError("Checkpoint changed during reopen")
     return {
         "status": "verified", "complete": True, "artifact": checked,
-        "checkpoint_reopen": reopened, "executed_steps": len(report.results),
+        "checkpoint_reopen": reopened, "executed_steps": executed_steps,
+        "final_operation": final_step.request.operation,
         "render_approved": allow_render, "destructive_allowed": False,
         "authenticated_blender_plan": True,
     }

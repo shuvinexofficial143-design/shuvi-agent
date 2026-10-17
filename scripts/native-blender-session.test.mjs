@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 21 tests/);
+  assert.match(run.stderr,/Ran 22 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -136,4 +136,16 @@ test("persistent Blender response cannot promote a differently named PNG or BLEN
   assert.ok(broker.includes("actual.name != expected_name"));
   assert.ok(broker.includes('final_step.request.payload.get("name")'));
   assert.ok(native.includes("crate::blender_plan_lineage::verify_final_artifact_binding(plan,&response)?"));
+});
+
+test("persistent broker checks complete typed step transcript and emits explicit final operation",()=>{
+  for(const x of [
+    "def require_complete_step_report(plan, report):",
+    'set(results) != set(names)',
+    'getattr(report, "unexecuted_steps", ())',
+    'executed_steps = require_complete_step_report(plan, report)',
+    '"final_operation": final_step.request.operation',
+    '"executed_steps": executed_steps'
+  ])assert.ok(broker.includes(x),x);
+  assert.ok(native.includes("verify_final_artifact_binding(plan,&response)?"));
 });

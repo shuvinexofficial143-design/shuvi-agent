@@ -1044,3 +1044,27 @@ hidden objects, mismatched camera/light and changed reopened mesh state.
 Native Rust tests prove the same fail-closed policy survives manifest
 creation/reverification and that ordinary old .blend artifacts remain
 compatible. There is **no live Blender run or user-workspace mutation**.
+
+## Team-41 — complete typed-step transcript at both native handoffs
+
+Before either a persistent or one-off Python worker emits `verified`,
+the result of the actual pinned-upstream `PlanRunner` is checked against
+**all** approved step names: exactly the same number and names, no duplicates,
+no unknown extra results, no unexecuted steps, and every result status
+`SUCCEEDED` or `VERIFIED`. A verified final PNG/.blend alone is not
+proof that earlier approved steps ran. The independent final step still
+must be `VERIFIED`, and the file must pass existing path/hash/reopen checks.
+
+Python now reports `executed_steps` from this verified transcript and
+returns the exact `final_operation` even for persistent sessions. The
+native `verify_final_artifact_binding` gate refuses absent or mismatched
+`executed_steps`, missing or substituted `final_operation`, wrong filename,
+or wrong output format **before** a handoff manifest is built. The
+original permissions, native audit plan digest, source SHA, artifact CRC
+and geometry/camera/material persistence proofs remain separate guards.
+
+New Python/Rust fixture tests cover false completed flags, skipped early
+steps, forged step names, duplicate names, unexpected results, unexecuted
+steps, failed statuses, missing operation and manipulated counts. These
+tests use fake controllers/receipts; they are not real Windows Blender
+acceptance or visual quality evidence. No other team's branch changed.

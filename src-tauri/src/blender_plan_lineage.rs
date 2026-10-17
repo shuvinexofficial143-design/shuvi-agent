@@ -237,6 +237,12 @@ pub(crate) fn verify_final_artifact_binding(plan:&Value,output:&Value)->Result<(
         .filter(|steps|!steps.is_empty() && steps.len()<=6)
         .ok_or("Approved Blender plan has no bounded final step.")?;
     let final_step=steps.last().ok_or("Approved Blender plan is empty.")?;
+    // The last verified artifact cannot stand in for earlier unexecuted steps.
+    // Native delivery binds the worker's total and final operation to the
+    // approved typed plan, regardless of a success flag from the worker.
+    if output.get("executed_steps").and_then(Value::as_u64)!=Some(steps.len() as u64) {
+        return Err("Blender worker step transcript is incomplete or disagrees with approved plan.".into());
+    }
     let operation=final_step.pointer("/request/operation").and_then(Value::as_str)
         .ok_or("Approved Blender final operation missing.")?;
     let kind=match operation{
@@ -259,8 +265,8 @@ pub(crate) fn verify_final_artifact_binding(plan:&Value,output:&Value)->Result<(
     if actual_name!=expected_name || artifact.get("format").and_then(Value::as_str)!=Some(kind) {
         return Err("Verified Blender artifact differs from the approved final step's exact filename or format.".into());
     }
-    if output.get("final_operation").is_some_and(|v|!v.is_null() && v.as_str()!=Some(operation)){
-        return Err("Blender worker final operation differs from approved typed plan.".into());
+    if output.get("final_operation").and_then(Value::as_str)!=Some(operation){
+        return Err("Blender worker final operation is absent or differs from approved typed plan.".into());
     }
     Ok(())
 }
@@ -446,26 +452,59 @@ mod tests{
             let output_name=last["request"]["payload"]["name"].as_str().unwrap();
             let kind=if operation=="render.execute"{"PNG"}else{"BLEND"};
             let good=json!({"artifact":{"path":format!("/approved/outputs/{output_name}"),"format":kind},
-                            "final_operation":operation});
+                            "final_operation":operation,"executed_steps":plan["steps"].as_array().unwrap().len()});
             verify_final_artifact_binding(&plan,&good).unwrap();
             let swapped_name=json!({"artifact":{"path":"/approved/outputs/unrelated.png","format":kind},
-                                    "final_operation":operation});
+                                    "final_operation":operation,"executed_steps":plan["steps"].as_array().unwrap().len()});
             assert!(verify_final_artifact_binding(&plan,&swapped_name).is_err());
             let wrong_format=json!({"artifact":{"path":format!("/approved/outputs/{output_name}"),
                                                  "format":if kind=="PNG"{"BLEND"}else{"PNG"}},
-                                    "final_operation":operation});
+                                    "final_operation":operation,"executed_steps":plan["steps"].as_array().unwrap().len()});
             assert!(verify_final_artifact_binding(&plan,&wrong_format).is_err());
             let wrong_operation=json!({"artifact":{"path":format!("/approved/outputs/{output_name}"),"format":kind},
-                                       "final_operation":"unapproved.operation"});
+                                       "final_operation":"unapproved.operation","executed_steps":plan["steps"].as_array().unwrap().len()});
             assert!(verify_final_artifact_binding(&plan,&wrong_operation).is_err());
-            let bare=json!({"artifact":{"path":output_name,"format":kind}});
+            let bare=json!({"artifact":{"path":output_name,"format":kind},
+                             "executed_steps":plan["steps"].as_array().unwrap().len(),
+                             "final_operation":operation});
             verify_final_artifact_binding(&plan,&bare).unwrap();
+            let mut missing_steps=bare.clone();
+            missing_steps.as_object_mut().unwrap().remove("executed_steps");
+            assert!(verify_final_artifact_binding(&plan,&missing_steps).is_err());
+            let mut incomplete=bare.clone();
+            incomplete["executed_steps"]=json!(1);
+            assert!(verify_final_artifact_binding(&plan,&incomplete).is_err());
+            let mut too_many=bare.clone();
+            too_many["executed_steps"]=json!(99);
+            assert!(verify_final_artifact_binding(&plan,&too_many).is_err());
+            let mut missing_final=bare.clone();
+            missing_final.as_object_mut().unwrap().remove("final_operation");
+            assert!(verify_final_artifact_binding(&plan,&missing_final).is_err());
         }
     }
     #[test]
+    fn typed_plan_completion_cannot_be_inferred_from_verified_last_file(){
+        let plan=crate::blender_acceptance_recipe::expected_plan("look",&"a".repeat(64)).unwrap();
+        let last=plan["steps"].as_array().unwrap().last().unwrap();
+        let file=last["request"]["payload"]["name"].as_str().unwrap();
+        let correct=plan["steps"].as_array().unwrap().len();
+        let mut output=json!({"artifact":{"path":format!("/workspace/{file}"),"format":"BLEND"},
+            "executed_steps":correct,"final_operation":"file.checkpoint"});
+        verify_final_artifact_binding(&plan,&output).unwrap();
+        for count in [0,1,3,7,100]{
+            output["executed_steps"]=json!(count);
+            assert!(verify_final_artifact_binding(&plan,&output).is_err());
+        }
+        output["executed_steps"]=json!(correct);
+        output["final_operation"]=Value::Null;
+        assert!(verify_final_artifact_binding(&plan,&output).is_err());
+    }
+
+    #[test]
     fn final_artifact_binding_denies_nested_windows_and_alternative_destinations(){
         let mut p=crate::blender_acceptance_recipe::expected_plan("render",&"c".repeat(64)).unwrap();
-        let mut output=json!({"artifact":{"path":"/approved/outputs/shuvi41-proof-render.png","format":"PNG"}});
+        let mut output=json!({"artifact":{"path":"/approved/outputs/shuvi41-proof-render.png","format":"PNG"},
+            "executed_steps":3,"final_operation":"render.execute"});
         for forged in ["nested/shuvi41-proof-render.png","nested\\\\shuvi41-proof-render.png","wrong.blend",""]{
             p["steps"][2]["request"]["payload"]["name"]=json!(forged);
             assert!(verify_final_artifact_binding(&p,&output).is_err());
