@@ -123,6 +123,28 @@ export type NativeResourceClaim = {
   safeToAutoRetry: false;
 };
 
+// Read-only health of the separate two-slot Windows SHA lane. Journal
+// "os_running" does not establish current OS liveness or app success.
+export type NativeBackgroundOwnerStatus = {
+  schemaVersion: 1;
+  processLivenessVerified: false;
+  applicationVerified: false;
+  safeToAutoRetry: false;
+  workers: Array<{
+    actionId: string;
+    recordedPhase: "reserved" | "os_running" | "os_exited_unverified" |
+      "os_cancelled_unverified" | "os_timed_out_unverified" |
+      "sha256_verified" | "owner_reviewed_unknown";
+    evidenceHealth: "independent_current_sha_verified" |
+      "sha_artifact_missing_or_changed_owner_review_required" |
+      "journal_receipt_mismatch_owner_review_required" |
+      "work_or_crash_liveness_not_authenticated" |
+      "unverified_os_outcome_requires_owner_review";
+    currentFileRehashed: boolean;
+    safeToAutoRetry: false;
+  }>;
+};
+
 export type NativeWorkerStatus = {
   schemaVersion: 1;
   observedAtMs: number;
