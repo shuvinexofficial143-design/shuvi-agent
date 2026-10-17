@@ -100,6 +100,12 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
     if format!("{:x}",hasher.finalize())!=expected.to_ascii_lowercase(){
         return Err("Blender artifact hash differs from exact worker receipt.".into());
     }
+    if kind=="PNG" {
+        crate::blender_png_integrity::validate(
+            &canonical,artifact["width"].as_u64().ok_or("PNG width missing.")?,
+            artifact["height"].as_u64().ok_or("PNG height missing.")?,
+        )?;
+    }
     Ok(())
 }
 
