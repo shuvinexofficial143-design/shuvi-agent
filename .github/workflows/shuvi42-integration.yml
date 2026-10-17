@@ -1,0 +1,40 @@
+name: Shuvi 42 integration compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feature/shuvi42-integration-lab"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch read-only comparison refs
+        run: |
+          git fetch --no-tags origin \
+            refs/heads/phase1/safety-reconciliation-oct9:refs/remotes/origin/phase1/safety-reconciliation-oct9 \
+            refs/heads/feature/shuvi37-master-autonomy:refs/remotes/origin/feature/shuvi37-master-autonomy \
+            refs/heads/feature/shuvi38-native-scheduler:refs/remotes/origin/feature/shuvi38-native-scheduler \
+            refs/heads/feature/shuvi39-windows-vision:refs/remotes/origin/feature/shuvi39-windows-vision \
+            refs/heads/feature/shuvi40-adobe-editing:refs/remotes/origin/feature/shuvi40-adobe-editing \
+            refs/heads/feature/shuvi41-blender-worker:refs/remotes/origin/feature/shuvi41-blender-worker
+      - run: npm ci
+      - name: Test analyzer
+        run: node --test scripts/integration-compatibility-analyzer.test.mjs
+      - name: Analyze fetched branches
+        run: npm run analyze:integration
+      - name: Upload compatibility reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: shuvi42-integration-report-${{ github.sha }}
+          path: reports/shuvi42/integration-report.*

@@ -1,0 +1,2246 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-17T09:49:24.937Z",
+  "repository": "shuvinexofficial143-design/shuvi-agent",
+  "baseline": {
+    "ref": "origin/phase1/safety-reconciliation-oct9",
+    "commit": "99c9e58ef0e43139edfe2d6464f6411be47e1aa0"
+  },
+  "branches": [
+    {
+      "ref": "origin/feature/shuvi37-master-autonomy",
+      "commit": "c3b465361e7307380aff43388cf69ec6f87cc686"
+    },
+    {
+      "ref": "origin/feature/shuvi38-native-scheduler",
+      "commit": "f976f02a643fe4f1dbbb679ad14282660d3a69eb"
+    },
+    {
+      "ref": "origin/feature/shuvi39-windows-vision",
+      "commit": "a681383cc8bc2f95452ef48302a5963ecdb471bb"
+    },
+    {
+      "ref": "origin/feature/shuvi40-adobe-editing",
+      "commit": "cf7d1f26ce3c836bdb5f360ffcdf17ebfe423d51"
+    },
+    {
+      "ref": "origin/feature/shuvi41-blender-worker",
+      "commit": "1088add70a3a65f88a84c4bb8e2a71dfafa98d90"
+    }
+  ],
+  "summary": {
+    "branches_analyzed": 5,
+    "changed_files_total": 307,
+    "shared_conflicts": 13,
+    "risk_flags": 13,
+    "read_only": true,
+    "executions": 0,
+    "live_host_verification": false
+  },
+  "conflicts": [
+    {
+      "file": "integrations/blender-worker/shuvi_blender_plan.py",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "scripts/native-master-followup.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "scripts/native-recovery-journal.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "scripts/native-worker-host-status.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "scripts/phase1-a01-ui-ipc-parity.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "scripts/premiere-acceptance-execution.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "src-tauri/src/blender_plan_worker.rs",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "src-tauri/src/lib.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi39-windows-vision",
+        "origin/feature/shuvi40-adobe-editing",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "category": "shared_native_registration_boundary",
+      "requires_manual_review": true
+    },
+    {
+      "file": "src-tauri/src/native_recovery.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "src/main.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "src/types.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "web-dashboard/src/native-agent.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    },
+    {
+      "file": "web-dashboard/src/native-recovery-journal.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "category": "shared_file",
+      "requires_manual_review": true
+    }
+  ],
+  "risks": [
+    {
+      "type": "shared_file_conflict",
+      "file": "integrations/blender-worker/shuvi_blender_plan.py",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "scripts/native-master-followup.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "scripts/native-recovery-journal.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "scripts/native-worker-host-status.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "scripts/phase1-a01-ui-ipc-parity.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "scripts/premiere-acceptance-execution.test.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "src-tauri/src/blender_plan_worker.rs",
+      "branches": [
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "src-tauri/src/lib.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler",
+        "origin/feature/shuvi39-windows-vision",
+        "origin/feature/shuvi40-adobe-editing",
+        "origin/feature/shuvi41-blender-worker"
+      ],
+      "flag": "shared_native_registration_boundary"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "src-tauri/src/native_recovery.rs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "src/main.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "src/types.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi38-native-scheduler"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "web-dashboard/src/native-agent.ts",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "flag": "shared_file"
+    },
+    {
+      "type": "shared_file_conflict",
+      "file": "web-dashboard/src/native-recovery-journal.mjs",
+      "branches": [
+        "origin/feature/shuvi37-master-autonomy",
+        "origin/feature/shuvi39-windows-vision"
+      ],
+      "flag": "shared_file"
+    }
+  ],
+  "branch_results": [
+    {
+      "branch": "origin/feature/shuvi37-master-autonomy",
+      "baseline": "origin/phase1/safety-reconciliation-oct9",
+      "changed_file_count": 125,
+      "changed_files": [
+        "docs/SHUVI_TEAM_37_INTEGRATION_NOTES.md",
+        "scripts/agent-cancellation.test.mjs",
+        "scripts/agent-orchestration.test.mjs",
+        "scripts/master-autonomy-contract.test.mjs",
+        "scripts/master-autonomy-graph.test.mjs",
+        "scripts/master-checkpoint-erasure.test.mjs",
+        "scripts/master-checkpoint-rotation.test.mjs",
+        "scripts/master-commentary-completion.test.mjs",
+        "scripts/master-editor-coordination.test.mjs",
+        "scripts/master-final-outcome.test.mjs",
+        "scripts/master-finalization-preflight.test.mjs",
+        "scripts/master-finalization-single-flight.test.mjs",
+        "scripts/master-goal-window-acceptance.test.mjs",
+        "scripts/master-native-action-ownership.test.mjs",
+        "scripts/master-native-resume-readback.test.mjs",
+        "scripts/master-native-resume-replay.test.mjs",
+        "scripts/master-native-single-flight.test.mjs",
+        "scripts/master-opening-blueprint.test.mjs",
+        "scripts/master-permission-ui-fence.test.mjs",
+        "scripts/master-project-delivery-contract.test.mjs",
+        "scripts/master-project-native-e2e.test.mjs",
+        "scripts/master-project-proof-fence.test.mjs",
+        "scripts/master-project-proof-progress.test.mjs",
+        "scripts/master-proposal-audit-ownership.test.mjs",
+        "scripts/master-provider-single-flight.test.mjs",
+        "scripts/master-provider-terminal-cleanup-race.test.mjs",
+        "scripts/master-provider-turn-fence.test.mjs",
+        "scripts/master-remote-chat-terminal-cleanup.test.mjs",
+        "scripts/master-remote-disconnect-race.test.mjs",
+        "scripts/master-remote-dispatch-admission.test.mjs",
+        "scripts/master-remote-inbox-owner.test.mjs",
+        "scripts/master-remote-receipt-lane.test.mjs",
+        "scripts/master-remote-terminal-fence.test.mjs",
+        "scripts/master-safe-continuation.test.mjs",
+        "scripts/master-stop-audit-race.test.mjs",
+        "scripts/master-stop-button-task-owner.test.mjs",
+        "scripts/master-stopped-continuation.test.mjs",
+        "scripts/master-task-checkpoint-lane.test.mjs",
+        "scripts/master-task-checkpoint-readback.test.mjs",
+        "scripts/master-terminal-finalization-race.test.mjs",
+        "scripts/model-response-task-identity.test.mjs",
+        "scripts/native-continuation-durability.test.mjs",
+        "scripts/native-delivery-claims.test.mjs",
+        "scripts/native-master-followup.test.mjs",
+        "scripts/native-opening-completion.test.mjs",
+        "scripts/native-premiere-sha-proof.test.mjs",
+        "scripts/native-recovery-journal.test.mjs",
+        "scripts/native-task-budget.test.mjs",
+        "scripts/native-task-delivery-host.test.mjs",
+        "scripts/native-task-read-grant.test.mjs",
+        "scripts/native-worker-host-status.test.mjs",
+        "scripts/phase1-a01-ui-ipc-parity.test.mjs",
+        "scripts/phase2-a12-provider-checkpoint-admission.test.mjs",
+        "scripts/pointer-drag-safety.test.mjs",
+        "scripts/premiere-acceptance-execution.test.mjs",
+        "scripts/premiere-project-evidence-candidate.test.mjs",
+        "scripts/premiere-project-reopen-evidence.test.mjs",
+        "scripts/task-graph.test.mjs",
+        "scripts/ta<redacted-secret-like-value>.test.mjs",
+        "scripts/task-runtime-budget.test.mjs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/native_premiere_project_sha.rs",
+        "src-tauri/src/native_recovery.rs",
+        "src-tauri/src/native_task_grant.rs",
+        "src/agent-orchestrator.ts",
+        "src/main.ts",
+        "src/master-autonomy-contract.mjs",
+        "src/master-autonomy-graph.d.mts",
+        "src/master-autonomy-graph.mjs",
+        "src/master-checkpoint-absent.d.mts",
+        "src/master-checkpoint-absent.mjs",
+        "src/master-commentary-completion.d.mts",
+        "src/master-commentary-completion.mjs",
+        "src/master-final-outcome.d.mts",
+        "src/master-final-outcome.mjs",
+        "src/master-finalization-preflight.d.mts",
+        "src/master-finalization-preflight.mjs",
+        "src/master-finalization-single-flight.d.mts",
+        "src/master-finalization-single-flight.mjs",
+        "src/master-goal-window-acceptance.d.mts",
+        "src/master-goal-window-acceptance.mjs",
+        "src/master-native-action-ownership.d.mts",
+        "src/master-native-action-ownership.mjs",
+        "src/master-native-resume-replay.d.mts",
+        "src/master-native-resume-replay.mjs",
+        "src/master-native-single-flight.d.mts",
+        "src/master-native-single-flight.mjs",
+        "src/master-opening-blueprint.d.mts",
+        "src/master-opening-blueprint.mjs",
+        "src/master-permission-ui-fence.d.mts",
+        "src/master-permission-ui-fence.mjs",
+        "src/master-project-delivery-contract.d.mts",
+        "src/master-project-delivery-contract.mjs",
+        "src/master-project-proof-fence.d.mts",
+        "src/master-project-proof-fence.mjs",
+        "src/master-project-proof-progress.d.mts",
+        "src/master-project-proof-progress.mjs",
+        "src/master-provider-single-flight.d.mts",
+        "src/master-provider-single-flight.mjs",
+        "src/master-provider-turn-fence.d.mts",
+        "src/master-provider-turn-fence.mjs",
+        "src/master-remote-inbox-owner.d.mts",
+        "src/master-remote-inbox-owner.mjs",
+        "src/master-remote-receipt-lane.d.mts",
+        "src/master-remote-receipt-lane.mjs",
+        "src/master-remote-terminal-fence.d.mts",
+        "src/master-remote-terminal-fence.mjs",
+        "src/master-safe-continuation.d.mts",
+        "src/master-safe-continuation.mjs",
+        "src/master-task-checkpoint-lane.d.mts",
+        "src/master-task-checkpoint-lane.mjs",
+        "src/master-task-checkpoint-readback.d.mts",
+        "src/master-task-checkpoint-readback.mjs",
+        "src/native-project-sha-proof.d.mts",
+        "src/native-project-sha-proof.mjs",
+        "src/premiere-project-evidence-candidate.d.mts",
+        "src/premiere-project-evidence-candidate.mjs",
+        "src/premiere-project-reopen-evidence.d.mts",
+        "src/premiere-project-reopen-evidence.mjs",
+        "src/types.ts",
+        "web-dashboard/scripts/native-desktop-dashboard.test.mjs",
+        "web-dashboard/src/native-agent.ts",
+        "web-dashboard/src/native-opening-completion.mjs",
+        "web-dashboard/src/native-recovery-journal.mjs",
+        "web-dashboard/src/native-task-progress.mjs"
+      ],
+      "rust": {
+        "modules": [
+          "web_bridge",
+          "target_window_capture",
+          "remote_agent",
+          "blender_worker",
+          "blender_plan_worker",
+          "atomic_file",
+          "execution_lease",
+          "native_worker_status",
+          "native_worker_job",
+          "native_job_history",
+          "native_scheduler",
+          "native_task_grant",
+          "native_task_delivery",
+          "native_premiere_project_sha",
+          "bounded_child",
+          "provider_request_guard",
+          "native_recovery",
+          "premiere_execution",
+          "premiere_store",
+          "after_effects",
+          "after_effects_transport",
+          "after_effects_checkpoint",
+          "after_effects_project_persistence",
+          "after_effects_media_validation",
+          "after_effects_runtime",
+          "after_effects_templates",
+          "after_effects_acceptance",
+          "premiere_diagnostics",
+          "premiere_review",
+          "premiere_editorial",
+          "premiere_export",
+          "media_encoder",
+          "premiere_acceptance",
+          "premiere_acceptance_harness",
+          "premiere_acceptance_execution",
+          "premiere_calibration",
+          "premiere_export_jobs",
+          "premiere_project_persistence",
+          "premiere_review_binding",
+          "premiere_edit_session",
+          "premiere_edit_job",
+          "premiere_subtitles",
+          "premiere_dialogue",
+          "premiere_talking_head",
+          "premiere_transcript_rebuild",
+          "premiere_scene_detection",
+          "premiere_scene_rough_cut",
+          "premiere_layering",
+          "premiere_media_prep",
+          "premiere_artifact_integrity",
+          "premiere_delivery",
+          "premiere_finishing",
+          "premiere_assembly",
+          "premiere_mogrt",
+          "premiere_graphics",
+          "premiere_audio",
+          "premiere_recipes",
+          "premiere_effects",
+          "premiere_target",
+          "premiere_keyframes",
+          "premiere_checkpoint",
+          "premiere_speed",
+          "premiere_bridge_queue",
+          "premiere_bridge",
+          "audition",
+          "audition_acceptance",
+          "animate",
+          "animate_checkpoint",
+          "character_animator",
+          "substance_3d",
+          "frame_io",
+          "illustrator",
+          "illustrator_checkpoint",
+          "illustrator_bridge_queue",
+          "illustrator_bridge",
+          "photoshop",
+          "photoshop_checkpoint",
+          "motion_graphics",
+          "motion_graphics_provider",
+          "motion_graphics_review",
+          "motion_graphics_correction",
+          "motion_graphics_correction_session",
+          "motion_graphics_delivery",
+          "motion_graphics_remotion",
+          "motion_graphics_remotion_runtime",
+          "audition_bridge_queue",
+          "audition_bridge",
+          "animate_bridge_queue",
+          "animate_bridge",
+          "photoshop_bridge_queue",
+          "photoshop_bridge"
+        ],
+        "duplicate_modules": [],
+        "commands": [
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "reconcile_native_worker_job",
+          "native_worker_history",
+          "finalize_native_task_delivery",
+          "native_task_delivery_status",
+          "verify_premiere_project_sha256",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "prepare_tool",
+          "prepare_powershell",
+          "issue_task_read_grant",
+          "revoke_task_read_grants",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "export_diagnostics"
+        ],
+        "registered_commands": [
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "native_worker_history",
+          "native_task_delivery_status",
+          "verify_premiere_project_sha256",
+          "finalize_native_task_delivery",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "reconcile_native_worker_job",
+          "prepare_tool",
+          "prepare_powershell",
+          "issue_task_read_grant",
+          "revoke_task_read_grants",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "save_native_recovery",
+          "load_native_recovery",
+          "clear_native_recovery",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "export_diagnostics",
+          "web_bridge_start",
+          "web_bridge_stop",
+          "web_bridge_state",
+          "remote_agent_status",
+          "remote_agent_pair",
+          "remote_agent_disconnect",
+          "remote_agent_poll",
+          "remote_agent_receipt"
+        ],
+        "duplicate_registered_commands": [],
+        "unregistered_commands": []
+      },
+      "ipc": {
+        "invokes": [
+          {
+            "file": "src/main.ts",
+            "command": "revoke_task_read_grants"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_worker_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_worker_history"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_scheduler_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "save_session_checkpoint"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "load_session_checkpoint"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "clear_session_checkpoint"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "runtime_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "audit_log"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "premiere_bridge_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "get_workspace"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "list_providers"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "record_agent_event"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "finalize_native_task_delivery"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "deny_action"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "prepare_tool"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "action_audit_receipt"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "execute_action"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "verify_premiere_project_sha256"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "issue_task_read_grant"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "chat"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_task_delivery_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "reconcile_native_worker_job"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "review_native_scheduler_failure"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "save_api_key"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "web_bridge_start"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "web_bridge_stop"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "premiere_bridge_start"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "premiere_bridge_stop"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "export_diagnostics"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "set_workspace"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "delete_api_key"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "prepare_powershell"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "cancel_running_action"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_pair"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_disconnect"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_receipt"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_poll"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "action_audit_receipt"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "clear_native_recovery"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "save_native_recovery"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "runtime_status"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "list_providers"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "load_native_recovery"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "chat"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "prepare_tool"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "deny_action"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "execute_action"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "remote_agent_status"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "remote_agent_pair"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "remote_agent_disconnect"
+          }
+        ],
+        "missing_commands": []
+      },
+      "duplicate_identifiers": [],
+      "permission_guards": [
+        {
+          "name": "execute_action_native_lease",
+          "passed": true
+        },
+        {
+          "name": "execute_powershell_native_lease",
+          "passed": true
+        },
+        {
+          "name": "pending_action_approval_boundary",
+          "passed": true
+        }
+      ],
+      "source_presence": {
+        "lib_rs": true,
+        "native_agent": true,
+        "native_recovery": true
+      },
+      "risk_flags": []
+    },
+    {
+      "branch": "origin/feature/shuvi38-native-scheduler",
+      "baseline": "origin/phase1/safety-reconciliation-oct9",
+      "changed_file_count": 61,
+      "changed_files": [
+        "docs/SHUVI_TEAM_38_INTEGRATION_NOTES.md",
+        "integrations/blender-worker/shuvi_blender_bridge.py",
+        "integrations/blender-worker/shuvi_blender_plan.py",
+        "scripts/native-artifact-physical-identity.test.mjs",
+        "scripts/native-attested-worker-stage.test.mjs",
+        "scripts/native-blender-autofill-delivery.test.mjs",
+        "scripts/native-blender-exact-artifact-delivery.test.mjs",
+        "scripts/native-blender-final-plan-provenance.test.mjs",
+        "scripts/native-blender-plan-provenance-ledger.test.mjs",
+        "scripts/native-completed-delivery-history.test.mjs",
+        "scripts/native-delivery-historical-reverification.test.mjs",
+        "scripts/native-delivery-receipt-os-publish.test.mjs",
+        "scripts/native-global-hash-budget-completeness.test.mjs",
+        "scripts/native-global-hash-slots.test.mjs",
+        "scripts/native-job-journal-cross-process-lock.test.mjs",
+        "scripts/native-owned-process-contract.test.mjs",
+        "scripts/native-owned-process-host-memory-watchdog.test.mjs",
+        "scripts/native-owned-process-remote-stop.test.mjs",
+        "scripts/native-owned-stop-durable-intent.test.mjs",
+        "scripts/native-owned-terminal-and-plan-binding.test.mjs",
+        "scripts/native-owner-review-resource-recovery.test.mjs",
+        "scripts/native-parallel-artifact-verification.test.mjs",
+        "scripts/native-process-crash-receipt.test.mjs",
+        "scripts/native-process-owner-review-bridge.test.mjs",
+        "scripts/native-process-receipt-os-lock.test.mjs",
+        "scripts/native-process-status-integration.test.mjs",
+        "scripts/native-resource-approved-plan-lock.test.mjs",
+        "scripts/native-resource-claims-crash-recovery.test.mjs",
+        "scripts/native-resource-cross-process-lock.test.mjs",
+        "scripts/native-resource-owner-status.test.mjs",
+        "scripts/native-resource-status-ui.test.mjs",
+        "scripts/native-scheduled-blender-owned-adapter.test.mjs",
+        "scripts/native-scheduled-blender-plan-supervision.test.mjs",
+        "scripts/native-scheduler-artifact-dependency-integrity.test.mjs",
+        "scripts/native-scheduler-cross-process-dag-lock.test.mjs",
+        "scripts/native-scheduler-dispatch-policy.test.mjs",
+        "scripts/native-scheduler-terminal-status.test.mjs",
+        "scripts/native-windows-job-containment.test.mjs",
+        "scripts/native-worker-app-heartbeat.test.mjs",
+        "scripts/native-worker-host-status.test.mjs",
+        "scripts/phase1-a01-ui-ipc-parity.test.mjs",
+        "src-tauri/src/blender_plan_worker.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/native_attested_worker_stage.rs",
+        "src-tauri/src/native_blender_action_artifact.rs",
+        "src-tauri/src/native_blender_owned_adapter.rs",
+        "src-tauri/src/native_blender_owned_plan.rs",
+        "src-tauri/src/native_delivery_history.rs",
+        "src-tauri/src/native_delivery_receipt_lock.rs",
+        "src-tauri/src/native_global_hash_slots.rs",
+        "src-tauri/src/native_owned_process.rs",
+        "src-tauri/src/native_process_receipt.rs",
+        "src-tauri/src/native_resource_lanes.rs",
+        "src-tauri/src/native_scheduler.rs",
+        "src-tauri/src/native_task_delivery.rs",
+        "src-tauri/src/native_windows_job.rs",
+        "src-tauri/src/native_worker_job.rs",
+        "src-tauri/src/native_worker_progress.rs",
+        "src-tauri/src/native_worker_status.rs",
+        "src/main.ts",
+        "src/types.ts"
+      ],
+      "rust": {
+        "modules": [
+          "web_bridge",
+          "target_window_capture",
+          "remote_agent",
+          "blender_worker",
+          "blender_plan_worker",
+          "native_blender_owned_adapter",
+          "native_blender_owned_plan",
+          "native_blender_action_artifact",
+          "atomic_file",
+          "execution_lease",
+          "native_worker_status",
+          "native_worker_job",
+          "native_job_history",
+          "native_scheduler",
+          "native_task_delivery",
+          "bounded_child",
+          "provider_request_guard",
+          "native_recovery",
+          "premiere_execution",
+          "premiere_store",
+          "after_effects",
+          "after_effects_transport",
+          "after_effects_checkpoint",
+          "after_effects_project_persistence",
+          "after_effects_media_validation",
+          "after_effects_runtime",
+          "after_effects_templates",
+          "after_effects_acceptance",
+          "premiere_diagnostics",
+          "premiere_review",
+          "premiere_editorial",
+          "premiere_export",
+          "media_encoder",
+          "premiere_acceptance",
+          "premiere_acceptance_harness",
+          "premiere_acceptance_execution",
+          "premiere_calibration",
+          "premiere_export_jobs",
+          "premiere_project_persistence",
+          "premiere_review_binding",
+          "premiere_edit_session",
+          "premiere_edit_job",
+          "premiere_subtitles",
+          "premiere_dialogue",
+          "premiere_talking_head",
+          "premiere_transcript_rebuild",
+          "premiere_scene_detection",
+          "premiere_scene_rough_cut",
+          "premiere_layering",
+          "premiere_media_prep",
+          "premiere_artifact_integrity",
+          "premiere_delivery",
+          "premiere_finishing",
+          "premiere_assembly",
+          "premiere_mogrt",
+          "premiere_graphics",
+          "premiere_audio",
+          "premiere_recipes",
+          "premiere_effects",
+          "premiere_target",
+          "premiere_keyframes",
+          "premiere_checkpoint",
+          "premiere_speed",
+          "premiere_bridge_queue",
+          "premiere_bridge",
+          "audition",
+          "audition_acceptance",
+          "animate",
+          "animate_checkpoint",
+          "character_animator",
+          "substance_3d",
+          "frame_io",
+          "illustrator",
+          "illustrator_checkpoint",
+          "illustrator_bridge_queue",
+          "illustrator_bridge",
+          "photoshop",
+          "photoshop_checkpoint",
+          "motion_graphics",
+          "motion_graphics_provider",
+          "motion_graphics_review",
+          "motion_graphics_correction",
+          "motion_graphics_correction_session",
+          "motion_graphics_delivery",
+          "motion_graphics_remotion",
+          "motion_graphics_remotion_runtime",
+          "audition_bridge_queue",
+          "audition_bridge",
+          "animate_bridge_queue",
+          "animate_bridge",
+          "photoshop_bridge_queue",
+          "photoshop_bridge"
+        ],
+        "duplicate_modules": [],
+        "commands": [
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "reconcile_native_worker_job",
+          "native_worker_history",
+          "finalize_native_task_delivery",
+          "native_task_delivery_status",
+          "native_task_delivery_history",
+          "native_task_delivery_verify_history",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "export_diagnostics"
+        ],
+        "registered_commands": [
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "native_worker_history",
+          "native_task_delivery_status",
+          "native_task_delivery_history",
+          "native_task_delivery_verify_history",
+          "finalize_native_task_delivery",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "reconcile_native_worker_job",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "save_native_recovery",
+          "load_native_recovery",
+          "clear_native_recovery",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "export_diagnostics",
+          "web_bridge_start",
+          "web_bridge_stop",
+          "web_bridge_state",
+          "remote_agent_status",
+          "remote_agent_pair",
+          "remote_agent_disconnect",
+          "remote_agent_poll",
+          "remote_agent_receipt"
+        ],
+        "duplicate_registered_commands": [],
+        "unregistered_commands": []
+      },
+      "ipc": {
+        "invokes": [
+          {
+            "file": "src/main.ts",
+            "command": "native_worker_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_worker_history"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_scheduler_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "save_session_checkpoint"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "clear_session_checkpoint"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "load_session_checkpoint"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "runtime_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "audit_log"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "premiere_bridge_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "get_workspace"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "list_providers"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "record_agent_event"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "finalize_native_task_delivery"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "deny_action"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "prepare_tool"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "action_audit_receipt"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "execute_action"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "chat"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "reconcile_native_worker_job"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "review_native_scheduler_failure"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_task_delivery_history"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_task_delivery_verify_history"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "native_task_delivery_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "save_api_key"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "web_bridge_start"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "web_bridge_stop"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "premiere_bridge_start"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "premiere_bridge_stop"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "export_diagnostics"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "set_workspace"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "delete_api_key"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "prepare_powershell"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "cancel_running_action"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_status"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_pair"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_disconnect"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_receipt"
+          },
+          {
+            "file": "src/main.ts",
+            "command": "remote_agent_poll"
+          }
+        ],
+        "missing_commands": []
+      },
+      "duplicate_identifiers": [],
+      "permission_guards": [
+        {
+          "name": "execute_action_native_lease",
+          "passed": true
+        },
+        {
+          "name": "execute_powershell_native_lease",
+          "passed": true
+        },
+        {
+          "name": "pending_action_approval_boundary",
+          "passed": true
+        }
+      ],
+      "source_presence": {
+        "lib_rs": true,
+        "native_agent": true,
+        "native_recovery": true
+      },
+      "risk_flags": []
+    },
+    {
+      "branch": "origin/feature/shuvi39-windows-vision",
+      "baseline": "origin/phase1/safety-reconciliation-oct9",
+      "changed_file_count": 53,
+      "changed_files": [
+        ".github/workflows/ci.yml",
+        "docs/SHUVI39_CODING_SCOPE.md",
+        "docs/SHUVI_TEAM_39_INTEGRATION_NOTES.md",
+        "scripts/native-master-followup.test.mjs",
+        "scripts/native-recovery-journal.test.mjs",
+        "scripts/native-windows-ui-grounding.test.mjs",
+        "scripts/premiere-acceptance-execution.test.mjs",
+        "scripts/shuvi39-code-completion-gate.test.mjs",
+        "scripts/shuvi39-contradictory-readback-inventory.test.mjs",
+        "scripts/shuvi39-control-lifetime-reattestation.test.mjs",
+        "scripts/shuvi39-desktop-capture-integrity.test.mjs",
+        "scripts/shuvi39-desktop-vision-temporary-isolation.test.mjs",
+        "scripts/shuvi39-ephemeral-vision-capture.test.mjs",
+        "scripts/shuvi39-independent-readback-provenance.test.mjs",
+        "scripts/shuvi39-local-uia-fixture.ps1",
+        "scripts/shuvi39-local-uia-fixture.test.mjs",
+        "scripts/shuvi39-native-process-generation.test.mjs",
+        "scripts/shuvi39-native-uia-expiry-recovery.test.mjs",
+        "scripts/shuvi39-native-uia-state-readback.test.mjs",
+        "scripts/shuvi39-preapproval-identity-barrier.test.mjs",
+        "scripts/shuvi39-preapproved-window-capture.test.mjs",
+        "scripts/shuvi39-role-locked-readback.test.mjs",
+        "scripts/shuvi39-runtime-control-readback.test.mjs",
+        "scripts/shuvi39-rust-native-uia-identity.test.mjs",
+        "scripts/shuvi39-screenshot-png-integrity.test.mjs",
+        "scripts/shuvi39-synthetic-windows-uia-smoke.ps1",
+        "scripts/shuvi39-synthetic-windows-uia-smoke.test.mjs",
+        "scripts/shuvi39-ui-control-readback.test.mjs",
+        "scripts/shuvi39-vision-directory-guard.test.mjs",
+        "scripts/shuvi39-vision-memory-handoff.test.mjs",
+        "scripts/shuvi39-vision-stale-scavenger.test.mjs",
+        "scripts/shuvi39-window-generation-end-to-end.test.mjs",
+        "scripts/shuvi39-window-observation-session.test.mjs",
+        "scripts/shuvi39-windows-target-capture.test.mjs",
+        "scripts/shuvi39-windows-uia-readonly-diagnostics.ps1",
+        "scripts/shuvi39-windows-uia-readonly-diagnostics.test.mjs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/native_recovery.rs",
+        "src-tauri/src/native_uia_window_guard.rs",
+        "src-tauri/src/target_window_capture.rs",
+        "src-tauri/src/vision_screenshot_guard.rs",
+        "web-dashboard/scripts/native-followup-error-phase.test.mjs",
+        "web-dashboard/scripts/native-ui-read-proof-lifetime.test.mjs",
+        "web-dashboard/scripts/native-window-observation.test.mjs",
+        "web-dashboard/src/native-agent.ts",
+        "web-dashboard/src/native-observation-text.mjs",
+        "web-dashboard/src/native-recovery-journal.mjs",
+        "web-dashboard/src/native-ui-control-session.mjs",
+        "web-dashboard/src/native-ui-readback-session.mjs",
+        "web-dashboard/src/native-uia-expiry-recovery.mjs",
+        "web-dashboard/src/native-window-observation-session.mjs",
+        "web-dashboard/src/native-window-observation.mjs",
+        "web-dashboard/src/native-window-target-guard.mjs"
+      ],
+      "rust": {
+        "modules": [
+          "web_bridge",
+          "target_window_capture",
+          "vision_screenshot_guard",
+          "native_uia_window_guard",
+          "remote_agent",
+          "blender_worker",
+          "blender_plan_worker",
+          "atomic_file",
+          "execution_lease",
+          "native_worker_status",
+          "native_worker_job",
+          "native_job_history",
+          "native_scheduler",
+          "native_task_delivery",
+          "bounded_child",
+          "provider_request_guard",
+          "native_recovery",
+          "premiere_execution",
+          "premiere_store",
+          "after_effects",
+          "after_effects_transport",
+          "after_effects_checkpoint",
+          "after_effects_project_persistence",
+          "after_effects_media_validation",
+          "after_effects_runtime",
+          "after_effects_templates",
+          "after_effects_acceptance",
+          "premiere_diagnostics",
+          "premiere_review",
+          "premiere_editorial",
+          "premiere_export",
+          "media_encoder",
+          "premiere_acceptance",
+          "premiere_acceptance_harness",
+          "premiere_acceptance_execution",
+          "premiere_calibration",
+          "premiere_export_jobs",
+          "premiere_project_persistence",
+          "premiere_review_binding",
+          "premiere_edit_session",
+          "premiere_edit_job",
+          "premiere_subtitles",
+          "premiere_dialogue",
+          "premiere_talking_head",
+          "premiere_transcript_rebuild",
+          "premiere_scene_detection",
+          "premiere_scene_rough_cut",
+          "premiere_layering",
+          "premiere_media_prep",
+          "premiere_artifact_integrity",
+          "premiere_delivery",
+          "premiere_finishing",
+          "premiere_assembly",
+          "premiere_mogrt",
+          "premiere_graphics",
+          "premiere_audio",
+          "premiere_recipes",
+          "premiere_effects",
+          "premiere_target",
+          "premiere_keyframes",
+          "premiere_checkpoint",
+          "premiere_speed",
+          "premiere_bridge_queue",
+          "premiere_bridge",
+          "audition",
+          "audition_acceptance",
+          "animate",
+          "animate_checkpoint",
+          "character_animator",
+          "substance_3d",
+          "frame_io",
+          "illustrator",
+          "illustrator_checkpoint",
+          "illustrator_bridge_queue",
+          "illustrator_bridge",
+          "photoshop",
+          "photoshop_checkpoint",
+          "motion_graphics",
+          "motion_graphics_provider",
+          "motion_graphics_review",
+          "motion_graphics_correction",
+          "motion_graphics_correction_session",
+          "motion_graphics_delivery",
+          "motion_graphics_remotion",
+          "motion_graphics_remotion_runtime",
+          "audition_bridge_queue",
+          "audition_bridge",
+          "animate_bridge_queue",
+          "animate_bridge",
+          "photoshop_bridge_queue",
+          "photoshop_bridge"
+        ],
+        "duplicate_modules": [],
+        "commands": [
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "reconcile_native_worker_job",
+          "native_worker_history",
+          "finalize_native_task_delivery",
+          "native_task_delivery_status",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "export_diagnostics"
+        ],
+        "registered_commands": [
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "native_worker_history",
+          "native_task_delivery_status",
+          "finalize_native_task_delivery",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "reconcile_native_worker_job",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "save_native_recovery",
+          "load_native_recovery",
+          "clear_native_recovery",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "export_diagnostics",
+          "web_bridge_start",
+          "web_bridge_stop",
+          "web_bridge_state",
+          "remote_agent_status",
+          "remote_agent_pair",
+          "remote_agent_disconnect",
+          "remote_agent_poll",
+          "remote_agent_receipt"
+        ],
+        "duplicate_registered_commands": [],
+        "unregistered_commands": []
+      },
+      "ipc": {
+        "invokes": [
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "action_audit_receipt"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "clear_native_recovery"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "save_native_recovery"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "runtime_status"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "list_providers"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "load_native_recovery"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "chat"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "prepare_tool"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "deny_action"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "execute_action"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "remote_agent_status"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "remote_agent_pair"
+          },
+          {
+            "file": "web-dashboard/src/native-agent.ts",
+            "command": "remote_agent_disconnect"
+          }
+        ],
+        "missing_commands": []
+      },
+      "duplicate_identifiers": [],
+      "permission_guards": [
+        {
+          "name": "execute_action_native_lease",
+          "passed": true
+        },
+        {
+          "name": "execute_powershell_native_lease",
+          "passed": true
+        },
+        {
+          "name": "pending_action_approval_boundary",
+          "passed": true
+        }
+      ],
+      "source_presence": {
+        "lib_rs": true,
+        "native_agent": true,
+        "native_recovery": true
+      },
+      "risk_flags": []
+    },
+    {
+      "branch": "origin/feature/shuvi40-adobe-editing",
+      "baseline": "origin/phase1/safety-reconciliation-oct9",
+      "changed_file_count": 38,
+      "changed_files": [
+        "docs/SHUVI_TEAM_40_INTEGRATION_NOTES.md",
+        "integrations/premiere-uxp/encoder-export-evidence.js",
+        "integrations/premiere-uxp/main.js",
+        "integrations/premiere-uxp/media-workflow-evidence.js",
+        "integrations/premiere-uxp/project-lifecycle.js",
+        "scripts/after-effects-mogrt-provenance.test.mjs",
+        "scripts/premiere-batch-relink-durability.test.mjs",
+        "scripts/premiere-caption-graphics.test.mjs",
+        "scripts/premiere-caption-styles.test.mjs",
+        "scripts/premiere-delivery-spec.test.mjs",
+        "scripts/premiere-encoder-export-evidence.test.mjs",
+        "scripts/premiere-export.test.mjs",
+        "scripts/premiere-final-delivery.test.mjs",
+        "scripts/premiere-full-decode.test.mjs",
+        "scripts/premiere-graphics-batch.test.mjs",
+        "scripts/premiere-media-prep.test.mjs",
+        "scripts/premiere-media-relink-durability.test.mjs",
+        "scripts/premiere-media-workflow-evidence.test.mjs",
+        "scripts/premiere-mogrt-handoff.test.mjs",
+        "scripts/premiere-project-lifecycle.test.mjs",
+        "scripts/premiere-selective-captions.test.mjs",
+        "scripts/premiere-transport.test.mjs",
+        "scripts/speed-workflows.test.mjs",
+        "src-tauri/src/after_effects_mogrt_provenance.rs",
+        "src-tauri/src/after_effects_runtime.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/premiere_batch_relink.rs",
+        "src-tauri/src/premiere_bridge.rs",
+        "src-tauri/src/premiere_caption_graphics.rs",
+        "src-tauri/src/premiere_delivery_spec.rs",
+        "src-tauri/src/premiere_export_jobs.rs",
+        "src-tauri/src/premiere_final_delivery.rs",
+        "src-tauri/src/premiere_full_decode.rs",
+        "src-tauri/src/premiere_graphics.rs",
+        "src-tauri/src/premiere_media_relink.rs",
+        "src-tauri/src/premiere_mogrt_handoff.rs",
+        "src-tauri/src/premiere_project_lifecycle.rs",
+        "src-tauri/src/premiere_selective_captions.rs"
+      ],
+      "rust": {
+        "modules": [
+          "web_bridge",
+          "target_window_capture",
+          "remote_agent",
+          "blender_worker",
+          "blender_plan_worker",
+          "atomic_file",
+          "execution_lease",
+          "native_worker_status",
+          "native_worker_job",
+          "native_job_history",
+          "native_scheduler",
+          "native_task_delivery",
+          "bounded_child",
+          "provider_request_guard",
+          "native_recovery",
+          "premiere_execution",
+          "premiere_store",
+          "after_effects",
+          "after_effects_transport",
+          "after_effects_checkpoint",
+          "after_effects_project_persistence",
+          "after_effects_media_validation",
+          "after_effects_runtime",
+          "after_effects_templates",
+          "after_effects_acceptance",
+          "premiere_diagnostics",
+          "premiere_review",
+          "premiere_editorial",
+          "premiere_export",
+          "media_encoder",
+          "premiere_acceptance",
+          "premiere_acceptance_harness",
+          "premiere_acceptance_execution",
+          "premiere_calibration",
+          "premiere_export_jobs",
+          "premiere_project_persistence",
+          "premiere_project_lifecycle",
+          "premiere_media_relink",
+          "premiere_batch_relink",
+          "premiere_mogrt_handoff",
+          "after_effects_mogrt_provenance",
+          "premiere_final_delivery",
+          "premiere_full_decode",
+          "premiere_delivery_spec",
+          "premiere_selective_captions",
+          "premiere_caption_graphics",
+          "premiere_review_binding",
+          "premiere_edit_session",
+          "premiere_edit_job",
+          "premiere_subtitles",
+          "premiere_dialogue",
+          "premiere_talking_head",
+          "premiere_transcript_rebuild",
+          "premiere_scene_detection",
+          "premiere_scene_rough_cut",
+          "premiere_layering",
+          "premiere_media_prep",
+          "premiere_artifact_integrity",
+          "premiere_delivery",
+          "premiere_finishing",
+          "premiere_assembly",
+          "premiere_mogrt",
+          "premiere_graphics",
+          "premiere_audio",
+          "premiere_recipes",
+          "premiere_effects",
+          "premiere_target",
+          "premiere_keyframes",
+          "premiere_checkpoint",
+          "premiere_speed",
+          "premiere_bridge_queue",
+          "premiere_bridge",
+          "audition",
+          "audition_acceptance",
+          "animate",
+          "animate_checkpoint",
+          "character_animator",
+          "substance_3d",
+          "frame_io",
+          "illustrator",
+          "illustrator_checkpoint",
+          "illustrator_bridge_queue",
+          "illustrator_bridge",
+          "photoshop",
+          "photoshop_checkpoint",
+          "motion_graphics",
+          "motion_graphics_provider",
+          "motion_graphics_review",
+          "motion_graphics_correction",
+          "motion_graphics_correction_session",
+          "motion_graphics_delivery",
+          "motion_graphics_remotion",
+          "motion_graphics_remotion_runtime",
+          "audition_bridge_queue",
+          "audition_bridge",
+          "animate_bridge_queue",
+          "animate_bridge",
+          "photoshop_bridge_queue",
+          "photoshop_bridge"
+        ],
+        "duplicate_modules": [],
+        "commands": [
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "reconcile_native_worker_job",
+          "native_worker_history",
+          "finalize_native_task_delivery",
+          "native_task_delivery_status",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "export_diagnostics"
+        ],
+        "registered_commands": [
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "native_worker_history",
+          "native_task_delivery_status",
+          "finalize_native_task_delivery",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "reconcile_native_worker_job",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "save_native_recovery",
+          "load_native_recovery",
+          "clear_native_recovery",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "export_diagnostics",
+          "web_bridge_start",
+          "web_bridge_stop",
+          "web_bridge_state",
+          "remote_agent_status",
+          "remote_agent_pair",
+          "remote_agent_disconnect",
+          "remote_agent_poll",
+          "remote_agent_receipt"
+        ],
+        "duplicate_registered_commands": [],
+        "unregistered_commands": []
+      },
+      "ipc": {
+        "invokes": [],
+        "missing_commands": []
+      },
+      "duplicate_identifiers": [],
+      "permission_guards": [
+        {
+          "name": "execute_action_native_lease",
+          "passed": true
+        },
+        {
+          "name": "execute_powershell_native_lease",
+          "passed": true
+        },
+        {
+          "name": "pending_action_approval_boundary",
+          "passed": true
+        }
+      ],
+      "source_presence": {
+        "lib_rs": true,
+        "native_agent": true,
+        "native_recovery": true
+      },
+      "risk_flags": []
+    },
+    {
+      "branch": "origin/feature/shuvi41-blender-worker",
+      "baseline": "origin/phase1/safety-reconciliation-oct9",
+      "changed_file_count": 30,
+      "changed_files": [
+        ".github/workflows/blender-upstream-contract-ci.yml",
+        "docs/SHUVI_TEAM_41_INTEGRATION_NOTES.md",
+        "integrations/blender-worker/shuvi_blender_acceptance.py",
+        "integrations/blender-worker/shuvi_blender_plan.py",
+        "integrations/blender-worker/shuvi_blender_reopen.py",
+        "integrations/blender-worker/shuvi_blender_session.py",
+        "integrations/blender-worker/test_shuvi_blender_acceptance.py",
+        "integrations/blender-worker/test_shuvi_blender_plan_input.py",
+        "integrations/blender-worker/test_shuvi_blender_real_contract.py",
+        "integrations/blender-worker/test_shuvi_blender_reopen.py",
+        "integrations/blender-worker/test_shuvi_blender_session.py",
+        "scripts/blender-acceptance-chain.test.mjs",
+        "scripts/blender-acceptance-recipe.test.mjs",
+        "scripts/blender-artifact-manifest.test.mjs",
+        "scripts/blender-audit-lineage.test.mjs",
+        "scripts/blender-plan-lineage.test.mjs",
+        "scripts/blender-reopen-proof.test.mjs",
+        "scripts/native-blender-plan.test.mjs",
+        "scripts/native-blender-session.test.mjs",
+        "src-tauri/Cargo.lock",
+        "src-tauri/Cargo.toml",
+        "src-tauri/src/blender_acceptance_chain.rs",
+        "src-tauri/src/blender_action_audit.rs",
+        "src-tauri/src/blender_artifact_manifest.rs",
+        "src-tauri/src/blender_input_checkpoint.rs",
+        "src-tauri/src/blender_plan_lineage.rs",
+        "src-tauri/src/blender_plan_worker.rs",
+        "src-tauri/src/blender_session_worker.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/tauri.conf.json"
+      ],
+      "rust": {
+        "modules": [
+          "web_bridge",
+          "target_window_capture",
+          "remote_agent",
+          "blender_worker",
+          "blender_plan_worker",
+          "blender_session_worker",
+          "blender_artifact_manifest",
+          "blender_input_checkpoint",
+          "blender_acceptance_chain",
+          "blender_action_audit",
+          "blender_plan_lineage",
+          "atomic_file",
+          "execution_lease",
+          "native_worker_status",
+          "native_worker_job",
+          "native_job_history",
+          "native_scheduler",
+          "native_task_delivery",
+          "bounded_child",
+          "provider_request_guard",
+          "native_recovery",
+          "premiere_execution",
+          "premiere_store",
+          "after_effects",
+          "after_effects_transport",
+          "after_effects_checkpoint",
+          "after_effects_project_persistence",
+          "after_effects_media_validation",
+          "after_effects_runtime",
+          "after_effects_templates",
+          "after_effects_acceptance",
+          "premiere_diagnostics",
+          "premiere_review",
+          "premiere_editorial",
+          "premiere_export",
+          "media_encoder",
+          "premiere_acceptance",
+          "premiere_acceptance_harness",
+          "premiere_acceptance_execution",
+          "premiere_calibration",
+          "premiere_export_jobs",
+          "premiere_project_persistence",
+          "premiere_review_binding",
+          "premiere_edit_session",
+          "premiere_edit_job",
+          "premiere_subtitles",
+          "premiere_dialogue",
+          "premiere_talking_head",
+          "premiere_transcript_rebuild",
+          "premiere_scene_detection",
+          "premiere_scene_rough_cut",
+          "premiere_layering",
+          "premiere_media_prep",
+          "premiere_artifact_integrity",
+          "premiere_delivery",
+          "premiere_finishing",
+          "premiere_assembly",
+          "premiere_mogrt",
+          "premiere_graphics",
+          "premiere_audio",
+          "premiere_recipes",
+          "premiere_effects",
+          "premiere_target",
+          "premiere_keyframes",
+          "premiere_checkpoint",
+          "premiere_speed",
+          "premiere_bridge_queue",
+          "premiere_bridge",
+          "audition",
+          "audition_acceptance",
+          "animate",
+          "animate_checkpoint",
+          "character_animator",
+          "substance_3d",
+          "frame_io",
+          "illustrator",
+          "illustrator_checkpoint",
+          "illustrator_bridge_queue",
+          "illustrator_bridge",
+          "photoshop",
+          "photoshop_checkpoint",
+          "motion_graphics",
+          "motion_graphics_provider",
+          "motion_graphics_review",
+          "motion_graphics_correction",
+          "motion_graphics_correction_session",
+          "motion_graphics_delivery",
+          "motion_graphics_remotion",
+          "motion_graphics_remotion_runtime",
+          "audition_bridge_queue",
+          "audition_bridge",
+          "animate_bridge_queue",
+          "animate_bridge",
+          "photoshop_bridge_queue",
+          "photoshop_bridge"
+        ],
+        "duplicate_modules": [],
+        "commands": [
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "reconcile_native_worker_job",
+          "native_worker_history",
+          "finalize_native_task_delivery",
+          "native_task_delivery_status",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "export_diagnostics"
+        ],
+        "registered_commands": [
+          "list_providers",
+          "list_xkiro_models",
+          "api_key_status",
+          "save_api_key",
+          "delete_api_key",
+          "save_frame_io_access_token",
+          "delete_frame_io_access_token",
+          "save_frame_io_oauth_config",
+          "delete_frame_io_oauth_config",
+          "frame_io_credential_status",
+          "chat",
+          "runtime_status",
+          "native_worker_status",
+          "native_worker_history",
+          "native_task_delivery_status",
+          "finalize_native_task_delivery",
+          "native_scheduler_status",
+          "review_native_scheduler_failure",
+          "reconcile_native_worker_job",
+          "prepare_tool",
+          "prepare_powershell",
+          "deny_action",
+          "cancel_running_action",
+          "execute_action",
+          "execute_powershell",
+          "audit_log",
+          "action_audit_receipt",
+          "record_agent_event",
+          "set_workspace",
+          "get_workspace",
+          "save_session_checkpoint",
+          "load_session_checkpoint",
+          "clear_session_checkpoint",
+          "save_native_recovery",
+          "load_native_recovery",
+          "clear_native_recovery",
+          "premiere_bridge_start",
+          "premiere_bridge_status",
+          "premiere_bridge_stop",
+          "audition_bridge_start",
+          "audition_bridge_status",
+          "audition_bridge_stop",
+          "animate_bridge_start",
+          "animate_bridge_status",
+          "animate_bridge_stop",
+          "illustrator_bridge_start",
+          "illustrator_bridge_status",
+          "illustrator_bridge_stop",
+          "photoshop_bridge_start",
+          "photoshop_bridge_status",
+          "photoshop_bridge_stop",
+          "export_diagnostics",
+          "web_bridge_start",
+          "web_bridge_stop",
+          "web_bridge_state",
+          "remote_agent_status",
+          "remote_agent_pair",
+          "remote_agent_disconnect",
+          "remote_agent_poll",
+          "remote_agent_receipt"
+        ],
+        "duplicate_registered_commands": [],
+        "unregistered_commands": []
+      },
+      "ipc": {
+        "invokes": [],
+        "missing_commands": []
+      },
+      "duplicate_identifiers": [],
+      "permission_guards": [
+        {
+          "name": "execute_action_native_lease",
+          "passed": true
+        },
+        {
+          "name": "execute_powershell_native_lease",
+          "passed": true
+        },
+        {
+          "name": "pending_action_approval_boundary",
+          "passed": true
+        }
+      ],
+      "source_presence": {
+        "lib_rs": true,
+        "native_agent": true,
+        "native_recovery": true
+      },
+      "risk_flags": []
+    }
+  ]
+}
