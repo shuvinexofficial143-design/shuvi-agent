@@ -80,6 +80,28 @@ fn valid_stage(steps:&[&Value],ops:&[String])->&'static str{
                 && binds_from(steps[2],"locate")
                 && binds_from(steps[3],"mesh_read"){"model2"}else{"other"}
         },
+        ["scene.inspect","objects.list","material.create_assign","scene.inspect","file.checkpoint"]=>{
+            let locate=payload(steps,1);let assign=payload(steps,2);
+            let checkpoint=payload(steps,4);
+            if name(steps[0]).ok()==Some("scene")
+                && name(steps[1]).ok()==Some("locate")
+                && locate.get("name_prefix").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
+                && locate.get("object_type").and_then(Value::as_str)==Some("MESH")
+                && locate.get("offset").and_then(Value::as_u64)==Some(0)
+                && locate.get("limit").and_then(Value::as_u64)==Some(5)
+                && locate.get("expected_revision").and_then(Value::as_str)==Some("BOUND_FROM_SCENE")
+                && has_binding(steps[1],"scene",json!(["data","revision"]),json!(["expected_revision"]))
+                && assign.pointer("/target/expected_name").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
+                && assign.get("name").and_then(Value::as_str)==Some("Shuvi41ProofCopper")
+                && assign.get("base_color")==Some(&json!([0.8,0.41,0.16,1.0]))
+                && assign.get("metallic")==Some(&json!(0.65))
+                && assign.get("roughness")==Some(&json!(0.31))
+                && has_binding(steps[2],"locate",json!(["data","items",0,"object_id"]),json!(["target","object_id"]))
+                && has_binding(steps[2],"locate",json!(["data","items",0,"revision"]),json!(["target","expected_revision"]))
+                && name(steps[3]).ok()==Some("post_look_scene")
+                && checkpoint.get("name").and_then(Value::as_str)==Some("shuvi41-proof-material.blend")
+                && checkpoint_binding(steps[4],"post_look_scene"){"look"}else{"other"}
+        },
         ["render.configure","scene.inspect","render.execute"]=>{
             let config=payload(steps,0);
             if config.get("width").and_then(Value::as_u64)==Some(64)
@@ -193,6 +215,22 @@ mod tests{
         let mut no_camera_binding=crate::blender_acceptance_recipe::build("model1",&"a".repeat(64)).unwrap()["plan"].clone();
         no_camera_binding["steps"][3]["bindings"]=json!([]);
         assert_eq!(derive(&no_camera_binding).unwrap()["acceptance_stage"],"other");
+    }
+    #[test]
+    fn look_lineage_rejects_unsafe_material_or_missing_fresh_revision_binding(){
+        let native=crate::blender_acceptance_recipe::build("look",&"b".repeat(64)).unwrap();
+        let plan=native["plan"].clone();
+        assert_eq!(derive(&plan).unwrap()["acceptance_stage"],"look");
+        let mut forged=plan.clone();
+        forged["steps"][2]["request"]["payload"]["metallic"]=json!(0.0);
+        assert_eq!(derive(&forged).unwrap()["acceptance_stage"],"other");
+        let mut missing=plan.clone();
+        missing["steps"][1]["bindings"]=json!([]);
+        assert_eq!(derive(&missing).unwrap()["acceptance_stage"],"other");
+        let mut stale=plan.clone();
+        stale["steps"][4]["bindings"]=json!([]);
+        assert_eq!(derive(&stale).unwrap()["acceptance_stage"],"other");
+        assert!(receipt_matches(&json!({"approved_plan_lineage":derive(&plan).unwrap()}),"model2").is_err());
     }
     #[test]
     fn duplicate_steps_malformed_receipts_and_zero_steps_denied(){

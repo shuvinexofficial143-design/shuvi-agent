@@ -778,3 +778,45 @@ with the original native mesh/scene hash, PNG CRC, local approval/audit,
 file containment and independent source SHA requirements intact.
 **No user project, Windows app, Blender executable, AntCloud host, merge,
 deployment, Adobe worker or other team branch was run or changed.**
+
+## Team-41 — standalone typed copper material look (source-only)
+
+Optional `stage="look"` in the existing read-only
+`blender_build_acceptance_recipe` generator produces a **standalone**
+five-step plan: inspect scene, paginate for the exact named MESH with a
+scene-revision binding, assign a new fixed Principled-style material using
+the upstream typed `material.create_assign` operation and session-local
+target identity plus expected object revision, inspect the post-material
+scene, then checkpoint as `shuvi41-proof-material.blend` with a fresh
+bound scene revision. This is plan-only, not an automatic operation, and
+NOT part of the model1/model2/render three-stage acceptance chain.
+
+Fixed material: `Shuvi41ProofCopper`, RGBA `[0.8,0.41,0.16,1.0]`,
+metallic `0.65`, roughness `0.31`. The existing upstream
+`MaterialAssign.parse` enforces color/scalar bounds, a uniquely named
+editable mesh with unshared data, native readback and rollback on mismatch.
+Native provenance recognizes only the exact step order, fixed parameters,
+revision/target bindings and unique output name. Substitutions classify
+the plan as `other`. The original three-stage reviewer still rejects
+this supplemental look as evidence of model1/model2/render.
+
+A **NEW explicitly owner-approved persistent Blender session** must
+first load the Stage-2 `.blend` with its existing canonical-path, byte
+length, SHA-256 and authenticated startup-load checks. The read-only
+preview does not open or execute the plan; an independently approved
+`blender_session_plan` action is required. The separate material file
+is only created by actual successful execution, independently verified
+save/reopen, and current-file integrity checks. No actual materialized
+Blender output is claimed here.
+
+The unchanged three-stage render intentionally uses its original Stage-2
+checkpoint rather than the optional material artifact. A visually
+verified materialized-render acceptance path needs a separately designed
+workflow and host validation, not a fabricated receipt.
+
+Source regression tests use the PINNED REAL upstream `Plan.from_dict`,
+`MaterialAssign.parse` and `PlanRunner` with a fake deterministic
+controller; they also cover stale or missing targets, failed checkpoint
+delivery, native exact plan provenance, read-only CLI-only generation
+and lack of implicit render/owner approval. This is NOT real bpy or
+Windows/AntCloud execution. Existing three-stage tests remain intact.

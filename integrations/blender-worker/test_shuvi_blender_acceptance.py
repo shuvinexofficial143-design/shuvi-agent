@@ -14,6 +14,7 @@ EXPECTED_OPS = {
     "model2": ["device.create", "objects.list", "mesh.inspect",
                "mesh.translate_vertices", "scene.inspect", "file.checkpoint"],
     "render": ["render.configure", "scene.inspect", "render.execute"],
+    "look": ["scene.inspect", "objects.list", "material.create_assign", "scene.inspect", "file.checkpoint"],
 }
 
 
@@ -133,6 +134,40 @@ class AcceptanceRecipeTests(unittest.TestCase):
         self.assertEqual(lamp["name"], "Shuvi41ProofKey")
         self.assertEqual(lamp["expected_scene_revision"], REV)
         self.assertEqual(lamp["settings"]["energy"], 950.0)
+
+    def test_look_builds_bounded_material_recipe_with_cas_bindings(self):
+        steps = scenario.build("look", REV)["steps"]
+        self.assertEqual(len(steps), 5)
+        locate = steps[1]
+        self.assertEqual(locate["request"]["payload"]["object_type"], "MESH")
+        self.assertEqual(locate["request"]["payload"]["expected_revision"], "BOUND_FROM_SCENE")
+        self.assertEqual(locate["bindings"][0]["source_step"], "scene")
+        shader = steps[2]["request"]["payload"]
+        self.assertEqual(shader["name"], "Shuvi41ProofCopper")
+        self.assertEqual(shader["target"]["expected_name"], scenario.MESH_NAME)
+        self.assertEqual(shader["base_color"], [0.8, 0.41, 0.16, 1.0])
+        self.assertEqual([shader["metallic"], shader["roughness"]], [0.65, 0.31])
+        self.assertEqual(steps[-1]["request"]["payload"]["name"], scenario.LOOK)
+        self.assertEqual(steps[-1]["bindings"][0]["source_step"], "post_look_scene")
+
+    def test_look_never_uses_render_or_replaces_original_stage_artifacts(self):
+        look = scenario.build("look", REV)
+        self.assertTrue(all(step["request"]["operation"] != "render.execute"
+                            for step in look["steps"]))
+        self.assertNotEqual(scenario.LOOK, scenario.STAGE2)
+        self.assertNotEqual(scenario.LOOK, scenario.STAGE1)
+        self.assertEqual(look["timeout_ms"], 90000)
+
+    def test_look_cli_requires_separate_approved_source_session(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = scenario.main(["--stage", "look", "--scene-revision", REV])
+        self.assertEqual(rc, 0)
+        message = json.loads(stdout.getvalue())
+        self.assertTrue(message["supplementary_not_three_stage_acceptance"])
+        self.assertTrue(message["requires_new_session_loading_verified_stage2"])
+        self.assertFalse(message["render_action_approval_required"])
+        self.assertEqual(message["output_file"], scenario.LOOK)
 
     def test_render_uses_small_cpu_budget_and_fresh_configured_revision(self):
         steps = scenario.build("render", REV)["steps"]

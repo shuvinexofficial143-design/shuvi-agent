@@ -9,6 +9,7 @@ const MESH:&str="Shuvi41ProofMesh";
 const STAGE1:&str="shuvi41-proof-stage1.blend";
 const STAGE2:&str="shuvi41-proof-stage2.blend";
 const RENDER:&str="shuvi41-proof-render.png";
+const LOOK:&str="shuvi41-proof-material.blend";
 
 fn binding(source:&str,source_path:Value,target_path:Value)->Value{
     json!({"source_step":source,"source_path":source_path,"target_path":target_path})
@@ -88,6 +89,30 @@ fn model2(rev:&str)->Vec<Value>{
         }),vec![binding("post_edit_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
     ]
 }
+// Optional fixed material look on a separately SHA-verified, owner-approved
+// Stage-2 source. This is not part of three-stage acceptance evidence.
+fn look()->Vec<Value>{
+    vec![
+        step("scene","scene.inspect",json!({}),vec![]),
+        step("locate","objects.list",json!({
+            "name_prefix":MESH,"object_type":"MESH","offset":0,"limit":5,
+            "expected_revision":"BOUND_FROM_SCENE",
+        }),vec![binding("scene",json!(["data","revision"]),json!(["expected_revision"]))]),
+        step("assign","material.create_assign",json!({
+            "target":{"object_id":"BOUND_FROM_LIST","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_LIST"},
+            "name":"Shuvi41ProofCopper","base_color":[0.8,0.41,0.16,1.0],
+            "metallic":0.65,"roughness":0.31,
+        }),vec![
+            binding("locate",json!(["data","items",0,"object_id"]),json!(["target","object_id"])),
+            binding("locate",json!(["data","items",0,"revision"]),json!(["target","expected_revision"])),
+        ]),
+        step("post_look_scene","scene.inspect",json!({}),vec![]),
+        step("checkpoint","file.checkpoint",json!({
+            "name":LOOK,"expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![binding("post_look_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
+    ]
+}
 fn render(rev:&str)->Vec<Value>{
     vec![
         step("configure","render.configure",json!({
@@ -114,7 +139,8 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
         "model1"=>(model1(revision),STAGE1,false),
         "model2"=>(model2(revision),STAGE2,false),
         "render"=>(render(revision),RENDER,true),
-        _=>return Err("Native Blender recipe only accepts model1, model2 or render.".into()),
+        "look"=>(look(),LOOK,false),
+        _=>return Err("Native Blender recipe only accepts model1, model2, look or render.".into()),
     };
     let plan=json!({"timeout_ms":90_000,"steps":steps});
     if serde_json::to_vec(&plan).map_err(|_|"Cannot serialize typed Blender recipe.")?.len()>65536{
@@ -137,7 +163,8 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
         "render_action_approval_required":requires_render,
         "must_use_current_session_inspect_revision":true,
         "requires_separate_native_owner_approval":true,
-        "requires_new_session_loading_verified_stage2":requires_render,
+        "requires_new_session_loading_verified_stage2":requires_render || stage=="look",
+        "supplementary_not_three_stage_acceptance":stage=="look",
         "action_approved":false,
         "blender_launch_performed":false,
         "plan_executed":false,
@@ -156,6 +183,7 @@ mod tests{
             ("model1",6,"file.checkpoint",false),
             ("model2",6,"file.checkpoint",false),
             ("render",3,"render.execute",true),
+            ("look",5,"file.checkpoint",false),
         ]{
             let r=build(stage,&"a".repeat(64)).unwrap();
             assert_eq!(r["mode"],"PLAN_ONLY_NO_BLENDER_LAUNCH");
@@ -167,14 +195,15 @@ mod tests{
             assert_eq!(r["plan_executed"],false);
             assert_eq!(r["real_blender_runtime_verified"],false);
             assert_eq!(r["requires_separate_native_owner_approval"],true);
-            assert_eq!(r["requires_new_session_loading_verified_stage2"],render);
+            assert_eq!(r["requires_new_session_loading_verified_stage2"],render || stage=="look");
+            assert_eq!(r["supplementary_not_three_stage_acceptance"],stage=="look");
         }
     }
     #[test]
     fn fresh_action_and_request_ids_never_repeat_within_or_across_plans(){
         let mut ids=HashSet::new();
         for _ in 0..3{
-            for stage in ["model1","model2","render"]{
+            for stage in ["model1","model2","render","look"]{
                 let recipe=build(stage,&"b".repeat(64)).unwrap();
                 for step in recipe["plan"]["steps"].as_array().unwrap(){
                     for key in ["request_id","command_id"]{
@@ -188,7 +217,7 @@ mod tests{
     }
     #[test]
     fn result_bindings_reference_prior_steps_with_valid_destinations(){
-        for stage in ["model1","model2","render"]{
+        for stage in ["model1","model2","render","look"]{
             let recipe=build(stage,&"c".repeat(64)).unwrap();
             let mut seen=HashSet::new();
             for step in recipe["plan"]["steps"].as_array().unwrap(){
@@ -216,6 +245,25 @@ mod tests{
             assert!(build("model1",&revision).is_err());
         }
         assert!(build("arbitrary.python.run",&"f".repeat(64)).is_err());
+    }
+    #[test]
+    fn supplemental_look_has_cas_mesh_identity_and_unique_output(){
+        let recipe=build("look",&"a".repeat(64)).unwrap();
+        let steps=&recipe["plan"]["steps"];
+        assert_eq!(steps.as_array().unwrap().len(),5);
+        assert_eq!(recipe["plan_preview_lineage"]["acceptance_stage"],"look");
+        assert_eq!(steps[1]["request"]["payload"]["expected_revision"],"BOUND_FROM_SCENE");
+        assert_eq!(steps[2]["request"]["payload"]["name"],"Shuvi41ProofCopper");
+        assert_eq!(steps[2]["request"]["payload"]["base_color"],json!([0.8,0.41,0.16,1.0]));
+        assert_eq!(steps[2]["request"]["payload"]["metallic"],0.65);
+        assert_eq!(steps[2]["request"]["payload"]["roughness"],0.31);
+        assert_eq!(steps[4]["bindings"][0]["source_step"],"post_look_scene");
+        assert_eq!(recipe["output_file"],LOOK);
+        assert_eq!(recipe["requires_new_session_loading_verified_stage2"],true);
+        assert_eq!(recipe["render_action_approval_required"],false);
+        assert_eq!(recipe["action_approved"],false);
+        assert!(crate::blender_plan_lineage::receipt_matches(
+            &json!({"approved_plan_lineage":recipe["plan_preview_lineage"]}),"look").is_err());
     }
     #[test]
     fn acceptance_modeling_plan_contains_expected_mesh_edit_and_stage_files(){

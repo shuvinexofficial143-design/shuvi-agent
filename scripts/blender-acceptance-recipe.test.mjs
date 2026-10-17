@@ -11,7 +11,8 @@ const broker=readFileSync(new URL("../integrations/blender-worker/shuvi_blender_
 
 test("model acceptance has a fixed typed workflow without any unsafe Blender launch",()=>{
   for(const op of ["mesh.create","mesh.inspect","mesh.translate_vertices","device.create",
-    "objects.list","scene.inspect","file.checkpoint","render.configure","render.execute"]){
+    "objects.list","scene.inspect","file.checkpoint","render.configure","render.execute",
+    "material.create_assign"]){
     assert.ok(source.includes('"'+op+'"'),op);
   }
   for(const label of ["_model1","_model2","_render","source_step","source_path",
@@ -29,7 +30,7 @@ const python=candidates.find(parts=>{
   const [exe,...args]=parts;
   return spawnSync(exe,[...args,"-c","import ast"],{timeout:5000}).status===0;
 });
-test("python acceptance scenario is executable in plan-only mode and 12 fixtures pass",{
+test("python acceptance scenario is executable in plan-only mode and 15 fixtures pass",{
   skip:python?false:"No Python interpreter on test runner",
 },()=>{
   const [exe,...args]=python;
@@ -41,7 +42,7 @@ test("python acceptance scenario is executable in plan-only mode and 12 fixtures
     "-s","integrations/blender-worker","-p","test_shuvi_blender_acceptance.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(regressions.status,0,regressions.stderr);
-  assert.match(regressions.stderr,/Ran 12 tests/);
+  assert.match(regressions.stderr,/Ran 15 tests/);
   const result=spawnSync(exe,[...args,"-B",py,"--stage","render",
     "--scene-revision","a".repeat(64)],{cwd:root,timeout:5000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);

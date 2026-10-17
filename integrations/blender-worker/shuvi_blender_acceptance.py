@@ -19,12 +19,13 @@ import json
 import re
 from uuid import uuid4
 
-STAGES = ("model1", "model2", "render")
+STAGES = ("model1", "model2", "render", "look")
 REVISION = re.compile(r"[a-f0-9]{64}\Z", re.ASCII)
 MESH_NAME = "Shuvi41ProofMesh"
 STAGE1 = "shuvi41-proof-stage1.blend"
 STAGE2 = "shuvi41-proof-stage2.blend"
 STAGE3 = "shuvi41-proof-render.png"
+LOOK = "shuvi41-proof-material.blend"
 
 
 def step(name: str, operation: str, payload: dict, bindings: list | None = None) -> dict:
@@ -131,6 +132,32 @@ def _model2(revision: str) -> list:
     ]
 
 
+def _look(revision: str) -> list:
+    # A supplemental standalone material pass on an explicitly owner-approved,
+    # SHA-verified Stage-2 source session. Not the original acceptance chain.
+    return [
+        step("scene", "scene.inspect", {}),
+        step("locate", "objects.list", {
+            "name_prefix": MESH_NAME, "object_type": "MESH",
+            "offset": 0, "limit": 5, "expected_revision": "BOUND_FROM_SCENE",
+        }, [bind("scene", ["data", "revision"], ["expected_revision"])]),
+        step("assign", "material.create_assign", {
+            "target": {"object_id": "BOUND_FROM_LIST", "expected_name": MESH_NAME,
+                       "expected_revision": "BOUND_FROM_LIST"},
+            "name": "Shuvi41ProofCopper",
+            "base_color": [0.8, 0.41, 0.16, 1.0],
+            "metallic": 0.65, "roughness": 0.31,
+        }, [
+            bind("locate", ["data", "items", 0, "object_id"], ["target", "object_id"]),
+            bind("locate", ["data", "items", 0, "revision"], ["target", "expected_revision"]),
+        ]),
+        step("post_look_scene", "scene.inspect", {}),
+        step("checkpoint", "file.checkpoint", {
+            "name": LOOK, "expected_scene_revision": "BOUND_FROM_SCENE",
+        }, [bind("post_look_scene", ["data", "revision"], ["expected_scene_revision"])]),
+    ]
+
+
 def _render(revision: str) -> list:
     # Model1 saves an active camera and Model2 adds a key light.
     # This stage loads their checkpoint via a new separately approved session.
@@ -157,6 +184,7 @@ def build(stage: str, expected_scene_revision: str) -> dict:
         "model1": _model1,
         "model2": _model2,
         "render": _render,
+        "look": _look,
     }[stage](expected_scene_revision)
     assert 1 <= len(steps) <= 6
     return {"timeout_ms": 90000, "steps": steps}
@@ -179,7 +207,9 @@ def main(argv: list[str] | None = None) -> int:
         "requires_separate_native_owner_approval": True,
         "must_use_current_session_inspect_revision": True,
         "render_action_approval_required": args.stage == "render",
-        "output_file": {"model1": STAGE1, "model2": STAGE2, "render": STAGE3}[args.stage],
+        "output_file": {"model1": STAGE1, "model2": STAGE2, "render": STAGE3, "look": LOOK}[args.stage],
+        "requires_new_session_loading_verified_stage2": args.stage in ("render", "look"),
+        "supplementary_not_three_stage_acceptance": args.stage == "look",
         "plan": plan,
     }, separators=(",", ":")))
     return 0

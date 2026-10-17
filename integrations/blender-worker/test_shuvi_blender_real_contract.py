@@ -17,7 +17,7 @@ from uuid import uuid4
 from shuvi_blender_agent.contracts import Request, Result, Status
 from shuvi_blender_agent.errors import AgentError
 from shuvi_blender_agent.mesh import CreateMesh, TranslateVertices
-from shuvi_blender_agent.appearance import CreateDevice
+from shuvi_blender_agent.appearance import CreateDevice, MaterialAssign
 from shuvi_blender_agent.models import PageQuery
 from shuvi_blender_agent.plans import Plan, PlanRunner
 from shuvi_blender_agent.rendering import FileAction, RenderConfig
@@ -28,7 +28,7 @@ START_REV = "a" * 64
 VALID_OPERATIONS = {
     "mesh.create", "mesh.inspect", "mesh.translate_vertices",
     "objects.list", "scene.inspect", "file.checkpoint",
-    "render.configure", "render.execute", "device.create",
+    "render.configure", "render.execute", "device.create", "material.create_assign",
 }
 
 
@@ -71,6 +71,8 @@ class ContractController:
         op, value = request.operation, request.payload
         if op == "device.create":
             CreateDevice.parse(value)
+        elif op == "material.create_assign":
+            MaterialAssign.parse(value)
         elif op == "mesh.create":
             CreateMesh.parse(value)
         elif op == "mesh.translate_vertices":
@@ -124,7 +126,7 @@ class ContractController:
             kind = payload["kind"]
             ident = self.session + ":" + str(uuid4())
             self.objects[payload["name"]] = {
-                "object_id": ident, "name": payload["name"], "type": "MESH",
+                "object_id": ident, "name": payload["name"],
                 "revision": digest({"identity": ident, "name": payload["name"]}),
                 "type": "CAMERA" if kind == "CAMERA" else "LIGHT",
                 "settings": copy.deepcopy(payload["settings"]),
@@ -199,6 +201,26 @@ class ContractController:
             return self._result(request, {"after": {"geometry_revision": digest(obj["geometry"]),
                                                    "object_revision": obj["revision"]}},
                                 verified=True)
+        if op == "material.create_assign":
+            target = payload["target"]
+            obj = self.objects.get(target["expected_name"])
+            if obj is None or obj.get("type") != "MESH":
+                return self._result_failure(request, "material target must be a mesh")
+            if obj["object_id"] != target["object_id"] or obj["revision"] != target["expected_revision"]:
+                return self._result_failure(request, "material target is stale")
+            if payload["name"] in obj.get("materials", []):
+                return self._result_failure(request, "material already assigned")
+            obj.setdefault("materials", []).append(payload["name"])
+            obj["revision"] = digest({"former": obj["revision"], "material": payload["name"]})
+            self._advance("material assigned")
+            return self._result(request, {"after": {
+                "assigned_material": {
+                    "name": payload["name"], "base_color": payload["base_color"],
+                    "metallic": payload["metallic"], "roughness": payload["roughness"],
+                    "slot_index": len(obj["materials"]) - 1,
+                    "slot_material": payload["name"],
+                }
+            }}, verified=True)
         if op == "file.checkpoint":
             if payload["expected_scene_revision"] != self.rev:
                 return self._result_failure(request, "stale checkpoint scene revision")
@@ -244,7 +266,7 @@ class ContractController:
 
 class ActualUpstreamPlanRunnerTests(unittest.TestCase):
     def test_actual_upstream_parser_accepts_three_fixed_production_recipes(self):
-        for stage in ("model1", "model2", "render"):
+        for stage in ("model1", "model2", "render", "look"):
             native = build(stage, START_REV)
             parsed = Plan.from_dict(native)
             self.assertEqual(parsed.to_dict(), native)
@@ -291,6 +313,53 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         self.assertEqual(fresh.key_light, "Shuvi41ProofKey")
         self.assertEqual(fresh.calls, ["render.configure", "scene.inspect", "render.execute"])
         self.assertEqual(fresh.objects["Shuvi41ProofMesh"]["geometry"]["vertices"][4][2], 1.95)
+
+    def test_look_executes_real_upstream_typed_material_parser_and_checkpoint(self):
+        creator = ContractController()
+        self.assertTrue(PlanRunner(creator).run(Plan.from_dict(build("model1", creator.rev))).completed)
+        self.assertTrue(PlanRunner(creator).run(Plan.from_dict(build("model2", creator.rev))).completed)
+        stage2 = creator.saved["shuvi41-proof-stage2.blend"]
+        fresh = ContractController(
+            existing=stage2["geometry"], revision=digest({"load": "stage2", "previous": creator.rev})
+        )
+        result = PlanRunner(fresh).run(Plan.from_dict(build("look", fresh.rev)))
+        self.assertTrue(result.completed, result.to_dict())
+        self.assertEqual(len(result.results), 5)
+        self.assertEqual(result.results["assign"].status, Status.VERIFIED)
+        self.assertEqual(result.results["checkpoint"].status, Status.VERIFIED)
+        self.assertIn("Shuvi41ProofCopper", fresh.objects["Shuvi41ProofMesh"]["materials"])
+        self.assertEqual(fresh.active_camera, "Shuvi41ProofCamera")
+        self.assertEqual(fresh.key_light, "Shuvi41ProofKey")
+        self.assertEqual(fresh.calls, [
+            "scene.inspect", "objects.list", "material.create_assign",
+            "scene.inspect", "file.checkpoint"
+        ])
+        self.assertIn("shuvi41-proof-material.blend", fresh.saved)
+        self.assertIsNone(stage2["geometry"]["Shuvi41ProofMesh"].get("materials"))
+
+    def test_look_fails_closed_on_missing_target_without_checkpoint(self):
+        fake = ContractController()
+        result = PlanRunner(fake).run(Plan.from_dict(build("look", fake.rev)))
+        self.assertFalse(result.completed)
+        self.assertEqual(result.results["assign"].status, Status.FAILED)
+        self.assertEqual(result.unexecuted_steps, ("post_look_scene", "checkpoint"))
+        self.assertEqual(fake.saved, {})
+
+    def test_look_rejects_stale_target_readback_after_pagination(self):
+        seed = ContractController()
+        self.assertTrue(PlanRunner(seed).run(Plan.from_dict(build("model1", seed.rev))).completed)
+        original = seed.execute
+
+        def invalidate_target(request):
+            if request.operation == "material.create_assign":
+                seed.objects["Shuvi41ProofMesh"]["revision"] = "f" * 64
+            return original(request)
+
+        seed.execute = invalidate_target
+        result = PlanRunner(seed).run(Plan.from_dict(build("look", seed.rev)))
+        self.assertFalse(result.completed)
+        self.assertEqual(result.results["assign"].status, Status.FAILED)
+        self.assertNotIn("shuvi41-proof-material.blend", seed.saved)
 
     def test_render_does_not_pass_without_verified_camera_and_key_light(self):
         fake = ContractController()
