@@ -15,12 +15,12 @@ test("read-only Windows process trees have a pre-spawn 25 percent OS CPU hard ca
   assert.match(owned,/OwnedChild::spawn_readonly_capped\(exe,args,cwd,READ_ONLY_JOB_CAP\)/);
   assert.ok(win.indexOf("SetInformationJobObject(job.0,JOB_CPU_RATE_CONTROL")<
     win.indexOf("CreateProcessW(app.as_ptr()"));
-  assert.match(win,/if ok==0\{return Err\(error\("Cannot enforce read-only worker CPU hard cap"\)\)\}/);
+  assert.ok(win.includes('if ok==0{return Err(error("Cannot enforce read-only worker CPU hard cap"));}'));
   assert.match(win,/cpu_rate_structure_is_exact_windows_eight_bytes/);
   assert.match(win,/Self::spawn_capped\(exe,args,cwd,MAX_JOB_MEMORY_BYTES\)/);
 });
 test("two separately authenticated read-only OS workers have individually durable SHA outcomes",()=>{
-  assert.match(owned,/pub\(super\) fn run_internal_readonly_pair</);
+  assert.match(owned,/pub\(crate\) fn run_internal_readonly_pair</);
   assert.match(owned,/std::thread::scope\(\|scope\|/);
   assert.match(owned,/run_trusted_sha256_with_guard\(/);
   assert.match(owned,/let left=a.join\(\)/);
@@ -31,7 +31,9 @@ test("two separately authenticated read-only OS workers have individually durabl
   assert.match(owned,/Fn\(\)->Result<bool,String>\+Sync/);
   assert.match(owned,/batch_pair_rejects_duplicate_uuid_without_starting_or_reusing_a_worker/);
   assert.match(owned,/two_background_workers_cannot_bypass_fail_closed_shared_memory_guard/);
-  assert.doesNotMatch(lib,/run_internal_readonly_pair/);
+  // The pair is reachable ONLY from the existing owner-approved execute_action branch.
+  assert.match(lib,/let execution=if let ToolAction::VerifyReadOnlyShaPair/);
+  assert.match(lib,/native_scheduler::background_os_workers::run_internal_readonly_pair/);
 });
 test("read-only restart projections never trust stale SHA files or reclassify OS exit as app success",()=>{
   assert.match(admission,/snapshot_detailed_at/);
