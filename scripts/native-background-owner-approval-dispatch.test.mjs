@@ -23,7 +23,7 @@ test('M54 separate owner-approved dispatch runs only previously admitted fixed r
   assert.match(rust,/ToolAction::RunApprovedShaParentQueue/);
   assert.match(rust,/parent_queue::run_two_ready_approved\(/);
   assert.match(rust,/status\.shuvi_memory_mb\+1024\.0>=HARD_LIMIT_MB/);
-  assert.match(rust,/run_approved_sha_parent_queue.*?separate owner Allow/s);
+  assert.match(rust,/run_approved_sha_parent_queue.*?SEPARATE owner Allow/s);
   assert.match(queue,/fn run_two_ready_approved<F>/);
   assert.match(queue,/p\.task_class!="read_only_sha256"/);
   assert.match(rust,/Background parent queue operations require exact owner-approved native execute_action/);
