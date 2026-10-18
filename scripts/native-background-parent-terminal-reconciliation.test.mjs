@@ -1,0 +1,57 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const rust=readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8');
+const queue=readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8');
+const admission=readFileSync(new URL('../src-tauri/src/native_background_admission.rs',import.meta.url),'utf8');
+const os=readFileSync(new URL('../src-tauri/src/native_background_os_workers.rs',import.meta.url),'utf8');
+const ui=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+const types=readFileSync(new URL('../src/types.ts',import.meta.url),'utf8');
+test('M57 only reconciles after separate M56 unknown owner review, canonical UUID and matched OS terminal journal',()=>{
+ assert.match(queue,/fn reconcile_owned_terminal_at\(/);
+ assert.match(queue,/if p.phase!="outcome_unknown"/);
+ assert.match(queue,/super::admission::snapshot_detailed_at\(root\)\?/);
+ assert.match(queue,/if os.input_path!=p.input_path\|\|os.expected_sha256!=p.expected_sha256/);
+ assert.match(queue,/fn terminal_evidence\(/);
+ assert.match(queue,/super::inspect_receipt\(root,id\)\?/);
+ assert.match(queue,/receipt.phase!=os.phase\|\|receipt.action_id!=id/);
+ assert.match(queue,/receipt.pid!=os.pid\|\|receipt.exit_code!=os.exit_code/);
+ assert.match(queue,/os_exited_unverified"\|"os_cancelled_unverified"\|"os_timed_out_unverified/);
+ assert.match(queue,/p.phase="owner_reconciled_unverified"/);
+ assert.match(queue,/fn m57_explicit_reconciliation_requires_both_matching_os_terminal_records/);
+ assert.match(queue,/fn m57_restart_unknown_without_terminal_os_proof_never_releases_claim/);
+ assert.match(queue,/fn m57_terminal_reconciliation_rejects_os_success_without_application_proof/);
+ assert.match(admission,/fn terminal_at\(/);
+ assert.match(os,/self.child.active_processes\(\)\?!=0/);
+});
+test('M57 separate owner confirmation and later independently audited process inspection precede reconciliation',()=>{
+ assert.match(rust,/fn reconcile_native_approved_parent_terminal\(/);
+ assert.match(rust,/confirmation!="RECONCILE TERMINAL UNKNOWN"/);
+ assert.match(rust,/read_action_audit_receipt\(&app,&parent_id\)\?/);
+ assert.match(rust,/parent.tool!="queue_readonly_sha_parent"/);
+ assert.match(rust,/read_action_audit_receipt\(&app,&inspection_action_id\)\?/);
+ assert.match(rust,/inspection.timestamp_ms<=parent.timestamp_ms/);
+ assert.match(rust,/inspection.tool!="list_processes"/);
+ assert.match(rust,/execution_lease::claim_single_execution\(&state.native_execution_owned\)\?/);
+ assert.match(rust,/reconcile_owned_terminal_at\(&root,&parent_id\)\?/);
+ assert.match(rust,/event:"native_parent_terminal_reconciliation_requested"/);
+ assert.match(rust,/event:"native_parent_os_terminal_reconciled_unverified"/);
+ const body=rust.slice(rust.indexOf('fn reconcile_native_approved_parent_terminal('),
+   rust.indexOf('#[tauri::command]\nfn native_approved_parent_queue_status('));
+ assert.doesNotMatch(body,/Command::new|TerminateProcess|taskkill|spawn_internal_readonly|run_trusted_sha256|safe_to_auto_retry:true/);
+});
+test('M57 shows historical-only double terminal proof, and keeps parent UUID spent',()=>{
+ assert.match(types,/owner_reconciled_unverified/);
+ assert.match(types,/recordedTerminalEvidence: boolean/);
+ assert.match(queue,/if p.phase=="owner_reconciled_unverified"\{return Ok\(false\);?\}/);
+ assert.match(queue,/recorded_terminal_evidence/);
+ assert.match(queue,/safe_to_auto_retry:false/);
+ assert.match(queue,/application_verified:false/);
+ assert.match(queue,/process_liveness_verified:false/);
+ assert.match(ui,/evidence\?\.recordedTerminalEvidence===true/);
+ assert.match(ui,/parent.recordedPhase==="outcome_unknown"/);
+ assert.match(ui,/confirmation:"RECONCILE TERMINAL UNKNOWN"/);
+ assert.match(ui,/invoke<boolean>\("reconcile_native_approved_parent_terminal"/);
+ assert.match(ui,/Original UUID remains spent/);
+ assert.match(ui,/resource remains HELD/);
+});

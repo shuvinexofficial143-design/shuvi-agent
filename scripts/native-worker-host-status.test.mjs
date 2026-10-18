@@ -26,7 +26,10 @@ test("native desktop mutation sites reuse the original process-wide guard and ne
  assert.match(lease,/claim_windows_desktop_lease\(/);
  assert.match(lib,/fn claim_monitored_native_execution<'a>\(/);
  assert.match(lib,/native_worker_status::require_clear_for_new_dispatch/);
- assert.equal((lib.match(/let _native_slot\s*=\s*claim_monitored_native_execution\(state\.inner\(\),&app\)\?;/g)??[]).length,12);
+ assert.equal((lib.match(/let _native_slot\s*=\s*claim_monitored_native_execution\(state\.inner\(\),&app\)\?;/g)??[]).length,11);
+ assert.match(lib,/let mut native_slot=Some\(claim_monitored_native_execution\(state\.inner\(\),&app\)\?\)/);
+ // 11 legacy guarded sites plus one action dispatcher retaining lease
+ // ownership across supervised Blender execution and final Rust audit.
  assert.match(lib,/running_action_started_at_ms: Mutex<HashMap<String, u64>>/);
  assert.match(lib,/started\.insert\(action_id\.clone\(\),now_ms\(\)\)/);
  assert.match(lib,/started\.remove\(&action_id\)/);

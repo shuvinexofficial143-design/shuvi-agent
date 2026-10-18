@@ -5,6 +5,9 @@ mod target_window_capture;
 mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
+mod native_blender_owned_adapter;
+mod native_blender_owned_plan;
+mod native_blender_action_artifact;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
@@ -503,6 +506,8 @@ Rules:
 - Use tools only when a computer action is required.
 - Never claim an action succeeded before Shuvi returns a tool result.
 - Prefer typed file/app/browser/screen tools over PowerShell.
+- For multiple independent read-only SHA jobs: FIRST use queue_readonly_sha_parent with exactly {input_path,expected_sha256,priority,depends_on} and require owner Allow EACH time; enqueue does NOT launch or verify. Priorities are 0..2; depends_on is an array of earlier parent UUIDs. Later run_approved_sha_parent_queue with exactly {first_parent_id,second_parent_id} requires a SEPARATE owner Allow to dispatch ONLY those two pinned, previously approved, dependency-ready parent UUIDs in current priority order. Queue changes invalidate that exact dispatch rather than substituting another job. Never guess SHA or path, use arbitrary executable, or call queued/running a completed task. ApplicationVerified remains false.
+- For two read-only binary files that the owner specifically wants SHA-256 verified, you may propose verify_readonly_sha_pair with EXACTLY four arguments: first_path, first_sha256, second_path, second_sha256. All paths must be distinct absolute existing files, each expected digest must be lowercase 64-character hex, and each file must be at most 128 MiB. It launches two contained read-only OS workers only AFTER explicit owner Allow and it verifies only present file bytes; it never confirms an Adobe/Blender creative task. Never guess a SHA-256 digest or silently use a path not shown to the owner.
 - capture_screen only captures an image and returns its local path; do not infer visual contents from that path.
 - inspect_screen captures ONLY the approved window (briefly activates it, verifies its identity, captures its visible bounds, then restores previous focus). It fails closed if the specified app window is missing/ambiguous or cannot be brought forward; do not silently send Shuvi's chat screenshot. Use window:"desktop" only for user-requested whole-desktop inspection.
 - Do not put tool JSON inside markdown fences.
@@ -649,6 +654,18 @@ struct ProviderContext {
 enum ToolAction {
     ListDirectory { path: String },
     ReadFile { path: String },
+    // Two independently audited native SHA readers under one exact approved action.
+    VerifyReadOnlyShaPair {
+        first_path: String, first_sha256: String,
+        second_path: String, second_sha256: String,
+    },
+    // M54: each background parent is enrolled by its OWN immutable owner-approved UUID.
+    QueueReadOnlyShaParent {
+        input_path: String, expected_sha256: String, priority: u8,
+        depends_on: Vec<String>,
+    },
+    // Requires a distinct explicit owner approval to execute already approved parents.
+    RunApprovedShaParentQueue { first_parent_id:String,second_parent_id:String },
     WriteFile { path: String, content: String },
     CreateDirectory { path: String },
     LaunchApp { program: String, args: Vec<String> },
@@ -1073,6 +1090,9 @@ struct ActionState {
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
     running_action_children: Mutex<HashMap<String, u32>>,
     running_action_tools: Mutex<HashMap<String, String>>,
+    // M55: ephemeral exact parent UUIDs bound to a CURRENT owner-approved
+    // dispatch action. Never sourced from mutable queue status or model input.
+    running_approved_parent_ids: Mutex<HashMap<String, [String;2]>>,
     running_action_started_at_ms: Mutex<HashMap<String, u64>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
@@ -1648,6 +1668,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
     match proposal.tool.as_str() {
         "list_directory"
         | "read_file"
+        | "verify_readonly_sha_pair"
         | "write_file"
         | "create_directory"
         | "launch_app"
@@ -3190,6 +3211,90 @@ fn stage_tool(
                 path,
                 RiskLevel::Low,
             )
+        }
+        "verify_readonly_sha_pair" => {
+            // The existing prepare/Allow/execute action UUID is the ONLY
+            // authorization gate. Each proposed path + expected digest is
+            // displayed to the owner before any OS child may be created.
+            let exact = proposal.arguments.as_object()
+                .ok_or("Read-only SHA pair requires four named fields.")?;
+            if exact.len()!=4
+                || !["first_path","first_sha256","second_path","second_sha256"]
+                    .iter().all(|name|exact.contains_key(*name)){
+                return Err("SHA pair must provide exactly two paths and two digests.".into());
+            }
+            let first_path=absolute_path(arg_string(&proposal.arguments,"first_path")?)?;
+            let second_path=absolute_path(arg_string(&proposal.arguments,"second_path")?)?;
+            let first_sha256=arg_string(&proposal.arguments,"first_sha256")?;
+            let second_sha256=arg_string(&proposal.arguments,"second_sha256")?;
+            let sha_ok=|s:&str|s.len()==64&&s.bytes().all(|b|
+                b.is_ascii_digit()||(b'a'..=b'f').contains(&b));
+            if !sha_ok(&first_sha256)||!sha_ok(&second_sha256)
+                ||first_path.eq_ignore_ascii_case(&second_path){
+                return Err("Two distinct canonical file paths and lowercase SHA-256 digests are required.".into());
+            }
+            let info=format!(
+                "Read-only SHA-256 pair: {} (SHA {}) AND {} (SHA {}) | two capped OS processes; independent native readback",
+                first_path,first_sha256,second_path,second_sha256
+            );
+            (ToolAction::VerifyReadOnlyShaPair{
+                first_path,first_sha256,second_path,second_sha256
+            },"Verify two files in isolated read-only SHA workers".into(),
+                info,RiskLevel::Medium)
+        }
+        "queue_readonly_sha_parent" => {
+            let exact=proposal.arguments.as_object()
+                .ok_or("SHA parent enrollment must be a named object.")?;
+            if exact.len()!=4||!["input_path","expected_sha256","priority","depends_on"]
+                .iter().all(|key|exact.contains_key(*key)){
+                return Err("Background parent requires exactly path, digest, priority and dependencies.".into());
+            }
+            let input_path=absolute_path(arg_string(&proposal.arguments,"input_path")?)?;
+            let expected_sha256=arg_string(&proposal.arguments,"expected_sha256")?;
+            if expected_sha256.len()!=64||!expected_sha256.bytes().all(|c|
+                c.is_ascii_digit()||(b'a'..=b'f').contains(&c)){
+                return Err("Background parent SHA must be exactly 64 lowercase hex characters.".into());
+            }
+            let priority=proposal.arguments.get("priority").and_then(Value::as_u64)
+                .filter(|n|*n<=2).ok_or("Background parent priority must be 0, 1 or 2.")? as u8;
+            let deps=proposal.arguments.get("depends_on").and_then(Value::as_array)
+                .ok_or("Background parent dependencies must be an array.")?;
+            if deps.len()>7{return Err("Background parent dependencies exceed seven.".into());}
+            let mut depends_on=Vec::new();
+            for item in deps{
+                let id=item.as_str().ok_or("Background dependency UUID must be a string.")?;
+                if uuid::Uuid::parse_str(id).map(|u|u.to_string()!=id).unwrap_or(true){
+                    return Err("Background dependency must be canonical UUID.".into());
+                }
+                depends_on.push(id.to_string());
+            }
+            depends_on.sort();
+            if depends_on.windows(2).any(|w|w[0]==w[1]){
+                return Err("Background parent dependency UUIDs must be distinct.".into());
+            }
+            let detail=format!("ENQUEUE ONLY (no launch): {} | expected SHA-256 {} | priority {} | prerequisite parents {:?}; requires separate explicit owner dispatch authorization.",
+                input_path,expected_sha256,priority,depends_on);
+            (ToolAction::QueueReadOnlyShaParent{input_path,expected_sha256,priority,depends_on},
+                "Approve ONE independent read-only SHA parent for durable queue".into(),detail,RiskLevel::Medium)
+        }
+        "run_approved_sha_parent_queue" => {
+            let obj=proposal.arguments.as_object()
+                .ok_or("Pinned background dispatch requires two named approved parent UUIDs.")?;
+            if obj.len()!=2||!["first_parent_id","second_parent_id"]
+                .iter().all(|key|obj.contains_key(*key)){
+                return Err("Pinned SHA dispatch requires EXACT first_parent_id and second_parent_id.".into());
+            }
+            let first_parent_id=arg_string(&proposal.arguments,"first_parent_id")?;
+            let second_parent_id=arg_string(&proposal.arguments,"second_parent_id")?;
+            if first_parent_id==second_parent_id||[&first_parent_id,&second_parent_id]
+                .iter().any(|id|uuid::Uuid::parse_str(id)
+                    .map(|u|u.to_string()!=**id).unwrap_or(true)){
+                return Err("Dispatch requires two distinct canonical approved parent UUIDs.".into());
+            }
+            let detail=format!("Explicit owner dispatch of EXACT parent UUIDs in priority order: {} then {}; both previously approved for SHA verification. No other queued IDs may run.",first_parent_id,second_parent_id);
+            (ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id},
+                "Run exactly two previously owner-approved SHA parent UUIDs".into(),
+                detail,RiskLevel::Medium)
         }
         "write_file" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
@@ -10128,6 +10233,12 @@ async fn execute_tool_with_action_id(
                 exit_code: Some(0),
             })
         }
+        // Never run the background process through the generic dispatch
+        // function (which may be used outside a prepared owner's action).
+        ToolAction::VerifyReadOnlyShaPair {..} =>
+            Err("SHA pair requires the existing exact approved native execute_action path.".into()),
+        ToolAction::QueueReadOnlyShaParent {..}|ToolAction::RunApprovedShaParentQueue {..} =>
+            Err("Background parent queue operations require exact owner-approved native execute_action.".into()),
         ToolAction::WriteFile { path, content } => {
             let target = Path::new(&path);
             let mut recovery_backup: Option<std::path::PathBuf> = None;
@@ -18744,11 +18855,23 @@ fn native_worker_status(
     let recovery=native_recovery::load(&app)?;
     let job=native_worker_job::read(&app)?;
     let now=now_ms();
-    Ok(native_worker_status::attach_durable_job(
-        native_worker_status::snapshot(
-            leased,&running,&started,recovery.as_ref(),now
+    let os_receipt=native_scheduler::owned_process::process_receipt::read(&app)?;
+    let resources=native_scheduler::resource_lanes::snapshot(&app)?;
+    let last_worker_stage=native_scheduler::worker_attestation::read_for_job(&app,job.as_ref())?;
+    Ok(native_worker_status::attach_attested_worker_stage(
+        native_worker_status::attach_resource_ownership(
+            native_worker_status::attach_owned_process_receipt(
+                native_worker_status::attach_durable_job(
+                    native_worker_status::snapshot(
+                        leased,&running,&started,recovery.as_ref(),now
+                    ),
+                    job.as_ref(),now
+                ),
+                os_receipt.as_ref()
+            ),
+            resources
         ),
-        job.as_ref(),now
+        last_worker_stage.as_ref()
     ))
 }
 
@@ -18861,6 +18984,309 @@ fn verify_premiere_project_sha256(
     native_premiere_project_sha::verify(
         &app,&action_id,&project_path,&expected_fnv1a64,expected_size_bytes
     )
+}
+#[tauri::command]
+fn native_task_delivery_history(app:AppHandle)->Result<native_task_delivery::history::DeliveryHistoryView,String>{
+    native_task_delivery::recent(&app)
+}
+#[tauri::command]
+fn native_task_delivery_verify_history(
+    first_action_id:String,app:AppHandle
+)->Result<native_task_delivery::VerifiedHistoricalDelivery,String>{
+    native_task_delivery::verify_historical(&app,&first_action_id)
+}
+/// Local owner-only observation of independent read-only Windows SHA jobs.
+/// This cannot approve, restart, cancel, or prove application editing results.
+/// The absent first-run data directory is empty; unexpected disk shapes fail
+/// closed and remain visible as unavailable instead of fabricated success.
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeBackgroundOwnerStatus{
+    schema_version:u32,
+    workers:Vec<NativeBackgroundOwnerWorker>,
+    process_liveness_verified:bool,
+    application_verified:bool,
+    safe_to_auto_retry:bool,
+}
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeBackgroundOwnerWorker{
+    action_id:String,
+    recorded_phase:String,
+    evidence_health:String,
+    current_file_rehashed:bool,
+    safe_to_auto_retry:bool,
+    stop_requested:bool,
+}
+// M54 owner-facing parent queue status remains a RECORD projection, never
+// an observation of a live PID, valid current digest, or application success.
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeApprovedParentQueueStatus{
+    schema_version:u32,
+    parents:Vec<NativeApprovedParentStatus>,
+    application_verified:bool,
+    process_liveness_verified:bool,
+    safe_to_auto_retry:bool,
+}
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeApprovedParentStatus{
+    parent_id:String,
+    recorded_phase:String,
+    priority:u8,
+    depends_on:Vec<String>,
+    current_file_sha256_verified:bool,
+    application_verified:bool,
+    process_liveness_verified:bool,
+    safe_to_auto_retry:bool,
+}
+/// M56 restart inspection schema must compile on non-Windows too;
+/// only its Windows implementation can read native OS admissions.
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeParentRecoveryView{
+    parent_id:String,
+    recorded_phase:String,
+    os_admission_phase:String,
+    stop_intent_recorded:bool,
+    current_sha256_reverified:bool,
+    owner_review_required:bool,
+    holds_resource:bool,
+    recorded_terminal_evidence:bool,
+    safe_to_auto_retry:bool,
+    application_verified:bool,
+    process_liveness_verified:bool,
+}
+/// M56 restart inspection is only an evidence reconciliation; it cannot
+/// assert live PID, current app status or release a parent resource lock.
+#[tauri::command]
+fn native_approved_parent_recovery_status(
+    app:AppHandle
+)->Result<Vec<NativeParentRecoveryView>,String>{
+    #[cfg(windows)]{
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Parent recovery directory unavailable.")?;
+        if fs::symlink_metadata(&root)
+            .is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound){
+            return Ok(Vec::new());
+        }
+        Ok(native_scheduler::background_os_workers::parent_queue::
+            recovery_snapshot_at(&root)?.into_iter().map(|v|NativeParentRecoveryView{
+                parent_id:v.parent_id,
+                recorded_phase:v.recorded_phase,
+                os_admission_phase:v.os_admission_phase,
+                stop_intent_recorded:v.stop_intent_recorded,
+                current_sha256_reverified:v.current_sha256_reverified,
+                owner_review_required:v.owner_review_required,
+                holds_resource:v.holds_resource,
+                recorded_terminal_evidence:v.recorded_terminal_evidence,
+                safe_to_auto_retry:false,
+                application_verified:false,
+                process_liveness_verified:false,
+            }).collect())
+    }
+    #[cfg(not(windows))]{
+        let _=app;
+        Err("Windows native parent recovery requires Windows.".into())
+    }
+}
+/// This owner review ONLY changes ADMITTED -> UNKNOWN, retains RAM/resource
+/// claims and never marks completed, replays an OS worker or kills any PID.
+/// Separate prior owner-approved read-only inspection is mandatory.
+#[tauri::command]
+fn review_native_approved_parent_uncertain(
+    parent_id:String,
+    inspection_action_id:String,
+    confirmation:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<bool,String>{
+    #[cfg(windows)]{
+        if confirmation!="REVIEW PARENT UNKNOWN"{
+            return Err("Exact owner confirmation REVIEW PARENT UNKNOWN is required.".into());
+        }
+        let valid=|id:&str|uuid::Uuid::parse_str(id)
+            .map(|u|u.to_string()==id).unwrap_or(false);
+        if !valid(&parent_id)||!valid(&inspection_action_id)
+            ||parent_id==inspection_action_id{
+            return Err("Owner recovery requires two distinct exact UUIDs.".into());
+        }
+        // A running native dispatcher is not part of a concluded recovery.
+        // Recovery must NOT claim a live OS process is stopped.
+        let _lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+        if !state.running_action_tools.lock()
+            .map_err(|_|"Recovery native running state poisoned.")?.is_empty()
+            ||!state.pending.lock()
+                .map_err(|_|"Unresolved owner approvals unavailable.")?.is_empty(){
+            return Err("Resolve current executing/pending actions before parent recovery review.".into());
+        }
+        let original=read_action_audit_receipt(&app,&parent_id)?
+            .ok_or("Approved parent enqueue audit UUID unavailable.")?;
+        if original.event!="executed"||!original.success
+            ||original.tool!="queue_readonly_sha_parent"{
+            return Err("Parent UUID lacks a separate successfully approved enqueue receipt.".into());
+        }
+        let inspection=read_action_audit_receipt(&app,&inspection_action_id)?
+            .ok_or("Separate owner-approved read-only inspection receipt unavailable.")?;
+        if inspection.event!="executed"||!inspection.success
+            ||inspection.timestamp_ms<=original.timestamp_ms
+            ||!matches!(inspection.tool.as_str(),
+                "list_processes"|"read_file"|"list_directory"|"workspace_scan"|
+                "search_text"|"git_status"|"git_diff"|"native_background_readonly_status"){
+            return Err("Later independent approved read-only inspection required.".into());
+        }
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Recovery journal root unavailable.")?;
+        let changed=native_scheduler::background_os_workers::parent_queue::
+            mark_owner_reviewed_uncertain_at(&root,&parent_id)?;
+        append_audit(&app,&AuditEntry{
+            timestamp_ms:now_ms(),
+            event:"native_parent_owner_reviewed_unknown".into(),
+            tool:"queue_readonly_sha_parent".into(),
+            detail:format!("Owner reviewed exact parent {} after separate read-only inspection. Durable resource remains HELD; PID termination, SHA success, auto-retry and unlock NOT granted.",parent_id),
+            success:false,
+            action_id:Some(parent_id),
+        })?;
+        Ok(changed)
+    }
+    #[cfg(not(windows))]{
+        let _=(parent_id,inspection_action_id,confirmation,state,app);
+        Err("Parent unknown recovery review requires Windows.".into())
+    }
+}
+/// M57: exact owner consent + a separately approved read-only process
+/// inspection + PRIOR M56 UNKNOWN owner review + matching M46 OS terminal
+/// journal and native OS Job receipt. Any missing proof retains held claim.
+/// This does NOT prove application success, file SHA, or PID liveness.
+#[tauri::command]
+fn reconcile_native_approved_parent_terminal(
+    parent_id:String,
+    inspection_action_id:String,
+    confirmation:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<bool,String>{
+    #[cfg(windows)]{
+        if confirmation!="RECONCILE TERMINAL UNKNOWN" {
+            return Err("Exact owner confirmation RECONCILE TERMINAL UNKNOWN is required.".into());
+        }
+        let valid=|id:&str|uuid::Uuid::parse_str(id)
+            .map(|u|u.to_string()==id).unwrap_or(false);
+        if !valid(&parent_id)||!valid(&inspection_action_id)
+            ||parent_id==inspection_action_id {
+            return Err("Reconciliation requires distinct canonical parent and inspection UUIDs.".into());
+        }
+        let _lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+        if !state.running_action_tools.lock()
+            .map_err(|_|"Current native action status inaccessible.")?.is_empty()
+            ||!state.pending.lock()
+                .map_err(|_|"Native permission queue unreadable.")?.is_empty(){
+            return Err("No active or unresolved permissioned actions may overlap reconciliation.".into());
+        }
+        let parent=read_action_audit_receipt(&app,&parent_id)?
+            .ok_or("Missing independently owner-approved parent enqueue audit.")?;
+        if parent.event!="executed"||!parent.success
+            ||parent.tool!="queue_readonly_sha_parent"{
+            return Err("Exact parent lacks owner-approved durable queue enrollment.".into());
+        }
+        let inspection=read_action_audit_receipt(&app,&inspection_action_id)?
+            .ok_or("Missing separately approved read-only process inspection audit.")?;
+        if inspection.event!="executed"||!inspection.success
+            ||inspection.timestamp_ms<=parent.timestamp_ms
+            ||inspection.tool!="list_processes"{
+            return Err("A later, separate owner-approved list_processes inspection is mandatory.".into());
+        }
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Cannot locate exact parent OS recovery journal.")?;
+        // A refused operation must not silently clear a held claim. Store
+        // intent with success=false even if evidence subsequently mismatches.
+        append_audit(&app,&AuditEntry{
+            timestamp_ms:now_ms(),
+            event:"native_parent_terminal_reconciliation_requested".into(),
+            tool:"queue_readonly_sha_parent".into(),
+            detail:format!("Owner requests OS-terminal-only reconciliation for exact parent {}; no application success, retry or PID liveness asserted.",parent_id),
+            success:false,
+            action_id:Some(parent_id.clone()),
+        })?;
+        let changed=native_scheduler::background_os_workers::parent_queue::
+            reconcile_owned_terminal_at(&root,&parent_id)?;
+        append_audit(&app,&AuditEntry{
+            timestamp_ms:now_ms(),
+            event:"native_parent_os_terminal_reconciled_unverified".into(),
+            tool:"queue_readonly_sha_parent".into(),
+            detail:format!("Exact parent {} OS terminal double-journal evidence owner reconciled; original parent UUID spent. Resource was released ONLY for new separate owner-approved jobs. SHA/app verification false.",parent_id),
+            success:false,
+            action_id:Some(parent_id),
+        })?;
+        Ok(changed)
+    }
+    #[cfg(not(windows))]{
+        let _=(parent_id,inspection_action_id,confirmation,state,app);
+        Err("Parent terminal reconciliation requires Windows.".into())
+    }
+}
+#[tauri::command]
+fn native_approved_parent_queue_status(app:AppHandle)->Result<NativeApprovedParentQueueStatus,String>{
+    #[cfg(windows)]{
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Approved parent status directory unavailable.")?;
+        let items=match fs::symlink_metadata(&root){
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Vec::new(),
+            Err(_)=>return Err("Approved parent directory inaccessible.".into()),
+            Ok(_)=>native_scheduler::background_os_workers::parent_queue::snapshot_at(&root)?,
+        };
+        Ok(NativeApprovedParentQueueStatus{
+            schema_version:1,
+            parents:items.into_iter().map(|parent|NativeApprovedParentStatus{
+                parent_id:parent.parent_id,
+                recorded_phase:parent.phase,
+                priority:parent.priority,
+                depends_on:parent.depends_on,
+                current_file_sha256_verified:false,
+                application_verified:false,
+                process_liveness_verified:false,
+                safe_to_auto_retry:false,
+            }).collect(),
+            application_verified:false,process_liveness_verified:false,safe_to_auto_retry:false,
+        })
+    }
+    #[cfg(not(windows))]{
+        let _=app;
+        Err("Approved background parent status requires Windows.".into())
+    }
+}
+#[tauri::command]
+fn native_background_readonly_status(app:AppHandle)->Result<NativeBackgroundOwnerStatus,String>{
+    #[cfg(windows)]
+    {
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Native background status directory unavailable.")?;
+        let items=match fs::symlink_metadata(&root){
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Vec::new(),
+            Err(_)=>return Err("Native background directory cannot be inspected.".into()),
+            Ok(_)=>native_scheduler::background_os_workers::inspect_readonly_health(&root)?,
+        };
+        Ok(NativeBackgroundOwnerStatus{
+            schema_version:1,
+            workers:items.into_iter().map(|item|NativeBackgroundOwnerWorker{
+                action_id:item.action_id,
+                recorded_phase:item.recorded_phase,
+                evidence_health:item.evidence_health,
+                current_file_rehashed:item.current_file_rehashed,
+                safe_to_auto_retry:false,
+                stop_requested:item.stop_requested,
+            }).collect(),
+            process_liveness_verified:false,
+            application_verified:false,
+            safe_to_auto_retry:false,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _=app;
+        Err("Independent Windows OS background worker status requires Windows.".into())
+    }
 }
 #[tauri::command]
 fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
@@ -19027,6 +19453,79 @@ fn deny_action(
     Ok(())
 }
 
+/// Domain-separated native child identity. All child process approvals are
+/// under the one immutable parent UUID already created by owner's Allow flow.
+#[cfg(windows)]
+fn native_sha_child_uuid(owner_action_id:&str,index:u8)->String{
+    use sha2::Digest;
+    let seed=sha2::Sha256::digest(
+        format!("shuvi-readonly-pair-v1:{}:{}",owner_action_id,index).as_bytes());
+    let mut raw=[0u8;16];
+    raw.copy_from_slice(&seed[..16]);
+    raw[6]=(raw[6]&0x0f)|0x40;
+    raw[8]=(raw[8]&0x3f)|0x80;
+    uuid::Uuid::from_bytes(raw).to_string()
+}
+/// M55: authorization is from the CURRENT executing owner's exact prepared
+/// dispatch action, not from an old queue record, guessed PID or status poll.
+#[cfg(windows)]
+fn require_live_approved_parent_stop_binding(
+    state:&ActionState,dispatch_id:&str,parent_id:&str
+)->Result<(),String>{
+    if uuid::Uuid::parse_str(dispatch_id)
+        .map(|u|u.to_string()!=dispatch_id).unwrap_or(true)
+        ||uuid::Uuid::parse_str(parent_id)
+            .map(|u|u.to_string()!=parent_id).unwrap_or(true){
+        return Err("Stop requires canonical dispatch and parent UUIDs.".into());
+    }
+    let running=state.running_action_tools.lock()
+        .map_err(|_|"Running action ledger poisoned; Stop requires owner review.")?;
+    if running.get(dispatch_id).map(String::as_str)!=Some("run_approved_sha_parent_queue"){
+        return Err("Exact approved parent dispatch is not currently executing.".into());
+    }
+    let bindings=state.running_approved_parent_ids.lock()
+        .map_err(|_|"Parent Stop authorization map poisoned; owner review required.")?;
+    let ids=bindings.get(dispatch_id)
+        .ok_or("No active immutable approved parent binding for dispatch.")?;
+    if ids[0]!=parent_id&&ids[1]!=parent_id {
+        return Err("Parent UUID was not in the owner's exact approved dispatch pair.".into());
+    }
+    Ok(())
+}
+/// Stop is only a durable intent for an OS-owned worker; NOT termination.
+/// It never takes the desktop execution lease, because the approved dispatcher
+/// is expected to hold that lease until both children return.
+#[tauri::command]
+fn cancel_native_approved_parent(
+    dispatch_action_id:String,
+    parent_id:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<bool,String>{
+    #[cfg(windows)]{
+        require_live_approved_parent_stop_binding(state.inner(),
+            &dispatch_action_id,&parent_id)?;
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Approved parent Stop journal unavailable.")?;
+        let requested=native_scheduler::background_os_workers::parent_queue::
+            request_exact_parent_stop_at(&root,&parent_id)?;
+        if requested{
+            append_audit(&app,&AuditEntry{
+                timestamp_ms:now_ms(),
+                event:"native_approved_parent_stop_intent".into(),
+                tool:"run_approved_sha_parent_queue".into(),
+                detail:format!("Exact approved background parent {} Stop intent persisted; actual OS termination NOT verified.",parent_id),
+                success:false,
+                action_id:Some(dispatch_action_id),
+            })?;
+        }
+        Ok(requested)
+    }
+    #[cfg(not(windows))]{
+        let _=(dispatch_action_id,parent_id,state,app);
+        Err("Approved background parent Stop requires Windows.".into())
+    }
+}
 #[tauri::command]
 fn cancel_running_action(
     action_id: String,
@@ -19071,6 +19570,32 @@ fn cancel_running_action(
             .get(&action_id)
             .cloned();
         match active_tool.as_deref() {
+            Some("verify_readonly_sha_pair") => {
+                // No arbitrary PID or shell kill command: only this already
+                // executing parent UUID can durably request its two exact
+                // child Job Objects to stop. true means REQUESTED, not ended.
+                #[cfg(windows)]
+                {
+                    let root=app.path().app_data_dir()
+                        .map_err(|_|"Background Stop root unavailable.")?;
+                    let first=native_sha_child_uuid(&action_id,0);
+                    let second=native_sha_child_uuid(&action_id,1);
+                    let a=native_scheduler::background_os_workers::request_stop_for_child(&root,&first);
+                    let b=native_scheduler::background_os_workers::request_stop_for_child(&root,&second);
+                    return match (a,b){
+                        (Ok(x),Ok(y))=>Ok(x||y),
+                        _=>Err("Background Stop request could be partial or unavailable; inspect each native OS receipt before assuming termination.".into()),
+                    };
+                }
+                #[cfg(not(windows))]
+                {return Err("Read-only SHA pair Stop requires Windows.".into());}
+            }
+            Some("blender_inspect") | Some("blender_run_plan") => {
+                // Only a live, UUID-owned Job Object can accept this request.
+                // The worker itself performs kill-on-close tree termination
+                // and records the durable cancelled OS outcome.
+                return native_scheduler::owned_process::request_cancel_exact_persisted(&app,&action_id);
+            }
             Some("run_project_task") | Some("powershell") | Some("motion_graphics_run_remotion") => {}
             Some(_) | None => return Ok(false),
         }
@@ -19154,7 +19679,7 @@ async fn execute_action(
     ensure_memory_budget(state.inner())?;
     // Serialize native typed-tool execution. A plan's browser-only worker
     // count is not an execution lock; the Rust guard is the authority.
-    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
+    let mut native_slot=Some(claim_monitored_native_execution(state.inner(),&app)?);
 
     let (action, expired_action) = {
         let mut pending = state
@@ -19227,6 +19752,14 @@ async fn execute_action(
     }
     let action = action.ok_or_else(|| "Prepared action could not be claimed for execution.".to_string())?;
 
+    // M55: only the real prepared/allowed dispatch may bind these exact UUIDs.
+    // No untrusted read-only status, AI text or FIFO queue selection can bind them.
+    if let ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id}
+        =&action.action{
+        state.running_approved_parent_ids.lock()
+            .map_err(|_|"Cannot bind owner-approved parent Stop identities.")?
+            .insert(action_id.clone(),[first_parent_id.clone(),second_parent_id.clone()]);
+    }
     let tool = action.tool.clone();
     let scheduled_step=action.task_step_id.clone();
     let detail = action.detail.clone();
@@ -19234,12 +19767,158 @@ async fn execute_action(
     // Supervisor ticks are host-process liveness evidence only; they
     // cannot grant progress, unlock other workers, or auto-retry.
     let pulse=native_worker_job::SupervisorPulse::start(app.clone(),action_id.clone());
-    let execution = execute_tool_with_action_id(
-        action,
-        state.inner(),
-        &app,
-        Some(action_id.as_str()),
-    ).await;
+    // Only a previously approved DAG step may opt into the new PID-owned
+    // Blender read-only worker. Existing standalone/manual Blender inspection
+    // and every other tool retain their current adapter behavior.
+    let execution=if let ToolAction::VerifyReadOnlyShaPair{
+        first_path,first_sha256,second_path,second_sha256
+    }=&action.action {
+        #[cfg(windows)]
+        {
+            (||->Result<ActionResult,String>{
+                // Stop and Execute share one deterministic UUID mapping.
+                let sub_id=|index:u8|native_sha_child_uuid(&action_id,index);
+                let owner_ram=||->Result<bool,String>{
+                    let status=current_runtime_status(state.inner())?;
+                    // Neither isolated child is counted as a normal managed
+                    // GUI process, so reserve BOTH 512 MiB job ceilings in
+                    // the combined 4 GiB ceiling before/while running.
+                    Ok(status.shuvi_memory_mb+1024.0>=HARD_LIMIT_MB)
+                };
+                let root=app.path().app_data_dir()
+                    .map_err(|_|"Native read-only admission storage unavailable.")?;
+                fs::create_dir_all(&root)
+                    .map_err(|_|"Cannot create native read-only admission directory.")?;
+                if owner_ram()?{
+                    return Err("Two reserved 512 MiB SHA workers exceed the 4 GiB Shuvi RAM ceiling.".into());
+                }
+                let left_id=sub_id(0);
+                let right_id=sub_id(1);
+                let [left,right]=native_scheduler::background_os_workers::run_internal_readonly_pair(
+                    &root,[
+                        native_scheduler::background_os_workers::PreparedReadOnlySha{
+                            action_id:&left_id,input:Path::new(first_path),
+                            expected_sha256:first_sha256
+                        },
+                        native_scheduler::background_os_workers::PreparedReadOnlySha{
+                            action_id:&right_id,input:Path::new(second_path),
+                            expected_sha256:second_sha256
+                        }
+                    ],&owner_ram
+                );
+                // Both independent file-handle readbacks must pass. One
+                // successful result NEVER upgrades its failed sibling.
+                let verified_left=left?;
+                let verified_right=right?;
+                let stdout=serde_json::to_string(&json!({
+                    "readOnlySha256Verified":true,
+                    "ownerActionId":action_id,
+                    "children":[
+                        {"actionId":verified_left.action_id,"pid":verified_left.os_pid,
+                            "sha256":verified_left.sha256,"bytes":verified_left.bytes},
+                        {"actionId":verified_right.action_id,"pid":verified_right.os_pid,
+                            "sha256":verified_right.sha256,"bytes":verified_right.bytes}
+                    ],
+                    "applicationVerified":false,
+                    "desktopMutated":false
+                })).map_err(|_|"Unable to serialize native SHA verification.")?;
+                Ok(ActionResult{
+                    success:true,tool:tool.clone(),stdout,
+                    stderr:String::new(),exit_code:Some(0)
+                })
+            })()
+        }
+        #[cfg(not(windows))]
+        {
+            Err("Independent read-only SHA OS workers require Windows.".into())
+        }
+    } else if let ToolAction::QueueReadOnlyShaParent{
+        input_path,expected_sha256,priority,depends_on
+    }=&action.action {
+        #[cfg(windows)]
+        {
+            (||->Result<ActionResult,String>{
+                let root=app.path().app_data_dir()
+                    .map_err(|_|"Native parent queue data directory unavailable.")?;
+                fs::create_dir_all(&root).map_err(|_|"Cannot open native parent queue directory.")?;
+                let deps:Vec<&str>=depends_on.iter().map(String::as_str).collect();
+                native_scheduler::background_os_workers::parent_queue::enqueue_approved_at(
+                    &root,native_scheduler::background_os_workers::parent_queue::ApprovedParent{
+                        id:&action_id,input:Path::new(input_path),
+                        sha256:expected_sha256,depends_on:&deps,priority:*priority,
+                    })?;
+                let stdout=serde_json::to_string(&json!({
+                    "ownerApprovedParentId":action_id,"queued":true,
+                    "sha256Verified":false,"applicationVerified":false,"workerLaunched":false
+                })).map_err(|_|"Cannot serialize approved parent queue receipt.")?;
+                Ok(ActionResult{success:true,tool:tool.clone(),stdout,
+                    stderr:String::new(),exit_code:Some(0)})
+            })()
+        }
+        #[cfg(not(windows))]{Err("Owner-approved background parents require Windows.".into())}
+     } else if let ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id}=&action.action {
+        #[cfg(windows)]
+        {
+            (||->Result<ActionResult,String>{
+                let root=app.path().app_data_dir()
+                    .map_err(|_|"Native parent queue directory unavailable.")?;
+                fs::create_dir_all(&root).map_err(|_|"Cannot open native parent queue directory.")?;
+                // Both independent child Job Objects reserve 512 MiB each.
+                // Preserve the original 4 GiB host ceiling even on sparse load.
+                let owner_ram=||->Result<bool,String>{
+                    let status=current_runtime_status(state.inner())?;
+                    Ok(status.shuvi_memory_mb+1024.0>=HARD_LIMIT_MB)
+                };
+                if owner_ram()?{return Err("Two reserved SHA parents exceed 4 GiB Shuvi budget.".into());}
+                let [left,right]=native_scheduler::background_os_workers::parent_queue::run_exact_approved_pair(
+                    &root,[first_parent_id.as_str(),second_parent_id.as_str()],&owner_ram);
+                let a=left?;let b=right?;
+                let verified:Vec<_>=[a,b].into_iter().map(|e|json!({
+                    "parentId":e.action_id,"sha256":e.sha256,
+                    "bytes":e.bytes,"osPid":e.os_pid,
+                })).collect();
+                if verified.len()!=2 {return Err("Pinned owner-approved parent pair result incomplete.".into());}
+                let stdout=serde_json::to_string(&json!({
+                    "verifiedParents":verified,"currentFileSha256Verified":true,
+                    "applicationVerified":false,"desktopMutated":false
+                })).map_err(|_|"Cannot encode background parent results.")?;
+                Ok(ActionResult{success:true,tool:tool.clone(),stdout,
+                    stderr:String::new(),exit_code:Some(0)})
+            })()
+        }
+        #[cfg(not(windows))]{Err("Background parent execution requires Windows.".into())}
+    } else if scheduled_step.is_some(){
+        if let ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation}=&action.action {
+            native_blender_owned_adapter::inspect(
+                &app,state.inner(),&mut native_slot,&action_id,
+                python_exe,blender_exe,blend_file.as_deref(),operation,
+            ).map(|evidence|ActionResult{
+                success:true,tool:tool.clone(),
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }else if let ToolAction::BlenderRunPlan {
+            python_exe,blender_exe,blend_file,output_dir,allow_render,plan
+        }=&action.action {
+            native_blender_owned_plan::execute(
+                &app,state.inner(),&mut native_slot,&action_id,
+                python_exe,blender_exe,blend_file.as_deref(),
+                output_dir,plan,*allow_render,
+            ).map(|evidence|ActionResult{
+                success:true,tool:tool.clone(),
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }else{
+            execute_tool_with_action_id(
+                action,state.inner(),&app,Some(action_id.as_str())
+            ).await
+        }
+    }else{
+        execute_tool_with_action_id(
+            action,state.inner(),&app,Some(action_id.as_str())
+        ).await
+    };
     drop(pulse);
 
     if let Ok(mut running) = state.running_action_tools.lock() {
@@ -19251,6 +19930,11 @@ async fn execute_action(
     }
     if let Ok(mut children) = state.running_action_children.lock() {
         children.remove(&action_id);
+    }
+    // Removal is after the current action tools record; a racing Stop request
+    // cannot authorize a new or completed action from leftover parent IDs.
+    if let Ok(mut bound)=state.running_approved_parent_ids.lock(){
+        bound.remove(&action_id);
     }
 
     match execution {
@@ -19739,8 +20423,15 @@ pub fn run() {
             native_worker_history,
             native_task_delivery_status,
             verify_premiere_project_sha256,
+            native_task_delivery_history,
+            native_task_delivery_verify_history,
             finalize_native_task_delivery,
             native_scheduler_status,
+            native_background_readonly_status,
+            native_approved_parent_queue_status,
+            native_approved_parent_recovery_status,
+            review_native_approved_parent_uncertain,
+            reconcile_native_approved_parent_terminal,
             review_native_scheduler_failure,
             reconcile_native_worker_job,
             prepare_tool,
@@ -19749,6 +20440,7 @@ pub fn run() {
             revoke_task_read_grants,
             deny_action,
             cancel_running_action,
+            cancel_native_approved_parent,
             execute_action,
             execute_powershell,
             audit_log,
@@ -19869,6 +20561,93 @@ mod task_graph_transport_tests {
         assert!(!matches!("task_step_completed","executed"|"failed"|"denied"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn m54_parent_enrollment_requires_exact_fields_and_preserves_prepared_uuid(){
+        let state=ActionState::default();
+        let input=std::env::temp_dir().join("shuvi-m54-owner-sha-input.bin")
+            .display().to_string();
+        let valid=json!({
+            "input_path":input,"expected_sha256":"a".repeat(64),
+            "priority":1,"depends_on":[]
+        });
+        let proposal=|arguments:Value|ToolProposal{
+            tool:"queue_readonly_sha_parent".into(),arguments,
+            reason:Some("Explicit owner approval to enqueue only".into()),
+            plan:None,task_graph:None,task_step_id:None,task_recovery:None,
+        };
+        let approved=stage_tool(proposal(valid.clone()),None,&state).unwrap();
+        assert!(matches!(approved.risk,RiskLevel::Medium));
+        let ledger=state.pending.lock().unwrap();
+        let staged=ledger.get(&approved.id).expect("exact prepared UUID must persist");
+        assert_eq!(staged.tool,"queue_readonly_sha_parent");
+        assert!(matches!(&staged.action,
+            ToolAction::QueueReadOnlyShaParent{priority:1,depends_on,..} if depends_on.is_empty()));
+        drop(ledger);
+        let mut extra=valid.clone();
+        extra["executable"]=json!("C:/windows/system32/cmd.exe");
+        assert!(stage_tool(proposal(extra),None,&state).is_err());
+        let mut bad_priority=valid.clone();
+        bad_priority["priority"]=json!(3);
+        assert!(stage_tool(proposal(bad_priority),None,&state).is_err());
+        let mut bad_hash=valid.clone();
+        bad_hash["expected_sha256"]=json!("A".repeat(64));
+        assert!(stage_tool(proposal(bad_hash),None,&state).is_err());
+        let mut missing=valid.clone();
+        missing.as_object_mut().unwrap().remove("depends_on");
+        assert!(stage_tool(proposal(missing),None,&state).is_err());
+        assert_eq!(state.pending.lock().unwrap().len(),1);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn m55_exact_stop_binding_cannot_reach_foreign_or_completed_parent(){
+        let state=ActionState::default();
+        const ACTION:&str="ad98b59c-4a66-4f7a-941e-8a26b66755be";
+        const PARENT_A:&str="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
+        const PARENT_B:&str="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
+        const FOREIGN:&str="3ac5c21a-8407-4ed7-b4b7-f51ba437a491";
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_err());
+        state.running_action_tools.lock().unwrap()
+            .insert(ACTION.into(),"run_approved_sha_parent_queue".into());
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_err());
+        state.running_approved_parent_ids.lock().unwrap()
+            .insert(ACTION.into(),[PARENT_A.into(),PARENT_B.into()]);
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_ok());
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_B).is_ok());
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,FOREIGN).is_err());
+        assert!(require_live_approved_parent_stop_binding(&state,"not-a-uuid",PARENT_A).is_err());
+        state.running_action_tools.lock().unwrap().remove(ACTION);
+        assert!(require_live_approved_parent_stop_binding(&state,ACTION,PARENT_A).is_err());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn m54_parent_dispatch_preparation_never_launches_without_separate_allow(){
+        let state=ActionState::default();
+        let make=|arguments:Value|ToolProposal{
+            tool:"run_approved_sha_parent_queue".into(),arguments,
+            reason:Some("Explicit owner dispatch permission".into()),
+            plan:None,task_graph:None,task_step_id:None,task_recovery:None,
+        };
+        let prepared=stage_tool(make(json!({
+            "first_parent_id":"e8b36b21-1c6a-459e-9b6f-75dd5692ab81",
+            "second_parent_id":"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"
+        })),None,&state).unwrap();
+        assert!(matches!(prepared.risk,RiskLevel::Medium));
+        let ledger=state.pending.lock().unwrap();
+        assert!(matches!(&ledger.get(&prepared.id).unwrap().action,
+            ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id}
+                if first_parent_id=="e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+                &&second_parent_id=="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"));
+        drop(ledger);
+        assert!(stage_tool(make(json!({"pid":42})),None,&state).is_err());
+        assert!(stage_tool(make(json!({})),None,&state).is_err());
+        assert!(stage_tool(make(json!({
+            "first_parent_id":"e8b36b21-1c6a-459e-9b6f-75dd5692ab81",
+            "second_parent_id":"e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+        })),None,&state).is_err());
+        assert!(stage_tool(make(json!({"command":"calc.exe"})),None,&state).is_err());
+        assert_eq!(state.pending.lock().unwrap().len(),1);
+    }
     #[test]
     fn discarded_legacy_description_does_not_erase_graph_restrictions() {
         let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},

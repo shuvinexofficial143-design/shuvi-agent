@@ -43,9 +43,14 @@ import type {
   ProviderDescriptor,
   RuntimeStatus,
   NativeWorkerStatus,
+  NativeBackgroundOwnerStatus,
+  NativeApprovedParentQueueStatus,
+  NativeApprovedParentRecoveryView,
   NativeJobHistory,
   NativeSchedule,
   NativeTaskDelivery,
+  NativeCompletedDeliveryHistory,
+  NativeHistoricalDeliveryVerification,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
@@ -96,6 +101,8 @@ let nativeHostStatus: NativeWorkerStatus | null = null;
 let nativeHostStatusUnavailable = true;
 let nativeHostReadPending = false;
 let nativeHistoryReadPending = false;
+let nativeBackgroundReadPending = false;
+let nativeParentQueueReadPending = false;
 let nativeSchedulerReadPending = false;
 let failedSchedulerStep: {stepId:string;actionId:string}|null = null;
 let masterEmptyToolReplies = 0;
@@ -227,8 +234,29 @@ root.innerHTML = `
         <summary>Premiere project verification</summary>
         <div id="premiereProjectProofStatus" role="status">No task-bound project evidence. Original goal UNVERIFIED.</div>
       </details>
+      <details id="nativeCompletedDeliveries" class="ram-children">
+        <summary>Completed tasks (archived, not currently verified)</summary>
+        <button id="loadNativeCompletedDeliveries" type="button">Show completed tasks</button>
+        <div id="nativeCompletedDeliveriesList">Archive not yet inspected.</div>
+      </details>
       <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
       <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
+      <details id="nativeResourceClaims" class="ram-children">
+        <summary id="nativeResourceClaimsSummary">Reserved outputs: not checked</summary>
+        <div id="nativeResourceClaimsList">Waiting for trusted Rust ownership status.</div>
+      </details>
+      <details id="nativeBackgroundHealth" class="ram-children">
+        <summary id="nativeBackgroundHealthSummary">Background SHA workers: not checked</summary>
+        <button id="refreshNativeBackgroundHealth" type="button">Recheck SHA evidence</button>
+        <button id="requestNativeBackgroundStop" class="hidden" type="button">Request Stop for approved SHA pair</button>
+        <small id="nativeBackgroundStopMessage">Stop is available only while an owner-approved SHA pair is active.</small>
+        <div id="nativeBackgroundHealthList">Waiting for exact Rust journal readback.</div>
+      </details>
+      <details id="nativeApprovedParentQueue" class="ram-children">
+        <summary id="nativeApprovedParentQueueSummary">Independently approved parents: not checked</summary>
+        <button id="refreshNativeApprovedParentQueue" type="button">Recheck parent queue</button>
+        <div id="nativeApprovedParentQueueList">Awaiting durable Rust read-only snapshot.</div>
+      </details>
       <details id="nativeActionHistory" class="ram-children">
         <summary>Native action history</summary>
         <div id="nativeActionHistoryList">History not yet checked</div>
@@ -689,10 +717,14 @@ function currentCheckpoint(): SessionCheckpoint {
 function nativeWorkerDisplay(): string {
   if (nativeHostStatusUnavailable || !nativeHostStatus) return "Host worker: unavailable (do not infer idle)";
   const host = nativeHostStatus;
+  const signed=host.attestedWorkerStage
+    ? "; archived Rust-recorded HMAC-checked Python stage: "+host.attestedWorkerStage+
+      " (NOT fresh HMAC proof, Blender success or OS liveness)"
+    : "";
   if (host.requiresOwnerReview || host.state === "recovery_required")
-    return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry";
+    return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry"+signed;
   if (host.durableJobPhase === "owner_reviewed_unknown")
-    return "Host worker: last interrupted action reviewed as UNKNOWN; never marked successful or retried";
+    return "Host worker: last interrupted action reviewed as UNKNOWN; never marked successful or retried"+signed;
   if (host.state === "native_action_in_flight") {
     const pulse=host.supervisorHealth==="rust_supervisor_observed"
       ? "Rust supervisor check-in "+Math.floor((host.supervisorHeartbeatAgeMs??0)/1000)+"s ago"
@@ -703,11 +735,75 @@ function nativeWorkerDisplay(): string {
           : "No independently attributed supervisor heartbeat";
     return "Host worker: native action active ("+(host.tool ?? "unknown")+
       ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; "+
-      pulse+"; NOT a progress heartbeat)";
+      pulse+signed+"; NOT a progress heartbeat)";
   }
   if (host.state === "lease_held_unattributed")
     return "Host lease occupied — action identity not independently attributed";
   return "Host worker: no action in this process (other instances unknown)";
+}
+// Display only owner-readable Rust evidence; never infer liveness, replay,
+// unlock a resource or build HTML from a filesystem path/worker payload.
+function renderResourceClaims(): void {
+  const title=el<HTMLElement>("#nativeResourceClaimsSummary");
+  const output=el<HTMLElement>("#nativeResourceClaimsList");
+  output.replaceChildren();
+  const host=nativeHostStatusUnavailable?null:nativeHostStatus;
+  if (!host) {
+    title.textContent="Reserved outputs: unavailable";
+    output.textContent="Ownership status unavailable. Do not infer that outputs are free.";
+    return;
+  }
+  const claims=host.resourceClaims;
+  title.textContent="Reserved outputs ("+claims.length+")";
+  if (!claims.length) {
+    output.textContent="No held output claims in this journal. This does not verify past app results.";
+    return;
+  }
+  const allowed=new Set([
+    "worker_journal_running_os_liveness_unverified",
+    "successful_audit_output_still_held",
+    "failed_action_output_requires_review",
+    "reviewed_unknown_output_still_held",
+    "orphaned_or_previous_action_requires_owner_review"
+  ]);
+  for(const claim of claims){
+    const row=document.createElement("div");
+    row.className="native-resource-row";
+    const heading=document.createElement("strong");
+    heading.textContent=claim.tool+" · "+claim.actionId.slice(0,8);
+    row.append(heading);
+    const description=document.createElement("small");
+    const reason=allowed.has(claim.health)?claim.health.replaceAll("_"," "):"ownership review required";
+    const path=claim.writePaths[0]??"output path unavailable";
+    description.textContent=reason+" · output: "+path.slice(-230);
+    row.append(description);
+    if(claim.approvedPlanSha256){
+      const digest=document.createElement("small");
+      digest.textContent="Approved plan SHA-256: "+claim.approvedPlanSha256.slice(0,16)+"…";
+      row.append(digest);
+    }
+    output.append(row);
+  }
+}
+function resourceClaimsValid(host:NativeWorkerStatus): boolean {
+  const claimed=host.resourceClaims;
+  const validUUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  return (host.resourceOwnershipHealth==="no_held_output_claims"
+      ||host.resourceOwnershipHealth==="output_resources_still_reserved")
+    &&Array.isArray(claimed)&&claimed.length<=12
+    &&host.resourceHeldCount===claimed.length
+    &&Number.isInteger(host.resourceRetiredRecentCount)
+    &&host.resourceRetiredRecentCount>=0&&host.resourceRetiredRecentCount<=48
+    &&claimed.every(item=>
+      validUUID.test(item.actionId)&&item.tool==="blender_run_plan"
+      &&item.evidenceVerified===false&&item.safeToAutoRetry===false
+      &&Array.isArray(item.writePaths)&&item.writePaths.length===1
+      &&Array.isArray(item.readPaths)&&item.readPaths.length<=1
+      &&[...item.writePaths,...item.readPaths].every(p=>typeof p==="string"
+        &&p.length>0&&p.length<=4096&&!/[\u0000-\u001f]/.test(p))
+      &&(item.approvedPlanSha256===null
+        ||/^[a-f0-9]{64}$/.test(item.approvedPlanSha256))
+    );
 }
 // Only a read-only Rust IPC call can update host ownership observations.
 // Never use the web graph or this UI timer to grant another native lease.
@@ -717,7 +813,16 @@ async function refreshNativeWorkerStatus(): Promise<void> {
   try{
     const status=await invoke<NativeWorkerStatus>("native_worker_status");
     if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
-      ||status.safeToAutoRetry!==false
+      ||status.safeToAutoRetry!==false||!resourceClaimsValid(status)
+      ||(status.attestedWorkerStage!==null&&![
+          "python_active","blender_session_attached","plan_verified","artifact_rehashed"
+        ].includes(status.attestedWorkerStage))
+      ||(status.attestedWorkerStage!==null&&(
+          typeof status.attestedWorkerSequence!=="number"
+          ||!Number.isInteger(status.attestedWorkerSequence)
+          ||status.attestedWorkerSequence<1
+          ||status.attestedWorkerSequence>1000000
+        ))
       ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
         "rust_supervisor_observed","supervisor_start_record_only","last_action_audited",
         "audited_job_conflicts_with_live_lease","last_action_reviewed_unknown"].includes(status.supervisorHealth))
@@ -730,6 +835,259 @@ async function refreshNativeWorkerStatus(): Promise<void> {
   }finally{
     nativeHostReadPending=false;
     renderOrchestrationStatus();
+    renderResourceClaims();
+    const canStop=nativeHostStatus&&!nativeHostStatusUnavailable
+      &&nativeHostStatus.state==="native_action_in_flight"
+      &&nativeHostStatus.tool==="verify_readonly_sha_pair"
+      &&typeof nativeHostStatus.actionId==="string";
+    el<HTMLButtonElement>("#requestNativeBackgroundStop").classList.toggle("hidden",!canStop);
+  }
+}
+
+// Local Windows-only SHA status. Never equate a journal phase to live PID,
+// application progress, owner permission, a recovered completed task or a
+// license to retry. All worker labels are textContent, not HTML markup.
+async function refreshNativeBackgroundHealth(): Promise<void> {
+  if(nativeBackgroundReadPending)return;
+  nativeBackgroundReadPending=true;
+  const summary=el<HTMLElement>("#nativeBackgroundHealthSummary");
+  const list=el<HTMLElement>("#nativeBackgroundHealthList");
+  const button=el<HTMLButtonElement>("#refreshNativeBackgroundHealth");
+  button.disabled=true;
+  try{
+    const result=await invoke<NativeBackgroundOwnerStatus>("native_background_readonly_status");
+    const allowedPhases=new Set([
+      "reserved","os_running","os_exited_unverified",
+      "os_cancelled_unverified","os_timed_out_unverified",
+      "sha256_verified","owner_reviewed_unknown"
+    ]);
+    const allowedHealth=new Set([
+      "independent_current_sha_verified",
+      "sha_artifact_missing_or_changed_owner_review_required",
+      "journal_receipt_mismatch_owner_review_required",
+      "work_or_crash_liveness_not_authenticated",
+      "unverified_os_outcome_requires_owner_review"
+    ]);
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    if(result.schemaVersion!==1||result.processLivenessVerified!==false
+       ||result.applicationVerified!==false||result.safeToAutoRetry!==false
+       ||!Array.isArray(result.workers)||result.workers.length>48
+       ||result.workers.some(x=>!uuid.test(x.actionId)
+         ||!allowedPhases.has(x.recordedPhase)
+         ||!allowedHealth.has(x.evidenceHealth)
+         ||typeof x.currentFileRehashed!=="boolean"
+         ||typeof x.stopRequested!=="boolean"
+         ||x.safeToAutoRetry!==false
+         ||(x.currentFileRehashed && (
+           x.recordedPhase!=="sha256_verified"
+           ||x.evidenceHealth!=="independent_current_sha_verified")))){
+      throw Error("Background journal observation is invalid");
+    }
+    list.replaceChildren();
+    summary.textContent="Background SHA workers: "+result.workers.length+" recorded";
+    if(!result.workers.length){
+      list.textContent="No recorded SHA workers. No app result is implied.";
+      return;
+    }
+    for(const worker of result.workers.slice(-8).reverse()){
+      const row=document.createElement("div");
+      row.className="native-resource-row";
+      const label=document.createElement("strong");
+      label.textContent="SHA worker "+worker.actionId.slice(0,8)+" · "+worker.recordedPhase.replaceAll("_"," ");
+      const detail=document.createElement("small");
+      detail.textContent=(worker.stopRequested
+        ?"OWNER STOP REQUEST RECORDED — actual OS termination not yet proven by this request. · "
+        :"")+(worker.currentFileRehashed
+        ?"Current file SHA-256 independently reverified; not an application completion."
+        :worker.evidenceHealth.replaceAll("_"," ")+"; owner review may be required.");
+      row.append(label,detail);
+      list.append(row);
+    }
+    const note=document.createElement("small");
+    note.textContent="OS journal is historical only. No live PID probe, automatic retry, or app progress is claimed.";
+    list.append(note);
+  }catch{
+    summary.textContent="Background SHA workers: unavailable";
+    list.textContent="Native background evidence unavailable. Do not assume that a job completed, stopped or can be retried.";
+  }finally{
+    button.disabled=false;
+    nativeBackgroundReadPending=false;
+  }
+}
+
+// M54: only a durable queue projection. It cannot authorize or launch work.
+async function refreshNativeApprovedParentQueue():Promise<void>{
+  if(nativeParentQueueReadPending)return;
+  nativeParentQueueReadPending=true;
+  const button=el<HTMLButtonElement>("#refreshNativeApprovedParentQueue");
+  const summary=el<HTMLElement>("#nativeApprovedParentQueueSummary");
+  const list=el<HTMLElement>("#nativeApprovedParentQueueList");
+  button.disabled=true;
+  try{
+    const result=await invoke<NativeApprovedParentQueueStatus>("native_approved_parent_queue_status");
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const phases=new Set(["queued","admitted","sha256_verified","outcome_unknown","owner_reconciled_unverified"]);
+    if(result.schemaVersion!==1||result.applicationVerified!==false
+       ||result.processLivenessVerified!==false||result.safeToAutoRetry!==false
+       ||!Array.isArray(result.parents)||result.parents.length>48
+       ||result.parents.some(p=>!uuid.test(p.parentId)||!phases.has(p.recordedPhase)
+          ||![0,1,2].includes(p.priority)||!Array.isArray(p.dependsOn)
+          ||p.dependsOn.length>7||p.dependsOn.some(d=>!uuid.test(d))
+          ||p.applicationVerified!==false||p.processLivenessVerified!==false
+          ||p.currentFileSha256Verified!==false||p.safeToAutoRetry!==false)){
+      throw Error("Invalid approved parent queue receipt");
+    }
+    // M56 reports historical OS admission + current SHA readback ONLY.
+    // It NEVER grants an owner action, PID liveness, app completion or retry.
+    const recovery=await invoke<NativeApprovedParentRecoveryView[]>(
+      "native_approved_parent_recovery_status");
+    const recoveryMap=new Map<string,NativeApprovedParentRecoveryView>();
+    if(!Array.isArray(recovery)||recovery.length!==result.parents.length){
+      throw Error("Incomplete parent restart recovery projection");
+    }
+    for(const item of recovery){
+      if(!uuid.test(item.parentId)||recoveryMap.has(item.parentId)
+        ||!phases.has(item.recordedPhase)
+        ||typeof item.osAdmissionPhase!=="string"
+        ||item.osAdmissionPhase.length>96
+        ||typeof item.stopIntentRecorded!=="boolean"
+        ||typeof item.currentSha256Reverified!=="boolean"
+        ||typeof item.ownerReviewRequired!=="boolean"
+        ||typeof item.holdsResource!=="boolean"
+        ||typeof item.recordedTerminalEvidence!=="boolean"
+        ||item.safeToAutoRetry!==false
+        ||item.applicationVerified!==false
+        ||item.processLivenessVerified!==false){
+        throw Error("Malformed recovery evidence");
+      }
+      recoveryMap.set(item.parentId,item);
+    }
+    for(const parent of result.parents){
+      if(recoveryMap.get(parent.parentId)?.recordedPhase!==parent.recordedPhase){
+        throw Error("Parent/recovery journals changed during read; recheck");
+      }
+    }
+    summary.textContent="Independently approved parents: "+result.parents.length+" recorded";
+    list.replaceChildren();
+    if(!result.parents.length){
+      list.textContent="No approved independent background parents recorded.";
+      return;
+    }
+    for(const parent of result.parents.slice(-12).reverse()){
+      const row=document.createElement("div");
+      row.className="native-resource-row";
+      const label=document.createElement("strong");
+      label.textContent="Parent "+parent.parentId.slice(0,8)+" · "+parent.recordedPhase.replaceAll("_"," ");
+      const small=document.createElement("small");
+      const evidence=recoveryMap.get(parent.parentId);
+      small.textContent="Priority "+parent.priority+" · prerequisites "+parent.dependsOn.length
+        +" · OS journal "+(evidence?.osAdmissionPhase??"unavailable")
+        +(evidence?.ownerReviewRequired?" · OWNER REVIEW REQUIRED":"")
+        +(evidence?.holdsResource?" · RESOURCE HELD":"")
+        +(evidence?.stopIntentRecorded?" · STOP INTENT RECORDED (not termination)":"")
+        +(evidence?.recordedTerminalEvidence?" · HISTORICAL OS TERMINAL RECORDS MATCH (no live PID proof)":"")
+        +" · current file SHA "+(evidence?.currentSha256Reverified?"reverified":"NOT established")
+        +" · no verified live PID or app completion.";
+      row.append(label,small);
+      // A recovery Review marks uncertain work UNKNOWN but NEVER frees the
+      // parent queue slot or retries. Requires a separately audited actual
+      // read-only inspection, and exact owner confirmation in the dialog.
+      if(evidence?.ownerReviewRequired&&parent.recordedPhase==="admitted"){
+        const review=document.createElement("button");
+        review.type="button";
+        review.textContent="Review uncertain parent";
+        review.addEventListener("click",async()=>{
+          const inspected=window.prompt(
+            "Enter UUID of your separately approved, successful READ-ONLY inspection action. Reviewing keeps this parent resource HELD and DOES NOT stop or retry the OS worker.");
+          if(!inspected)return;
+          if(!window.confirm("Record exact parent "+parent.parentId
+            +" as UNKNOWN? Its resource stays HELD. This does NOT verify process termination or allow retry."))return;
+          review.disabled=true;
+          try{
+            const changed=await invoke<boolean>("review_native_approved_parent_uncertain",{
+              parentId:parent.parentId,inspectionActionId:inspected.trim(),
+              confirmation:"REVIEW PARENT UNKNOWN"
+            });
+            small.textContent=changed
+              ?"Parent marked UNKNOWN; OS/resource claim remains held. No retry, unlock or app verification."
+              :"Parent already UNKNOWN; resource remains held and no auto-retry is authorized.";
+            await refreshNativeBackgroundHealth();
+          }catch{
+            small.textContent="Owner review refused: inspection/UUID/state unavailable. Resource remains held.";
+          }finally{review.disabled=false;}
+        });
+        row.append(review);
+      }
+      // M57 owner-confirmed closure is ONLY offered for a previously
+      // reviewed UNKNOWN parent with BOTH recorded OS-terminal evidences.
+      // It does not grant app success or fresh/current PID verification.
+      if(parent.recordedPhase==="outcome_unknown"
+        &&evidence?.recordedTerminalEvidence===true
+        &&evidence.holdsResource===true){
+        const reconcile=document.createElement("button");
+        reconcile.type="button";
+        reconcile.textContent="Review OS terminal for slot reconciliation";
+        reconcile.addEventListener("click",async()=>{
+          const inspected=window.prompt(
+            "Enter UUID of a separate successful OWNER-APPROVED list_processes inspection (after enqueue). Only an exact terminal M46 OS record + matching native Job receipt can release the HELD queue slot.");
+          if(!inspected)return;
+          if(!window.confirm("Reconcile terminal-only OS evidence for parent "+parent.parentId
+            +"? Original UUID remains spent. This does not prove the app succeeded or allow automatic retry."))return;
+          reconcile.disabled=true;
+          try{
+            const changed=await invoke<boolean>("reconcile_native_approved_parent_terminal",{
+              parentId:parent.parentId,inspectionActionId:inspected.trim(),
+              confirmation:"RECONCILE TERMINAL UNKNOWN"
+            });
+            small.textContent=changed
+              ?"Recorded OS-terminal evidence reconciled; no app/SHA success or automatic retry; UUID remains spent."
+              :"Already reconciled; exact parent UUID cannot be replayed.";
+          }catch{
+            small.textContent="OS-terminal reconciliation refused or incomplete; resource remains HELD. No retry.";
+          }finally{reconcile.disabled=false;}
+        });
+        row.append(reconcile);
+      }
+      // M55: UI merely asks to persist Stop for one exact approved parent.
+      // Rust authenticates dispatch action + immutable parent pair + OS claim.
+      const host=nativeHostStatusUnavailable?null:nativeHostStatus;
+      if(parent.recordedPhase==="admitted"&&host
+         &&host.state==="native_action_in_flight"
+         &&host.tool==="run_approved_sha_parent_queue"
+         &&typeof host.actionId==="string"){
+        const stop=document.createElement("button");
+        stop.type="button";
+        stop.textContent="Request Stop for this parent";
+        stop.setAttribute("aria-label","Request Stop for approved parent "+parent.parentId);
+        const dispatchId=host.actionId;
+        stop.addEventListener("click",async()=>{
+          if(!window.confirm("Request Stop for EXACT SHA parent "+parent.parentId
+            +" under approved dispatch "+dispatchId
+            +"? This is only a durable Stop request, NOT proof of termination."))return;
+          stop.disabled=true;
+          try{
+            const requested=await invoke<boolean>("cancel_native_approved_parent",{
+              dispatchActionId:dispatchId,parentId:parent.parentId
+            });
+            small.textContent=requested
+              ?"Durable Stop intent requested for exact parent. OS termination NOT verified. Recheck receipts."
+              :"No owned live OS child accepted this Stop; inspect native receipts. No termination verified.";
+          }catch{
+            small.textContent="Exact parent Stop unavailable or not authorized. Inspect native status; no termination verified.";
+          }finally{
+            stop.disabled=false;
+          }
+        });
+        row.append(stop);
+      }
+      list.append(row);
+    }
+  }catch{
+    summary.textContent="Approved parent queue: unavailable";
+    list.textContent="Parent journal unavailable. Do not retry, unlock, or assume success.";
+  }finally{
+    button.disabled=false;
+    nativeParentQueueReadPending=false;
   }
 }
 
@@ -1125,6 +1483,8 @@ async function boot(): Promise<void> {
     renderOrchestrationStatus();
     await refreshNativeWorkerStatus();
     await refreshNativeWorkerHistory();
+    await refreshNativeBackgroundHealth();
+    await refreshNativeApprovedParentQueue();
     await refreshNativeSchedule();
     await refreshRam();
     await refreshAudit();
@@ -1134,11 +1494,43 @@ async function boot(): Promise<void> {
     window.setInterval(() => void refreshRam(), 5000);
     window.setInterval(() => void refreshNativeWorkerStatus(), 4000);
     window.setInterval(() => void refreshNativeWorkerHistory(), 8000);
+    window.setInterval(() => void refreshNativeBackgroundHealth(), 20000);
+    window.setInterval(() => void refreshNativeApprovedParentQueue(), 20000);
     window.setInterval(() => void refreshNativeSchedule(), 8000);
   } catch (error) {
     settingsStatus.textContent = String(error);
   }
 }
+
+el<HTMLButtonElement>("#refreshNativeBackgroundHealth").addEventListener("click",
+  () => void refreshNativeBackgroundHealth());
+el<HTMLButtonElement>("#refreshNativeApprovedParentQueue").addEventListener("click",
+  () => void refreshNativeApprovedParentQueue());
+
+// A STOP request is only routed through the existing exact native action
+// command. No PID, arbitrary process killer, automatic retry or claim of
+// successful cancellation is ever accepted from this UI.
+el<HTMLButtonElement>("#requestNativeBackgroundStop").addEventListener("click",async()=>{
+  const button=el<HTMLButtonElement>("#requestNativeBackgroundStop");
+  const message=el<HTMLElement>("#nativeBackgroundStopMessage");
+  const host=nativeHostStatusUnavailable?null:nativeHostStatus;
+  if(!host||host.state!=="native_action_in_flight"
+    ||host.tool!=="verify_readonly_sha_pair"||!host.actionId)return;
+  if(!window.confirm("Request Stop for this exact approved SHA pair? This records a stop request; it does NOT prove the OS children have terminated."))return;
+  button.disabled=true;
+  try{
+    const requested=await invoke<boolean>("cancel_running_action",{actionId:host.actionId});
+    message.textContent=requested
+      ?"Stop request recorded for owned background workers. Check each OS receipt; termination is NOT yet verified."
+      :"No active owned SHA worker accepted Stop. Review the current native journal.";
+  }catch{
+    message.textContent="Stop request failed or may be partial. Do NOT assume a worker stopped or automatically retry.";
+  }finally{
+    button.disabled=false;
+    await refreshNativeBackgroundHealth();
+    await refreshNativeWorkerStatus();
+  }
+});
 
 function isHiddenToolMessage(message: ChatMessage): boolean {
   return message.content.startsWith("[SHUVI_TOOL_RESULT]");
@@ -2879,6 +3271,56 @@ el<HTMLButtonElement>("#reviewFailedSchedulerStep").addEventListener("click", as
     button.disabled=false;
     await refreshNativeSchedule();
   }
+});
+
+el<HTMLButtonElement>("#loadNativeCompletedDeliveries").addEventListener("click",async ()=>{
+  const list=el<HTMLElement>("#nativeCompletedDeliveriesList");
+  list.textContent="Reading archived tasks…";
+  try{
+    const record=await invoke<NativeCompletedDeliveryHistory>("native_task_delivery_history");
+    if(record.version!==1||!Array.isArray(record.items)||record.items.length>25)
+      throw Error("Invalid native delivery archive");
+    list.replaceChildren();
+    if(!record.items.length){list.textContent="No completed native deliveries.";return;}
+    for(const item of record.items){
+      if(!item||item.currentlyVerified!==false||typeof item.objective!=="string"
+          ||item.objective.length>160||!Number.isSafeInteger(item.recordedAtMs)
+          ||item.recordedAtMs<1||!Number.isInteger(item.stepCount)||item.stepCount<1
+          ||item.stepCount>48||!Number.isInteger(item.outputCount)
+          ||item.outputCount<0||item.outputCount>item.stepCount)
+        throw Error("Malformed native history item");
+      const entry=document.createElement("div");
+      entry.textContent=item.objective+" · "+item.stepCount+" steps, "+
+        item.outputCount+" files · "+new Date(item.recordedAtMs).toLocaleString()+
+        " · Archived (NOT current artifact verification)";
+      if(typeof item.firstActionId!=="string"||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.firstActionId))
+        throw Error("Invalid history UUID");
+      const check=document.createElement("button");
+      check.type="button";
+      check.textContent="Verify files now";
+      const result=document.createElement("small");
+      result.textContent="Not currently verified";
+      check.addEventListener("click",async ()=>{
+        check.disabled=true;
+        result.textContent="Checking exact Rust audits and current file hashes…";
+        try{
+          const validated=await invoke<NativeHistoricalDeliveryVerification>(
+            "native_task_delivery_verify_history",{firstActionId:item.firstActionId});
+          if(!validated||validated.filesVerifiedNow!==true||
+              validated.firstActionId!==item.firstActionId||
+              validated.stepCount!==item.stepCount||
+              validated.outputCount!==item.outputCount)
+            throw Error("Historical readback mismatch");
+          result.textContent="Current audit/file SHA-256 verified; creative quality still untested";
+        }catch{
+          result.textContent="Verification failed or historical evidence unavailable";
+        }finally{check.disabled=false;}
+      });
+      entry.append(check,result);
+      list.append(entry);
+    }
+  }catch{list.textContent="Completed task archive missing/corrupted; no success was assumed.";}
 });
 
 el<HTMLButtonElement>("#checkNativeTaskDelivery").addEventListener("click",async ()=>{

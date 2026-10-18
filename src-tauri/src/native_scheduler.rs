@@ -4,11 +4,79 @@
 //! the existing owner Allow once / task-scoped read permission.
 use serde::{Deserialize,Serialize};
 use serde_json::Value;
-use std::{collections::{HashMap,HashSet},fs,path::{Path,PathBuf},sync::Mutex};
+use std::{collections::{HashMap,HashSet},fs,fs::OpenOptions,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
+// Built and unit-tested on Windows CI. Production adapters must present their
+// existing native lease + on-disk UUID journal before launching a child.
+#[path = "native_owned_process.rs"]
+pub(crate) mod owned_process;
+// Independent read-only Windows OS subprocess foundation; no public launch IPC.
+#[cfg(windows)]
+#[path = "native_background_os_workers.rs"]
+pub(crate) mod background_os_workers;
+#[path = "native_worker_progress.rs"]
+pub(crate) mod worker_progress;
+#[path = "native_attested_worker_stage.rs"]
+pub(crate) mod worker_attestation;
+#[path = "native_resource_lanes.rs"]
+pub(crate) mod resource_lanes;
 const MAX_JOBS:usize=48;
 const MAX_BYTES:usize=32768;
 static LOCK:Mutex<()>=Mutex::new(());
+// Durable DAG mutations are also serialized across DIFFERENT Shuvi instances.
+// A per-process mutex alone cannot prevent two simultaneous UUID-bound starts
+// or a stale terminal audit overwriting another process's scheduler checkpoint.
+struct SchedulerOsLock(fs::File);
+impl SchedulerOsLock{
+    fn take(file:&Path)->Result<Self,String>{
+        let lock=file.with_extension("json.oslock");
+        match fs::symlink_metadata(&lock){
+            Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()=>{
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta.file_attributes()&0x400!=0{
+                        return Err("Scheduler OS lock may not be a Windows reparse point.".into());
+                    }
+                }
+            }
+            Ok(_)=>return Err("Scheduler OS lock must be a regular file.".into()),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Err("Cannot inspect scheduler OS lock.".into()),
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{MetadataExt,OpenOptionsExt};
+            const OPEN_REPARSE_POINT:u32=0x0020_0000;
+            let handle=OpenOptions::new().read(true).write(true).create(true)
+                .share_mode(0).custom_flags(OPEN_REPARSE_POINT).open(&lock)
+                .map_err(|_|"Another Shuvi instance holds the scheduler journal.".to_string())?;
+            let meta=handle.metadata()
+                .map_err(|_|"Cannot inspect opened scheduler OS lock.")?;
+            if !meta.is_file()||meta.file_attributes()&0x400!=0{
+                return Err("Scheduler OS lock resolved to a reparse point.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C" {fn flock(fd:i32,operation:i32)->i32;}
+            let handle=OpenOptions::new().read(true).write(true).create(true)
+                .open(&lock)
+                .map_err(|_|"Scheduler OS lock unavailable.".to_string())?;
+            if unsafe{flock(handle.as_raw_fd(),2|4)}!=0{
+                return Err("Another Shuvi instance holds the scheduler journal.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(not(any(unix,windows)))]
+        {
+            Err("Cross-process native DAG locking unsupported on this OS.".into())
+        }
+    }
+}
+
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -174,8 +242,8 @@ fn merged(prior:Option<Schedule>,proposed:Option<&Value>)->Result<Schedule,Strin
                 // Abandon ONLY a non-running queue; the old native action
                 // audit/history stays persisted separately. An interrupted
                 // Windows action must be owner-reviewed before a new task.
-                if old.jobs.iter().any(|j|j.phase=="running"){
-                    return Err("A running or interrupted native job blocks task replacement.".into());
+                if old.jobs.iter().any(|j|matches!(j.phase.as_str(),"running"|"outcome_unknown"|"failed")){
+                    return Err("Unresolved native execution or unreviewed failure blocks task replacement.".into());
                 }
                 return Ok(next);
             }
@@ -184,7 +252,7 @@ fn merged(prior:Option<Schedule>,proposed:Option<&Value>)->Result<Schedule,Strin
             // The WebView still requires a new user task and normal approval;
             // old audited action IDs remain in the separate Rust history.
             if next.revision==1 && old.jobs.iter().all(|j|
-                matches!(j.phase.as_str(),"audited"|"failed"|"outcome_unknown"|"reviewed_failed")){
+                matches!(j.phase.as_str(),"audited"|"reviewed_failed")){
                 return Ok(next);
             }
             if next.revision!=old.revision && next.revision!=old.revision+1{
@@ -240,6 +308,68 @@ fn recover_terminal_at(file:&Path,native:Option<&crate::native_worker_job::Nativ
         _=>Err("Native journal has unsupported terminal state.".into())
     }
 }
+/// A later DAG job may use a verified Blender artifact only while its
+/// *current bytes* still agree with that exact action's durable certificate.
+/// Walk transitive ancestors; a non-Blender intermediary must not mask a
+/// tampered Blender checkpoint. Read-only and no automatic re-execution.
+fn verify_dependency_artifacts<F>(
+    schedule:&Schedule,target:&str,mut certificate:F
+)->Result<(),String>
+where F:FnMut(&str)->Result<(),String>{
+    fn visit<F>(
+        s:&Schedule,id:&str,seen:&mut HashSet<String>,certificate:&mut F
+    )->Result<(),String>
+    where F:FnMut(&str)->Result<(),String>{
+        if !seen.insert(id.to_string()){return Ok(());}
+        let step=s.jobs.iter().find(|j|j.step_id==id)
+            .ok_or("Scheduler dependency disappeared during verification.")?;
+        if step.phase!="audited" {
+            return Err("Unaudited dependency cannot authorize a native successor.".into());
+        }
+        if step.tool=="blender_run_plan" {
+            certificate(step.action_id.as_deref()
+                .ok_or("Blender dependency lacks an audited action UUID.")?)?;
+        }
+        for parent in &step.depends_on{
+            visit(s,parent,seen,certificate)?;
+        }
+        Ok(())
+    }
+    let job=schedule.jobs.iter().find(|j|j.step_id==target)
+        .ok_or("No such scheduled action for dependency verification.")?;
+    let mut seen=HashSet::new();
+    for parent in &job.depends_on{
+        visit(schedule,parent,&mut seen,&mut certificate)?;
+    }
+    Ok(())
+}
+fn verify_blender_recovery<F>(
+    schedule:&Schedule,native:Option<&crate::native_worker_job::NativeJob>,
+    mut certificate:F
+)->Result<(),String>
+where F:FnMut(&str)->Result<(),String>{
+    if let Some(j)=native{
+        if j.phase=="audit_verified" && j.audit_success==Some(true){
+            if let Some(running)=schedule.jobs.iter().find(|j|j.phase=="running") {
+                if running.tool=="blender_run_plan" {
+                    if running.action_id.as_deref()!=Some(j.action_id.as_str()) {
+                        return Err("Recovered Blender action UUID disagrees with durable audit.".into());
+                    }
+                    certificate(&j.action_id)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+/// Deterministic owner DAG order. Reconstruct READY from persisted queued
+/// jobs and Rust-audited prerequisites, never from elapsed time or model claims.
+fn first_ready_step(s:&Schedule)->Option<&str>{
+    s.jobs.iter().find(|job|job.phase=="queued"
+        && job.depends_on.iter().all(|dep|s.jobs.iter()
+            .any(|parent|parent.step_id==*dep&&parent.phase=="audited")))
+        .map(|job|job.step_id.as_str())
+}
 fn allowed(s:&Schedule,step_id:&str,tool:&str,id:&str)->Result<(),String>{
     if !valid_uuid(id){return Err("Scheduled action requires a canonical prepared UUID.".into());}
     if s.jobs.iter().any(|j|j.action_id.as_deref()==Some(id)){
@@ -260,6 +390,10 @@ fn allowed(s:&Schedule,step_id:&str,tool:&str,id:&str)->Result<(),String>{
         .any(|j|&j.step_id==dep&&j.phase=="audited")){
         return Err("Scheduled step is blocked by a non-audited dependency.".into());
     }
+    // An independent later step cannot starve the earliest ready job.
+    if first_ready_step(s)!=Some(step_id){
+        return Err("An earlier dependency-ready native step must dispatch first.".into());
+    }
     Ok(())
 }
 /// Before any Rust native mutation; writes the task definition only. No
@@ -267,6 +401,7 @@ fn allowed(s:&Schedule,step_id:&str,tool:&str,id:&str)->Result<(),String>{
 fn preflight_at(file:&Path,graph:Option<&Value>,step:&str,tool:&str,action_id:&str)
     ->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let next=merged(read_at(file)?,graph)?;
     allowed(&next,step,tool,action_id)
 }
@@ -277,12 +412,22 @@ pub(crate) fn preflight(app:&AppHandle,graph:Option<&Value>,step:&str,tool:&str,
     // lease heartbeat or a model's reported success.
     {
         let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
-        recover_terminal_at(&file,crate::native_worker_job::read(app)?.as_ref())?;
+        let _os=SchedulerOsLock::take(&file)?;
+        let audit=crate::native_worker_job::read(app)?;
+        if let Some(schedule)=read_at(&file)? {
+            verify_blender_recovery(&schedule,audit.as_ref(),|id|
+                crate::native_blender_action_artifact::read_verified(app,id).map(|_|()))?;
+        }
+        recover_terminal_at(&file,audit.as_ref())?;
     }
+    let merged=merged(read(app)?,graph)?;
+    verify_dependency_artifacts(&merged,step,|id|
+        crate::native_blender_action_artifact::read_verified(app,id).map(|_|()))?;
     preflight_at(&file,graph,step,tool,action_id)
 }
 fn begin_at(file:&Path,graph:Option<&Value>,step:&str,tool:&str,id:&str)->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let mut schedule=merged(read_at(file)?,graph)?;
     allowed(&schedule,step,tool,id)?;
     let job=schedule.jobs.iter_mut().find(|j|j.step_id==step)
@@ -293,10 +438,16 @@ fn begin_at(file:&Path,graph:Option<&Value>,step:&str,tool:&str,id:&str)->Result
 }
 pub(crate) fn begin(app:&AppHandle,graph:Option<&Value>,step:&str,tool:&str,id:&str)
     ->Result<(),String>{
+    // Recheck the trusted output at the actual dispatch boundary too:
+    // a separate preflight is NOT a lasting guarantee about disk contents.
+    let schedule=merged(read(app)?,graph)?;
+    verify_dependency_artifacts(&schedule,step,|parent|
+        crate::native_blender_action_artifact::read_verified(app,parent).map(|_|()))?;
     begin_at(&path(app)?,graph,step,tool,id)
 }
 fn finish_at(file:&Path,id:&str,tool:&str,success:Option<bool>)->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let mut schedule=read_at(file)?.ok_or("Native schedule disappeared before audit.")?;
     let job=schedule.jobs.iter_mut()
         .find(|j|j.action_id.as_deref()==Some(id)&&j.tool==tool)
@@ -316,6 +467,7 @@ pub(crate) fn finish(app:&AppHandle,id:&str,tool:&str,success:Option<bool>)->Res
 /// introduce NEW work; the failed job remains forever non-successful.
 fn review_failed_at(file:&Path,step:&str,failed_action:&str)->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let mut schedule=read_at(file)?.ok_or("No failed scheduled task to review.")?;
     if schedule.jobs.iter().any(|j|j.phase=="running"||j.phase=="outcome_unknown"){
         return Err("An unresolved native action cannot be cleared by failure review.".into());
@@ -366,16 +518,31 @@ fn projected_terminal(
 /// Never trusts WebView status or supervisor ticks as successful execution.
 pub(crate) fn verified_status(app:&AppHandle)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
-    let snapshot=read_at(&path(app)?)?;
+    let file=path(app)?;
+    let _os=SchedulerOsLock::take(&file)?;
+    let snapshot=read_at(&file)?;
     if snapshot.as_ref().is_none_or(|s|s.jobs.iter().all(|j|j.phase!="running")){
         return Ok(snapshot);
     }
     let journal=crate::native_worker_job::read(app)?;
+    if let Some(schedule)=snapshot.as_ref(){
+        verify_blender_recovery(schedule,journal.as_ref(),|id|
+            crate::native_blender_action_artifact::read_verified(app,id).map(|_|()))?;
+    }
+    // Status is a projection of durable audit state, not a fresh filesystem
+    // provenance claim. Rehashing up to 48 historic 128 MiB Blender files
+    // on every UI poll would saturate disk and slow a small Windows host.
+    // Exact transitive artifacts are independently reverified on preflight,
+    // immediate dispatch, crash-success promotion and final DAG delivery.
     projected_terminal(snapshot,journal.as_ref())
 }
-pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
+fn read_locked_at(file:&Path)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
-    read_at(&path(app)?)
+    let _os=SchedulerOsLock::take(file)?;
+    read_at(file)
+}
+pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
+    read_locked_at(&path(app)?)
 }
 #[cfg(test)]
 mod tests{
@@ -389,6 +556,115 @@ mod tests{
           {"step_id":"import","expected_tool":"premiere_insert_media","depends_on":["model"]}]})
     }
     fn cleanup(p:&Path){let _=fs::remove_file(p);let _=fs::remove_file(p.with_extension("json.bak"));}
+    #[test]
+    fn transitive_blender_dependency_requires_fresh_exact_artifact_evidence(){
+        let plan=serde_json::json!({"objective":"Authorized workflow","revision":1,
+            "steps":[
+                {"step_id":"blender","expected_tool":"blender_run_plan","depends_on":[]},
+                {"step_id":"handoff","expected_tool":"premiere_insert_media","depends_on":["blender"]},
+                {"step_id":"deliver","expected_tool":"premiere_export","depends_on":["handoff"]}
+            ]});
+        let mut s=from_graph(&plan).unwrap();
+        for (index,job) in s.jobs.iter_mut().enumerate(){
+            if index<2{
+                job.phase="audited".into();
+                job.action_id=Some(if index==0{
+                    "e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+                }else{"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"}.into());
+            }
+        }
+        let mut observed=Vec::new();
+        verify_dependency_artifacts(&s,"deliver",|id|{
+            observed.push(id.to_string());Ok(())
+        }).unwrap();
+        assert_eq!(observed,vec!["e8b36b21-1c6a-459e-9b6f-75dd5692ab81"]);
+        assert!(verify_dependency_artifacts(&s,"deliver",|_|{
+            Err("Output checksum mismatch".into())
+        }).is_err());
+        assert!(verify_dependency_artifacts(&s,"deliver",|_|Ok(())).is_ok());
+        s.jobs[0].phase="failed".into();
+        assert!(verify_dependency_artifacts(&s,"deliver",|_|Ok(())).is_err());
+    }
+    #[test]
+    fn post_crash_blender_success_requires_verified_output_before_dag_recovery(){
+        let mut s=from_graph(&serde_json::json!({"objective":"Blender checkpoint",
+            "steps":[{"step_id":"save","expected_tool":"blender_run_plan","depends_on":[]}]})).unwrap();
+        let action="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
+        s.jobs[0].phase="running".into();s.jobs[0].action_id=Some(action.into());
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:action.into(),tool:"blender_run_plan".into(),
+            phase:"audit_verified".into(),started_at_ms:1000,updated_at_ms:1001,
+            heartbeat_seq:0,audit_success:Some(true),prior_action_ids:vec![]
+        };
+        assert!(verify_blender_recovery(&s,Some(&job),|_|
+            Err("Missing checkpoint".into())).is_err());
+        let mut seen=0;
+        verify_blender_recovery(&s,Some(&job),|id|{
+            assert_eq!(id,action);seen+=1;Ok(())
+        }).unwrap();
+        assert_eq!(seen,1);
+        s.jobs[0].tool="premiere_insert_media".into();
+        verify_blender_recovery(&s,Some(&job),|_|
+            Err("Not a Blender job".into())).unwrap();
+    }
+    #[test]
+    fn scheduler_kernel_lock_rejects_other_instance_start_audit_review_and_status(){
+        let p=file();
+        let proposed=graph(1);
+        let step=proposed["steps"][0]["step_id"].as_str().unwrap();
+        let tool=proposed["steps"][0]["expected_tool"].as_str().unwrap();
+        assert!(preflight_at(&p,Some(&proposed),step,tool,A).is_ok(),
+            "valid prepared DAG must admit the first step before locking");
+        let other=SchedulerOsLock::take(&p).unwrap();
+        assert!(begin_at(&p,Some(&proposed),step,tool,A).is_err());
+        assert!(preflight_at(&p,Some(&proposed),step,tool,A).is_err());
+        assert!(read_locked_at(&p).is_err());
+        assert!(!p.exists());
+        drop(other);
+        begin_at(&p,Some(&proposed),step,tool,A).unwrap();
+        let other=SchedulerOsLock::take(&p).unwrap();
+        assert!(finish_at(&p,A,tool,Some(true)).is_err());
+        assert!(review_failed_at(&p,step,A).is_err());
+        drop(other);
+        finish_at(&p,A,tool,Some(true)).unwrap();
+        assert_eq!(read_locked_at(&p).unwrap().unwrap().jobs[0].phase,"audited");
+        cleanup(&p);
+        let _=fs::remove_file(p.with_extension("json.oslock"));
+    }
+    #[test]
+    fn two_instances_cannot_start_the_same_native_dag_step_in_parallel(){
+        use std::sync::{Arc,Barrier};
+        let p=file();let graph=graph(1);
+        let step=graph["steps"][0]["step_id"].as_str().unwrap().to_owned();
+        let tool=graph["steps"][0]["expected_tool"].as_str().unwrap().to_owned();
+        let gate=Arc::new(Barrier::new(3));
+        let a=Arc::clone(&gate);let b=Arc::clone(&gate);
+        let left=p.clone();let right=p.clone();
+        std::thread::scope(|scope|{
+            let first=scope.spawn(||{a.wait();begin_at(&left,Some(&graph),&step,&tool,A)});
+            let second=scope.spawn(||{b.wait();begin_at(&right,Some(&graph),&step,&tool,B)});
+            gate.wait();
+            let x=first.join().unwrap();let y=second.join().unwrap();
+            assert_eq!((x.is_ok() as usize)+(y.is_ok() as usize),1);
+        });
+        let current=read_locked_at(&p).unwrap().unwrap();
+        assert_eq!(current.jobs.iter().filter(|j|j.phase=="running").count(),1);
+        cleanup(&p);
+        let _=fs::remove_file(p.with_extension("json.oslock"));
+    }
+    #[test]
+    fn forged_scheduler_lock_directory_fails_without_creating_a_queue(){
+        let p=file();let lock=p.with_extension("json.oslock");
+        let valid=graph(1);
+        let step=valid["steps"][0]["step_id"].as_str().unwrap();
+        let tool=valid["steps"][0]["expected_tool"].as_str().unwrap();
+        fs::create_dir(&lock).unwrap();
+        assert!(begin_at(&p,Some(&valid),step,tool,A).is_err());
+        assert!(!p.exists());fs::remove_dir(&lock).unwrap();
+        begin_at(&p,Some(&valid),step,tool,A).unwrap();
+        cleanup(&p);
+        let _=fs::remove_file(lock);
+    }
     #[test]
     fn omitted_initial_revision_defaults_to_one_but_invalid_revision_fails(){
         let mut value=graph(1);
@@ -575,6 +851,60 @@ mod tests{
         forged["steps"][0]["expected_tool"]=serde_json::json!("read_file");
         assert!(begin_at(&p,Some(&forged),"import","premiere_insert_media",B).is_err());
         assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"failed");
+        cleanup(&p);
+    }
+    #[test]
+    fn restart_preserves_deterministic_ready_order_and_audited_dependencies(){
+        let p=file();
+        let g=serde_json::json!({"objective":"Audited multi-job edit","revision":1,
+            "steps":[
+                {"step_id":"render","expected_tool":"blender_run_plan","depends_on":[]},
+                {"step_id":"edit","expected_tool":"premiere_insert_media","depends_on":[]},
+                {"step_id":"assemble","expected_tool":"blender_run_plan","depends_on":["edit","render"]}
+            ]});
+        let c=uuid::Uuid::new_v4().to_string();
+        assert!(begin_at(&p,Some(&g),"edit","premiere_insert_media",B).is_err());
+        begin_at(&p,Some(&g),"render","blender_run_plan",A).unwrap();
+        let saved=read_at(&p).unwrap().unwrap();
+        assert_eq!(saved.jobs[0].phase,"running");
+        assert_eq!(saved.jobs[1].phase,"queued");
+        assert_eq!(first_ready_step(&saved),Some("edit"));
+        assert!(begin_at(&p,None,"edit","premiere_insert_media",B).is_err());
+        finish_at(&p,A,"blender_run_plan",Some(true)).unwrap();
+        assert!(begin_at(&p,None,"assemble","blender_run_plan",&c).is_err());
+        begin_at(&p,None,"edit","premiere_insert_media",B).unwrap();
+        finish_at(&p,B,"premiere_insert_media",Some(true)).unwrap();
+        let ready=read_at(&p).unwrap().unwrap();
+        assert_eq!(first_ready_step(&ready),Some("assemble"));
+        begin_at(&p,None,"assemble","blender_run_plan",&c).unwrap();
+        finish_at(&p,&c,"blender_run_plan",Some(true)).unwrap();
+        assert!(read_at(&p).unwrap().unwrap().jobs.iter().all(|j|j.phase=="audited"));
+        cleanup(&p);
+    }
+    #[test]
+    fn unknown_execution_cannot_be_erased_by_new_objective_or_same_objective(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",None).unwrap();
+        let mut different=graph(1);
+        different["objective"]=serde_json::json!("Different task");
+        assert!(begin_at(&p,Some(&different),"model","blender_run_plan",B).is_err());
+        assert!(begin_at(&p,Some(&g),"model","blender_run_plan",B).is_err());
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"outcome_unknown");
+        cleanup(&p);
+    }
+    #[test]
+    fn failed_execution_requires_owner_review_before_task_replacement(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",Some(false)).unwrap();
+        let mut different=graph(1);
+        different["objective"]=serde_json::json!("New owner task");
+        assert!(begin_at(&p,Some(&different),"model","blender_run_plan",B).is_err());
+        assert!(begin_at(&p,Some(&g),"model","blender_run_plan",B).is_err());
+        review_failed_at(&p,"model",A).unwrap();
+        begin_at(&p,Some(&different),"model","blender_run_plan",B).unwrap();
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].action_id.as_deref(),Some(B));
         cleanup(&p);
     }
     #[test]

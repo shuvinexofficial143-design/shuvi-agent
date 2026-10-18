@@ -18,3 +18,6 @@ Thumbs.db
 *.pem
 secrets/
 .shuvi-attest/
+
+# Build-produced NSIS sidecar binaries: rebuild locally for exact Windows target.
+src-tauri/binaries/*.exe
