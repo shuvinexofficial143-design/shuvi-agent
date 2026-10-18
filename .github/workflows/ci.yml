@@ -59,21 +59,6 @@ jobs:
         run: node scripts/check-native-sha-sidecar.mjs
       - name: M59 real Windows installed-layout SHA worker fixture and pin mismatch denial
         run: node scripts/windows-m59-installed-worker-fixture.mjs
-      - name: Install locked Tauri dependencies for REAL M60 NSIS packaging
-        run: npm ci
-      - name: M60 build real pinned Windows NSIS, M61 verify and execute only extracted SHA worker
-        run: npm run build:windows-installer
-      - name: M62 actually install the newly built NSIS on disposable Windows CI and verify/uninstall
-        env:
-          SHUVI_M62_EPHEMERAL_CI: "1"
-        run: node scripts/windows-m62-real-nsis-install-acceptance.mjs
-      - name: Upload M60 unsigned NSIS content witness only (NOT installer / release)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: m60-unsigned-nsis-witness
-          path: .shuvi-release/*.json
-          if-no-files-found: warn
       - name: Upload Rust attestation
         if: always()
         uses: actions/upload-artifact@v4
@@ -82,3 +67,32 @@ jobs:
           path: .shuvi-attest/rust-*.json
           if-no-files-found: warn
           include-hidden-files: true
+
+
+  # M65: decouple heavy real NSIS packaging from Rust source verification.
+  # A slow installer must not obscure green/red core scheduler Rust tests.
+  # No publishing, signing, auto merge or owner-PC invocation is permitted.
+  windows-installer-acceptance:
+    runs-on: windows-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install exact locked Tauri dependencies
+        run: npm ci
+      - name: M60 build real pinned Windows NSIS, M61 verify and execute only extracted SHA worker
+        run: npm run build:windows-installer
+      - name: M62 actually install the newly built NSIS on disposable Windows CI and verify/uninstall
+        env:
+          SHUVI_M62_EPHEMERAL_CI: "1"
+        run: node scripts/windows-m62-real-nsis-install-acceptance.mjs
+      - name: Upload only UNSIGNED NSIS/M63/M62 JSON content witnesses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinned-nsis-unsigned-acceptance-witnesses
+          path: .shuvi-release/*.json
+          if-no-files-found: warn
