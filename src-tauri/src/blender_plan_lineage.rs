@@ -311,6 +311,15 @@ pub(crate) fn reserved_output_policy(
         || !exact_recipe_shape(plan,stage){
         return Err("Blender reserved artifact requires the unchanged typed native recipe.".into());
     }
+    // Stage 1 creates a fresh scene. Stage 2 must remain in the same
+    // native-owned persistent session as a previously VERIFIED Stage 1;
+    // it must never load an arbitrary similarly named external checkpoint.
+    if stage=="model1" && input_source.is_some(){
+        return Err("Fixed first Blender stage requires a clean owner-approved session.".into());
+    }
+    if stage=="model2" && (input_source.is_some() || !persistent_session){
+        return Err("Fixed second Blender stage requires verified Stage 1 in the same persistent session.".into());
+    }
     let source_name=match stage{
         "render"|"look"=>Some("shuvi41-proof-stage2.blend"),
         "look_render"=>Some("shuvi41-proof-material.blend"),
@@ -579,6 +588,26 @@ mod tests{
             changed["steps"][last]["request"]["payload"]["name"]=json!("arbitrary.png");
             // The unreserved ordinary output cannot impersonate this reserved name.
             assert_ne!(derive(&changed).unwrap()["acceptance_stage"],stage);
+        }
+    }
+    #[test]
+    fn fixed_stage_two_cannot_open_an_unverified_file_or_use_oneoff_worker(){
+        let rev="f".repeat(64);
+        let stage1=crate::blender_acceptance_recipe::expected_plan("model1",&rev).unwrap();
+        let stage2=crate::blender_acceptance_recipe::expected_plan("model2",&rev).unwrap();
+        let l1=derive(&stage1).unwrap();
+        let l2=derive(&stage2).unwrap();
+        reserved_output_policy(&stage1,&l1,None,false,true).unwrap();
+        assert!(reserved_output_policy(&stage1,&l1,
+            Some("/approved/shuvi41-proof-stage1.blend"),false,true).is_err());
+        reserved_output_policy(&stage2,&l2,None,false,true).unwrap();
+        assert!(reserved_output_policy(&stage2,&l2,None,false,false).is_err());
+        for source in [
+            Some("/approved/shuvi41-proof-stage1.blend"),
+            Some("/approved/shuvi41-proof-stage2.blend"),
+            Some("/approved/unrelated.blend")
+        ]{
+            assert!(reserved_output_policy(&stage2,&l2,source,false,true).is_err());
         }
     }
     #[test]

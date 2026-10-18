@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from shuvi_blender_reopen import capture_scene, reopen_checkpoint, _stable_checkpoint_bytes, _fixed_stage_geometry_matches
+from shuvi_blender_session import verify_in_session_stage1
 
 
 class Request:
@@ -368,6 +369,83 @@ class ReopenTests(unittest.TestCase):
         ordinary = capture_scene(FakeController(self.file), self.file)
         self.assertIsNone(ordinary["fixed_stage_name"])
         self.assertFalse(ordinary["fixed_stage_geometry_verified"])
+
+    def test_stage2_live_preflight_correlates_previous_bytes_shape_and_revision(self):
+        path = self.file.with_name("shuvi41-proof-stage1.blend")
+        path.write_bytes(b"BLENDER-v430")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        receipt = {
+            "artifact": {"path": str(path), "sha256": digest,
+                         "bytes": path.stat().st_size},
+            "checkpoint_reopen": {
+                "verified": True, "fingerprint": "f" * 64,
+                "fixed_stage_name": "shuvi41-proof-stage1.blend",
+                "fixed_stage_geometry_verified": True,
+                "checkpoint_file_sha256": digest,
+            }
+        }
+        live = {
+            "fingerprint": "f" * 64,
+            "fixed_stage_name": "shuvi41-proof-stage1.blend",
+            "fixed_stage_geometry_verified": True,
+            "proof_camera_verified": True,
+            "active_camera_name": "Shuvi41ProofCamera",
+        }
+        from shuvi_blender_agent import files as real_files
+        checked = {"sha256": digest, "bytes": path.stat().st_size}
+        with (patch.object(real_files, "read_output", return_value=checked),
+                patch("shuvi_blender_reopen.capture_scene", return_value=live)):
+            good = verify_in_session_stage1(FakeController(self.file), receipt, "a" * 64)
+            self.assertTrue(good["verified"])
+            self.assertEqual(good["source_sha256"], digest)
+            self.assertEqual(good["source_scene_revision"], "a" * 64)
+            self.assertEqual(good["source_stage"], "model1")
+            for bad in [
+                {**receipt, "checkpoint_reopen": {
+                    **receipt["checkpoint_reopen"], "fixed_stage_geometry_verified": False}},
+                {**receipt, "artifact": {**receipt["artifact"], "sha256": "0" * 64}},
+                {**receipt, "artifact": {**receipt["artifact"], "path": str(self.file)}},
+            ]:
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    verify_in_session_stage1(FakeController(self.file), bad, "a" * 64)
+            with patch("shuvi_blender_reopen.capture_scene",
+                       return_value={**live, "fingerprint": "0" * 64}):
+                with self.assertRaisesRegex(ValueError, "Live Stage 1"):
+                    verify_in_session_stage1(FakeController(self.file), receipt, "a" * 64)
+            with patch("shuvi_blender_reopen.capture_scene",
+                       return_value={**live, "fixed_stage_geometry_verified": False}):
+                with self.assertRaisesRegex(ValueError, "Live Stage 1"):
+                    verify_in_session_stage1(FakeController(self.file), receipt, "a" * 64)
+
+    def test_stage2_dependency_rejects_changed_checkpoint_and_scene_revision(self):
+        path = self.file.with_name("shuvi41-proof-stage1.blend")
+        path.write_bytes(b"BLENDER-v430")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        receipt = {
+            "artifact": {"path": str(path), "sha256": digest,
+                         "bytes": path.stat().st_size},
+            "checkpoint_reopen": {
+                "verified": True, "fingerprint": "f" * 64,
+                "fixed_stage_name": "shuvi41-proof-stage1.blend",
+                "fixed_stage_geometry_verified": True,
+                "checkpoint_file_sha256": digest,
+            }
+        }
+        live = {"fingerprint": "f" * 64,
+                "fixed_stage_name": "shuvi41-proof-stage1.blend",
+                "fixed_stage_geometry_verified": True,
+                "proof_camera_verified": True,
+                "active_camera_name": "Shuvi41ProofCamera"}
+        from shuvi_blender_agent import files as real_files
+        checked = {"sha256": digest, "bytes": path.stat().st_size}
+        with (patch.object(real_files, "read_output", return_value=checked),
+                patch("shuvi_blender_reopen.capture_scene", return_value=live)):
+            with self.assertRaisesRegex(ValueError, "Scene revision changed"):
+                verify_in_session_stage1(FakeController(self.file), receipt, "0" * 64)
+        changed={"sha256":"0"*64,"bytes":path.stat().st_size}
+        with patch.object(real_files, "read_output", return_value=changed):
+            with self.assertRaisesRegex(ValueError, "checkpoint bytes changed"):
+                verify_in_session_stage1(FakeController(self.file), receipt, "a" * 64)
 
     def test_checkpoint_hash_requires_real_regular_bounded_blend_bytes(self):
         self.assertEqual(_stable_checkpoint_bytes(self.file),

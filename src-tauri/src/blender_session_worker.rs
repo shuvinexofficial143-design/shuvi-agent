@@ -117,6 +117,8 @@ struct OwnedSession {
     output_dir:String,
     allow_render:bool,
     source_checkpoint:Option<SourceCheckpoint>,
+    // Private native-only sequencing state. Never sourced from model JSON.
+    verified_first_stage_sha256:Option<String>,
     created:Instant,
     watchdog_stop:Arc<AtomicBool>,
     invalidated:Arc<AtomicBool>,
@@ -385,6 +387,7 @@ pub(crate) fn start(
     let mut session=OwnedSession{child,input,replies:reader(output),session_id:String::new(),
         output_dir:output_dir.into(),allow_render,
         source_checkpoint:source_checkpoint.clone(),
+        verified_first_stage_sha256:None,
         created:Instant::now(),watchdog_stop,
         invalidated,
         #[cfg(target_os="windows")]
@@ -872,6 +875,14 @@ pub(crate) fn objects(
     result
 }
 
+fn stage_two_dependency(stage:Option<&str>,verified_first_stage_sha256:Option<&str>)
+    ->Result<(),String>{
+    if stage==Some("model2")&&verified_first_stage_sha256.is_none(){
+        return Err("Fixed Stage 2 requires a previously native-verified Stage 1 in this exact owned Blender session.".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn plan(
     registry:&SessionRegistry,state:&ActionState,id:&str,plan:&Value,
     allow_render:bool,expected_scene_revision:&str,execution_action_id:Option<&str>
@@ -902,6 +913,13 @@ pub(crate) fn plan(
             session.source_checkpoint.as_ref().map(|x|x.canonical_path.as_str()),
             allow_render,true
         )?;
+        let stage=plan_lineage.get("acceptance_stage").and_then(Value::as_str);
+        stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref())?;
+        // Any other approved mutating plan between stages consumes the
+        // continuation. An unverified/failed run retires this session.
+        if stage!=Some("model2"){
+            session.verified_first_stage_sha256=None;
+        }
         if let Some(ref input)=session.source_checkpoint {
             blender_input_checkpoint::still_current(input)?;
         }
@@ -941,11 +959,34 @@ pub(crate) fn plan(
         }else if material_claim.is_some(){
             return Err("Unrelated Blender plan cannot return material-render preflight.".into());
         }
+        if stage==Some("model2"){
+            let provenance=response.get("model_stage_source_preflight")
+                .filter(|v|!v.is_null())
+                .ok_or("Fixed Stage 2 lacks read-only live Stage-1 geometry preflight.")?;
+            if provenance.get("verified").and_then(Value::as_bool)!=Some(true)
+                ||provenance.get("source_stage").and_then(Value::as_str)!=Some("model1")
+                ||provenance.get("source_sha256").and_then(Value::as_str)
+                    !=session.verified_first_stage_sha256.as_deref()
+                ||provenance.get("source_scene_revision").and_then(Value::as_str)
+                    !=Some(expected_scene_revision)
+                ||provenance.get("fixed_stage_geometry_verified").and_then(Value::as_bool)!=Some(true)
+                ||provenance.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera"){
+                return Err("Fixed Stage 2 preflight is not bound to the previous in-session verified Stage 1.".into());
+            }
+        }else if response.get("model_stage_source_preflight").is_some_and(|v|!v.is_null()){
+            return Err("Unrelated Blender plan cannot claim an in-session Stage-1 preflight.".into());
+        }
         // Do not promote an authenticated response carrying the wrong output
         // filename, even if its bytes were verified inside the approved folder.
         crate::blender_plan_lineage::verify_final_artifact_binding(plan,&response)?;
         let manifest=crate::blender_artifact_manifest::build(
             &response,Path::new(&session.output_dir),action_id,Some(id))?;
+        // Arm the second stage ONLY after independent native SHA, typed
+        // execution and reopened-geometry evidence have all succeeded.
+        session.verified_first_stage_sha256=if stage==Some("model1"){
+            Some(response["artifact"]["sha256"].as_str()
+                .ok_or("Stage 1 saved artifact digest missing.")?.to_owned())
+        }else{None};
         Ok(json!({"status":"verified","session_id":id,"full_plan_completed":true,
             "source_action_id":execution_action_id,"artifact":response["artifact"],
             "checkpoint_reopen":response["checkpoint_reopen"],"plan_steps":response["executed_steps"],
@@ -978,6 +1019,21 @@ pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Resul
     }
 }
 
+
+#[cfg(test)]
+mod fixed_stage_native_sequence_tests{
+    use super::*;
+    #[test]
+    fn model2_requires_native_owned_prior_stage1_success(){
+        for stage in [None,Some("model1"),Some("render"),Some("look")]{
+            stage_two_dependency(stage,None).unwrap();
+        }
+        assert!(stage_two_dependency(Some("model2"),None).is_err());
+        stage_two_dependency(Some("model2"),Some(&"a".repeat(64))).unwrap();
+        // No source plan, external-reported stage, or forged action JSON
+        // can set verified_first_stage_sha256 on an OwnedSession.
+    }
+}
 
 #[cfg(test)]
 mod read_only_object_view_tests {

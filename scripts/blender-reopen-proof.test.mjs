@@ -56,7 +56,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 29 tests/);
+  assert.match(result.stderr,/Ran 31 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -177,4 +177,18 @@ test("fixed Stage-1 and Stage-2 .blend saves require actual typed pyramid geomet
   assert.ok(reopenTests.includes("def test_stage_one_and_two_pyramids_reopen_from_expected_typed_geometry("));
   assert.ok(reopenTests.includes("def test_nonreserved_user_blend_not_restricted_to_fixed_pyramid("));
   assert.ok(rust.includes('proof.get("fixed_stage_geometry_verified")'));
+});
+
+test("stage two checks saved Stage-1 SHA and live mesh/camera before any PlanRunner mutation",()=>{
+ const worker=readFileSync(new URL("../integrations/blender-worker/shuvi_blender_session.py",import.meta.url),"utf8");
+ for(const token of [
+  "def verify_in_session_stage1(controller, previous: dict, expected_revision: str)",
+  "live.get(\"fingerprint\") != prior.get(\"fingerprint\")",
+  '"fixed_stage_geometry_verified": True',
+  "Stage 1 saved bytes changed during Stage 2 preflight",
+  "stage1_source_proof = verify_in_session_stage1(",
+  'result["model_stage_source_preflight"] = stage1_source_proof',
+  "test_stage2_live_preflight_correlates_previous_bytes_shape_and_revision",
+  "test_stage2_dependency_rejects_changed_checkpoint_and_scene_revision",
+ ])assert.ok((worker+"\n"+reopenTests).includes(token),token);
 });

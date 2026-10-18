@@ -315,6 +315,70 @@ def require_complete_step_report(plan, report):
     return len(names)
 
 
+def _typed_final_filename(plan) -> str | None:
+    if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list) or not plan["steps"]:
+        return None
+    final = plan["steps"][-1]
+    if not isinstance(final, dict):
+        return None
+    request = final.get("request")
+    if not isinstance(request, dict):
+        return None
+    if request.get("operation") not in OUTPUT_OPS:
+        return None
+    payload = request.get("payload")
+    return payload.get("name") if isinstance(payload, dict) and isinstance(payload.get("name"), str) else None
+
+
+def verify_in_session_stage1(controller, previous: dict, expected_revision: str) -> dict:
+    """Stage 2 read-only preflight of the exact preceding Stage 1 state.
+
+    An in-memory edit after Stage 1 or swapping the saved bytes before
+    Stage 2 cannot be treated as the already verified native milestone.
+    No second Blender session, arbitrary code, or mutation is launched.
+    """
+    from shuvi_blender_agent.contracts import Request, Status
+    from shuvi_blender_agent.files import read_output
+    from shuvi_blender_reopen import capture_scene
+
+    artifact = previous.get("artifact") if isinstance(previous, dict) else None
+    prior = previous.get("checkpoint_reopen") if isinstance(previous, dict) else None
+    if not isinstance(artifact, dict) or not isinstance(prior, dict):
+        raise ValueError("Stage 2 requires completed Stage 1 read-only reopen evidence")
+    source = artifact.get("path")
+    expected_sha = artifact.get("sha256")
+    if (not isinstance(source, str) or not Path(source).is_absolute()
+            or Path(source).name != "shuvi41-proof-stage1.blend"
+            or not isinstance(expected_sha, str) or len(expected_sha) != 64
+            or any(ch not in "0123456789abcdef" for ch in expected_sha)
+            or prior.get("verified") is not True
+            or prior.get("fixed_stage_name") != "shuvi41-proof-stage1.blend"
+            or prior.get("fixed_stage_geometry_verified") is not True
+            or prior.get("checkpoint_file_sha256") != expected_sha):
+        raise ValueError("Stage 2 source does not have an independently verified Stage 1 receipt")
+    checked = read_output(Path(source), "BLEND")
+    if checked.get("sha256") != expected_sha or checked.get("bytes") != artifact.get("bytes"):
+        raise ValueError("Stage 1 checkpoint bytes changed before Stage 2")
+    live = capture_scene(controller, Path(source), require_saved_file=False)
+    if (live.get("fingerprint") != prior.get("fingerprint")
+            or live.get("fixed_stage_name") != "shuvi41-proof-stage1.blend"
+            or live.get("fixed_stage_geometry_verified") is not True
+            or live.get("proof_camera_verified") is not True
+            or live.get("active_camera_name") != "Shuvi41ProofCamera"):
+        raise ValueError("Live Stage 1 geometry/camera differs from saved and reopened proof")
+    final = controller.execute(Request("scene.inspect", timeout_ms=10_000))
+    if (final.status != Status.SUCCEEDED or not isinstance(final.data, dict)
+            or final.data.get("revision") != expected_revision):
+        raise ValueError("Scene revision changed during Stage 2 dependency preflight")
+    if read_output(Path(source), "BLEND").get("sha256") != expected_sha:
+        raise ValueError("Stage 1 saved bytes changed during Stage 2 preflight")
+    return {"verified": True, "source_stage": "model1",
+            "source_sha256": expected_sha,
+            "source_scene_revision": expected_revision,
+            "fixed_stage_geometry_verified": True,
+            "active_camera_name": "Shuvi41ProofCamera"}
+
+
 def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
                  allow_render: bool, expected_scene_revision: str):
     from shuvi_blender_agent.contracts import Status
@@ -773,6 +837,7 @@ def serve(argv: list[str] | None = None) -> int:
                       "authenticated": True, "mutations_by_approval_only": True,
                       "render_approved": args.allow_render,
                       "input_checkpoint": source_before})
+            verified_stage1 = None
             for _ in range(MAX_COMMANDS):
                 raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 2)
                 if not raw:  # parent gone: terminate Blender rather than orphan it
@@ -793,8 +858,24 @@ def serve(argv: list[str] | None = None) -> int:
                         preflight = validate_material_render_source(
                             controller, source_before, expected_revision, request_allow_render
                         )
+                    name = _typed_final_filename(payload)
+                    stage1_source_proof = None
+                    if name == "shuvi41-proof-stage1.blend" and source_before is not None:
+                        raise ValueError("Stage 1 requires a fresh owner-approved Blender session")
+                    if name == "shuvi41-proof-stage2.blend":
+                        if verified_stage1 is None:
+                            raise ValueError("Stage 2 was not preceded by native-owned Stage 1")
+                        stage1_source_proof = verify_in_session_stage1(
+                            controller, verified_stage1, expected_revision)
+                    # An unrelated mutating plan consumes the Stage 1
+                    # continuation, even when the output filename differs.
+                    verified_stage1 = None
                     result = checked_plan(controller, payload, args.output_dir,
                                           args.blender_exe, request_allow_render, expected_revision)
+                    if name == "shuvi41-proof-stage1.blend":
+                        verified_stage1 = result
+                    if stage1_source_proof is not None:
+                        result["model_stage_source_preflight"] = stage1_source_proof
                     # The evidence is emitted only AFTER an actual verified
                     # output, never as a stand-alone or premature success.
                     if preflight is not None:

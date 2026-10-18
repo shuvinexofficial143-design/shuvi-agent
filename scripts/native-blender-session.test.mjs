@@ -314,3 +314,21 @@ test("the independently inspected fixed Copper shader must be the one wired to a
     "Copper shader fixed inputs are overridden by linked nodes"
   ])assert.ok(broker.includes(token),token);
 });
+
+test("stage two requires private, previously verified Stage-1 receipt within same persistent session",()=>{
+ for(const token of [
+  "verified_first_stage_sha256:Option<String>",
+  "fn stage_two_dependency(stage:Option<&str>,verified_first_stage_sha256:Option<&str>)",
+  "stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref())?",
+  'provenance.get("source_stage").and_then(Value::as_str)!=Some("model1")',
+  'provenance.get("source_sha256").and_then(Value::as_str)',
+  'session.verified_first_stage_sha256=if stage==Some("model1")',
+  "fn model2_requires_native_owned_prior_stage1_success()",
+ ])assert.ok(native.includes(token),token);
+ for(const token of [
+  "verified_stage1 = None",
+  'if name == "shuvi41-proof-stage2.blend":',
+  "stage1_source_proof = verify_in_session_stage1(",
+  'if name == "shuvi41-proof-stage1.blend" and source_before is not None:'
+ ])assert.ok(broker.includes(token),token);
+});

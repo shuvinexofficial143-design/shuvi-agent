@@ -1570,3 +1570,38 @@ five names and common Windows basename spellings.
 This guards the documented Win32 basename aliases; the production
 output folder remains owner-approved and native path/SHA verification
 is still mandatory. It is not evidence of a live Windows Blender run.
+
+## Shuvi 41 — Same-session Stage-2 state and verified geometry dependency
+
+A valid fixed Stage-2 recipe previously could be dispatched into a
+persistent Blender session that happened to expose matching object
+names, without verifying that **this same owned session** had completed
+the independently reopened Stage-1 checkpoint. This milestone adds a
+native-private Stage-1 continuation token holding its verified file SHA,
+created **only after** actual typed-step completion, independent reopen
+proof and native manifest/file hash. The first plan opens without an
+input checkpoint; Stage-2 cannot run as a one-off job, cannot switch to
+an unrelated supplied .blend, and cannot run before a successful
+Stage-1 **within the same persistent session**. Any intervening
+unrelated mutating plan consumes the token. The staged acceptance
+workflow still performs Stage-1 and Stage-2 within one owned session.
+
+The authenticated Python broker separately remembers the preceding
+Stage-1 result only inside its session loop. Immediately before a
+Stage-2 mutation it SHA-rechecks the real saved Stage-1 file,
+cross-checks the earlier independent checkpoint reopen digest, and
+re-inspects the full current live mesh, camera and scene revision.
+Its bounded read-only `capture_scene` fingerprint must equal the
+previously saved and reopened stage, with the correct Stage-1 pyramid.
+The broker rechecks the source SHA after inspection and returns a
+bounded `model_stage_source_preflight` report only after the staged
+mutation completes. Native Rust requires this receipt's SHA to equal
+its private saved Stage-1 token, matches the expected scene revision
+and rejects a claim on any unrelated plan. Wrong geometry, mutated
+source bytes, stale revision and unrelated intermediate mutations
+all fail closed instead of being promoted as a verified Stage-2.
+
+Python fixture tests exercise positive and tampered Stage-1 source
+SHA/camera/geometry/revision. Rust tests cover same-session ordering
+and one-off/file substitution rejection. No live licensed Windows
+Blender host acceptance or visual quality proof is claimed.

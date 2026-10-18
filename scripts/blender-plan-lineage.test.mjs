@@ -94,3 +94,8 @@ test("Win32 reserved output aliases cannot be used by generic Blender model plan
   assert.ok(lineage.includes("let matched=match folded.as_deref()"));
   assert.ok(lineage.includes("fn windows_reserved_blender_names_are_protected_against_case_and_dot_aliases()"));
 });
+
+test("fixed stage two can run only in a persistent same-session continuation, not a oneoff .blend reload",()=>{
+  assert.ok(lineage.includes('if stage=="model2" && (input_source.is_some() || !persistent_session)'));
+  assert.ok(lineage.includes("fn fixed_stage_two_cannot_open_an_unverified_file_or_use_oneoff_worker()"));
+});
