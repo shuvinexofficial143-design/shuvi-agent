@@ -46,7 +46,9 @@
     "resources": {
       "../integrations/after-effects-extendscript/shuvi-ae.jsx": "after-effects/shuvi-ae.jsx",
       "../integrations/blender-worker/shuvi_blender_bridge.py": "blender-worker/shuvi_blender_bridge.py",
-      "../integrations/blender-worker/shuvi_blender_plan.py": "blender-worker/shuvi_blender_plan.py"
+      "../integrations/blender-worker/shuvi_blender_plan.py": "blender-worker/shuvi_blender_plan.py",
+      "../integrations/blender-worker/shuvi_blender_reopen.py": "blender-worker/shuvi_blender_reopen.py",
+      "../integrations/blender-worker/shuvi_blender_session.py": "blender-worker/shuvi_blender_session.py"
     }
   }
 }
