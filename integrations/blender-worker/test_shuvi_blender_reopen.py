@@ -269,7 +269,7 @@ class ReopenTests(unittest.TestCase):
                             {"energy": 250.0}, {"metallic": 0.35}):
                 provider.options = options
                 with self.subTest(options=options):
-                    with self.assertRaisesRegex(ValueError, "differs|copper material/look"):
+                    with self.assertRaisesRegex(ValueError, "differs|copper material/look|Saved copper shader values"):
                         reopen_checkpoint(Path("/dummy/blender"), material, original)
             provider.options = {"material": "Wrong"}
             unverified_original = capture_scene(
