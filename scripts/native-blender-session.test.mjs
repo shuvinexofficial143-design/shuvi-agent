@@ -46,7 +46,7 @@ test("native registry checks real managed PID identity, resource limit and abort
     "managed_process_identity_matches(state,session.child.id())",
     "current_runtime_status(state)",
     "terminate_managed_process_tree(self.child.id())",
-    "retire(state,&mut slot)",
+    "retire(registry,state,&mut slot)",
     "recv_timeout(",
     "session_reconnect_allowed",
     "source_action_id",
