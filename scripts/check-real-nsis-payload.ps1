@@ -123,6 +123,8 @@ try{
     realPackedReadOnlyWorkerExecuted=$true
     badDigestAndReplayRejected=$true
     singlePackedDesktopExeFound=$true
+    packedMainExeBytes=[long]$main[0].Length
+    packedMainExeSha256=(Get-FileHash -LiteralPath $main[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     packedWorkerSha256=$manifest.workerSha256
     installerSha256=$manifest.installerSha256
     signingVerified=$false
