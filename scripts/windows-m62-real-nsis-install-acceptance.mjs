@@ -8,6 +8,7 @@ import {resolve,join,basename,dirname} from "node:path";
 import {createHash} from "node:crypto";
 import {verifyUnsignedReleaseEvidence,verifyInstalledWorker} from "./native-pinned-release-manifest.mjs";
 import {verifyPackedMainContent} from "./native-packed-main-content.mjs";
+import {awaitRealNsisUninstallRemoval} from "./native-nsis-uninstall-settle.mjs";
 
 if(process.platform!=="win32"||process.env.CI!=="true"
    ||process.env.GITHUB_ACTIONS!=="true"||!process.env.RUNNER_TEMP){
@@ -97,6 +98,9 @@ try{
   if(removal.error||removal.status!==0){
     throw Error("Real ephemeral NSIS uninstall did not complete successfully.");
   }
+  // NSIS may return zero before its detached uninstaller finishes. Observe
+  // bounded, stable removal of BOTH real files, without deleting them here.
+  await awaitRealNsisUninstallRemoval({installDir});
   // A zero process exit code alone is NOT proof the NSIS uninstaller
   // removed the installed desktop and SHA worker binaries.
   if(existsSync(join(installDir,"shuvi.exe"))

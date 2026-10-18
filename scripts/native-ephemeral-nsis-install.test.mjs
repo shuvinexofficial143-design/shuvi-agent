@@ -34,6 +34,7 @@ test("M62 rehashes NSIS-installed fixed worker and actually runs independent imm
 test("M62 requires a unique real NSIS uninstaller and cleanup; cannot forge owner Windows or code signing",()=>{
  assert.match(run,/uninstallers\.length!==1/);
  assert.match(run,/invocation\(uninstaller,\["\/S"\],90000\)/);
+ assert.match(run,/await awaitRealNsisUninstallRemoval\(\{installDir\}\)/);
  assert.match(run,/uninstalled=true/);
  assert.match(run,/existsSync\(join\(installDir,"shuvi\.exe"\)\)/);
  assert.match(run,/existsSync\(join\(installDir,"shuvi-readonly-hash-worker\.exe"\)\)/);
