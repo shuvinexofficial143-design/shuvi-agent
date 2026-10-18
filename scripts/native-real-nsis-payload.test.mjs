@@ -46,3 +46,11 @@ test("M60 Windows native CI builds actual NSIS and uploads ONLY witness, not exe
  assert.match(manifest,/signingVerified:false,installedWindowsVerified:false,applicationVerified:false/);
  assert.match(manifest,/function digest\(path\)/);
 });
+
+test("M66 actual Tauri 2.11.5 CLI targets the same MSVC output as Cargo sidecar and NSIS witness",()=>{
+ assert.match(builder,/const target=process\.env\.CARGO_BUILD_TARGET\|\|host/);
+ assert.match(builder,/CARGO_BUILD_TARGET:target/);
+ assert.match(builder,/spawnSync\(process\.execPath,\[tauriJs,"build","--target",target,"--config"/);
+ assert.match(builder,/resolve\("src-tauri","target",target,"release","bundle","nsis"\)/);
+ assert.doesNotMatch(builder,/--target","?undefined|--target",host/);
+});

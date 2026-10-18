@@ -21,7 +21,10 @@ const size=statSync(sidecar).size;
 if(size<1024||size>32*1024*1024)throw Error("Refusing unbounded or missing prepared worker.");
 const before=sha();
 const env={...process.env,SHUVI_REQUIRE_PINNED_SHA_SIDECAR:"1",CARGO_BUILD_TARGET:target};
-const r=spawnSync(process.execPath,[tauriJs,"build","--config","src-tauri/tauri.sha-sidecar.conf.json"],{
+// Explicit CLI target is mandatory: Cargo env CARGO_BUILD_TARGET alone
+// makes cargo write target/TRIPLE/release while Tauri otherwise bundles
+// from target/release, producing a nonexistent main EXE path.
+const r=spawnSync(process.execPath,[tauriJs,"build","--target",target,"--config","src-tauri/tauri.sha-sidecar.conf.json"],{
   env,stdio:"inherit",shell:false,windowsHide:true
 });
 if(r.error||r.status!==0)throw Error("Pinned Windows NSIS build failed or was interrupted.");
