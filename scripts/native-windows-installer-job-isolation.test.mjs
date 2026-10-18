@@ -23,6 +23,8 @@ test("M65 separately bounded Windows NSIS job executes the real exact package an
  assert.match(nsis,/SHUVI_M62_EPHEMERAL_CI: "1"/);
  assert.match(nsis,/pinned-nsis-unsigned-acceptance-witnesses/);
  assert.match(nsis,/path: \.shuvi-release\/\*\.json/);
+ assert.match(nsis,/if-no-files-found: error/);
+ assert.match(nsis,/include-hidden-files: true/);
  assert.doesNotMatch(nsis,/upload-release-asset|create-release|actions\/upload-release|path: .*bundle\/nsis.*\.exe/);
  assert.doesNotMatch(nsis,/production[_ -]ready:\s*true|signed[_ -]installer:\s*true/i);
 });

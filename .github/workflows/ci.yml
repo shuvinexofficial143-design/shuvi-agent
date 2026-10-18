@@ -95,4 +95,5 @@ jobs:
         with:
           name: pinned-nsis-unsigned-acceptance-witnesses
           path: .shuvi-release/*.json
-          if-no-files-found: warn
+          if-no-files-found: error
+          include-hidden-files: true
