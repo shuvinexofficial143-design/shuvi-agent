@@ -321,7 +321,7 @@ test("stage two requires private, previously verified Stage-1 receipt within sam
   "verified_first_stage_fingerprint:Option<String>",
   'provenance.get("source_scene_fingerprint").and_then(Value::as_str)',
   "fn stage_two_dependency(stage:Option<&str>,sha256:Option<&str>,fingerprint:Option<&str>)",
-  "stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref())?",
+  "stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref(),",
   'provenance.get("source_stage").and_then(Value::as_str)!=Some("model1")',
   'provenance.get("source_sha256").and_then(Value::as_str)',
   'session.verified_first_stage_sha256=if stage==Some("model1")',
