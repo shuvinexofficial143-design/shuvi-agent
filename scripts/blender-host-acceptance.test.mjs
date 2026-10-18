@@ -29,7 +29,7 @@ test("actual acceptance stages bind checked PlanRunner to SHA/reopened evidence"
     'inspect_input_source(source, digest)',
     'validate_material_render_source(',
     'if files[stage]["blender_session_id"] != current["session_id"]',
-    'if digest.hexdigest() != sha:',
+    'digest.hexdigest() != sha',
     '"checkpoint_file_sha256") != sha',
     '"real_blender_upstream_acceptance_passed"',
     '"failed_or_partial_outcome_unknown"',
