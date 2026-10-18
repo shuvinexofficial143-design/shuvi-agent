@@ -1,0 +1,35 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const read=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
+const payload=read("scripts/check-real-nsis-payload.ps1");
+const smoke=read("scripts/check-installed-shuvi-worker.mjs");
+const ci=read(".github/workflows/ci.yml");
+const signer=read("scripts/check-shuvi-release-signatures.ps1");
+test("M61 executes ONLY fixed SHA-verified extracted real NSIS worker after matching current signed-off source bytes",()=>{
+ assert.match(payload,/\$workers\[0\]\.Directory\.FullName/);
+ assert.match(payload,/\$main\[0\]\.Directory\.FullName -cne \$workerDir/);
+ assert.match(payload,/Get-FileHash -LiteralPath \$workers\[0\]\.FullName -Algorithm SHA256/);
+ assert.match(payload,/Get-Command 'node\.exe'/);
+ assert.match(payload,/Join-Path \$PSScriptRoot 'check-installed-shuvi-worker\.mjs'/);
+ assert.match(payload,/\$node\.Source \$smokeScript --manifest \$manifestFile --install-dir \$workerDir/);
+ assert.match(payload,/if\(\$LASTEXITCODE -ne 0\)/);
+ assert.match(payload,/realPackedReadOnlyWorkerExecuted=\$true/);
+ assert.match(payload,/badDigestAndReplayRejected=\$true/);
+ assert.doesNotMatch(payload,/Start-Process|msiexec|Invoke-Expression|Invoke-WebRequest/);
+});
+test("M61 actual package worker must prove real digest, replay, invalid program denial and must not promote application",()=>{
+ assert.match(smoke,/verifyInstalledWorker\(\{manifestPath,installDir\}\)/);
+ assert.match(smoke,/spawnSync\(installedWorker/);
+ assert.match(smoke,/--shuvi-readonly-sha256/);
+ assert.match(smoke,/uuidEvidenceReplayRejected:true/);
+ assert.match(smoke,/shaMismatchRejected:true/);
+ assert.match(smoke,/unknownCommandRejected:true/);
+ assert.match(smoke,/mainApplicationVerified:false/);
+ assert.match(smoke,/ownerDesktopEndToEndVerified:false/);
+ assert.match(payload,/\$smoke\.mainApplicationVerified -ne \$false/);
+ assert.match(payload,/\$smoke\.codeSigningVerified -ne \$false/);
+ assert.match(payload,/\$smoke\.autoRetryAuthorized -ne \$false/);
+ assert.match(signer,/Get-AuthenticodeSignature/);
+ assert.match(ci,/npm run build:windows-installer/);
+});
