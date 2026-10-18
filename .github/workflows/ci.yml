@@ -59,6 +59,17 @@ jobs:
         run: node scripts/check-native-sha-sidecar.mjs
       - name: M59 real Windows installed-layout SHA worker fixture and pin mismatch denial
         run: node scripts/windows-m59-installed-worker-fixture.mjs
+      - name: Install locked Tauri dependencies for REAL M60 NSIS packaging
+        run: npm ci
+      - name: M60 build real pinned Windows NSIS and independently extract/check its packaged SHA worker
+        run: npm run build:windows-installer
+      - name: Upload M60 unsigned NSIS content witness only (NOT installer / release)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m60-unsigned-nsis-witness
+          path: .shuvi-release/*.json
+          if-no-files-found: warn
       - name: Upload Rust attestation
         if: always()
         uses: actions/upload-artifact@v4
