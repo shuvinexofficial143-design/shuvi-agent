@@ -2,7 +2,7 @@
 // Neither hashing nor this unsigned witness constitutes Authenticode signing,
 // owner Windows installation, real app execution or UI/application success.
 import {createHash} from "node:crypto";
-import {readFileSync,writeFileSync,statSync,lstatSync,readdirSync,mkdirSync} from "node:fs";
+import {readFileSync,writeFileSync,lstatSync,readdirSync,openSync,readSync,closeSync} from "node:fs";
 import {resolve,join,dirname,basename} from "node:path";
 
 const TARGETS=new Set(["x86_64-pc-windows-msvc","aarch64-pc-windows-msvc","i686-pc-windows-msvc"]);
@@ -19,7 +19,17 @@ function regular(path,min,max,context){
   return m.size;
 }
 function digest(path){
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+  // Bounded streaming avoids allocating a whole 2 GiB NSIS setup into RAM.
+  const hash=createHash("sha256"),fd=openSync(path,"r");
+  const buf=Buffer.allocUnsafe(64*1024);
+  try{
+    for(;;){
+      const count=readSync(fd,buf,0,buf.length,null);
+      if(count===0)break;
+      hash.update(buf.subarray(0,count));
+    }
+  }finally{closeSync(fd);}
+  return hash.digest("hex");
 }
 function safeDir(path,context){
   const m=lstatSync(path);
@@ -68,7 +78,9 @@ export function createUnsignedReleaseEvidence({target,sidecarPath,nsisDir,outPat
   return data;
 }
 export function verifyUnsignedReleaseEvidence({manifestPath,sidecarPath,nsisDir}){
-  const manifest=validateShape(JSON.parse(readFileSync(resolve(manifestPath),"utf8")));
+  const mf=resolve(manifestPath);
+  regular(mf,16,8192,"Release manifest");
+  const manifest=validateShape(JSON.parse(readFileSync(mf,"utf8")));
   const worker=resolve(sidecarPath),bundle=resolve(nsisDir);
   if(basename(worker)!==manifest.workerFilename)throw Error("Release sidecar target path differs from witness.");
   safeDir(dirname(worker),"SHA worker parent");
@@ -82,8 +94,13 @@ export function verifyUnsignedReleaseEvidence({manifestPath,sidecarPath,nsisDir}
   return manifest;
 }
 export function verifyInstalledWorker({manifestPath,installDir}){
-  const manifest=validateShape(JSON.parse(readFileSync(resolve(manifestPath),"utf8")));
+  const mf=resolve(manifestPath);
+  regular(mf,16,8192,"Release manifest");
+  const manifest=validateShape(JSON.parse(readFileSync(mf,"utf8")));
   const dir=resolve(installDir);safeDir(dir,"Shuvi installed app");
+  // Installer output is meaningful only when the installed main desktop app
+  // exists beside its fixed worker. Do NOT execute the main app here.
+  regular(join(dir,"shuvi.exe"),MIN_BYTES,512*1024*1024,"Installed Shuvi main EXE");
   // Tauri renames a target-suffixed externalBin to the fixed executable name.
   // Never execute main Shuvi.exe or trust an executable chosen by a model.
   const installedWorker=join(dir,"shuvi-readonly-hash-worker.exe");
