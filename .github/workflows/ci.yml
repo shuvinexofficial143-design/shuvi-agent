@@ -61,7 +61,7 @@ jobs:
         run: node scripts/windows-m59-installed-worker-fixture.mjs
       - name: Install locked Tauri dependencies for REAL M60 NSIS packaging
         run: npm ci
-      - name: M60 build real pinned Windows NSIS and independently extract/check its packaged SHA worker
+      - name: M60 build real pinned Windows NSIS, M61 verify and execute only extracted SHA worker
         run: npm run build:windows-installer
       - name: Upload M60 unsigned NSIS content witness only (NOT installer / release)
         if: always()
