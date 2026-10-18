@@ -40,7 +40,7 @@ test("M60 Windows native CI builds actual NSIS and uploads ONLY witness, not exe
  assert.match(ci,/M60 build real pinned Windows NSIS/);
  assert.match(ci,/npm run build:windows-installer/);
  assert.match(ci,/npm ci/);
- assert.match(ci,/m60-unsigned-nsis-witness/);
+ assert.match(ci,/pinned-nsis-unsigned-acceptance-witnesses/);
  assert.match(ci,/path: \.shuvi-release\/\*\.json/);
  assert.doesNotMatch(ci,/path: .*bundle\/nsis.*\.exe/);
  assert.match(manifest,/signingVerified:false,installedWindowsVerified:false,applicationVerified:false/);
