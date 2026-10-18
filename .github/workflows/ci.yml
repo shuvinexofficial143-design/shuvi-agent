@@ -63,6 +63,10 @@ jobs:
         run: npm ci
       - name: M60 build real pinned Windows NSIS, M61 verify and execute only extracted SHA worker
         run: npm run build:windows-installer
+      - name: M62 actually install the newly built NSIS on disposable Windows CI and verify/uninstall
+        env:
+          SHUVI_M62_EPHEMERAL_CI: "1"
+        run: node scripts/windows-m62-real-nsis-install-acceptance.mjs
       - name: Upload M60 unsigned NSIS content witness only (NOT installer / release)
         if: always()
         uses: actions/upload-artifact@v4
