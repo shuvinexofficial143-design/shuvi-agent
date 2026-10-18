@@ -1386,3 +1386,17 @@ Normal `model1`, `model2`, `render` scenes and unrelated materials
 are unchanged. The optional `look_render` still retains its separate
 pre-render typed shader inspection at render time. No rendering, merge,
 live Blender execution, arbitrary model code or approval bypass occurs.
+
+## Shuvi 41 — actual rendered Copper shader routing guard
+
+In addition to verifying the persisted Principled input numbers, the typed
+`material.shader_inspect` preflight now requires exactly one
+Material Output node and a **direct BSDF-to-Material-Output Surface link
+from the validated Principled shader**. This closes a false-positive
+case where metallic/roughness/base color match the recipe, but an
+Emission or other shader actually drives the rendered material.
+Duplicate links, absent source/destination nodes, ambiguous material
+output nodes and linked overrides of fixed input sockets are rejected.
+The same source-bound shader verifier is applied on saved-look writer,
+independent read-only reopen, and just before material rendering.
+No arbitrary shader mutation or Blender UI execution was introduced.

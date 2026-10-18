@@ -304,3 +304,13 @@ test("typed material.shader_inspect verifies genuine copper base color, metallic
     'proof.get("shader_node_graph_revision_verified").and_then(Value::as_bool)!=Some(true)'
   ])assert.ok(native.includes(p),p);
 });
+
+test("the independently inspected fixed Copper shader must be the one wired to actual Material Output Surface",()=>{
+  for(const token of [
+    "outputs = [node[\"name\"] for node in nodes if node[\"type\"] == \"OUTPUT_MATERIAL\"]",
+    'approved_edge = [principled_nodes[0], "BSDF", outputs[0], "Surface"]',
+    "if direct_output_count != 1:",
+    "Copper shader references missing or duplicate graph edge",
+    "Copper shader fixed inputs are overridden by linked nodes"
+  ])assert.ok(broker.includes(token),token);
+});

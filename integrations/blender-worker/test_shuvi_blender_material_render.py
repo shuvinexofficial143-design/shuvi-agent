@@ -189,6 +189,47 @@ class MaterialRenderPreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one Principled"):
             self.proof()
 
+    def test_copper_principled_must_reach_active_material_output_surface(self):
+        # Correct-looking Principled values alone must not validate a
+        # material that actually renders through a different shader.
+        cases = [
+            ("wrong_surface", [["Emission", "Emission", "Material Output", "Surface"]],
+             [{"name": "Emission", "type": "EMISSION", "image": None}]),
+            ("missing_surface", [], []),
+            ("wrong_output", [["Principled BSDF", "BSDF", "Missing", "Surface"]], []),
+        ]
+        for label, links, extra_nodes in cases:
+            self.ctrl = FakeReadOnlyController(self.path)
+            self.ctrl.shader["links"] = links
+            self.ctrl.shader["nodes"].extend(extra_nodes)
+            self.ctrl.shader["link_count"] = len(links)
+            self.ctrl.shader["node_count"] = len(self.ctrl.shader["nodes"])
+            self.ctrl.update_shader_revision()
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "Surface|graph edge"):
+                    self.proof()
+
+    def test_copper_shader_rejects_duplicate_and_ambiguous_render_edges(self):
+        for change in ("duplicate_edge", "duplicate_output", "missing_output"):
+            self.ctrl = FakeReadOnlyController(self.path)
+            shader = self.ctrl.shader
+            if change == "duplicate_edge":
+                shader["links"].append(list(shader["links"][0]))
+            elif change == "duplicate_output":
+                shader["nodes"].append({
+                    "name": "Alternative Output", "type": "OUTPUT_MATERIAL",
+                    "image": None})
+            else:
+                shader["nodes"] = [
+                    node for node in shader["nodes"]
+                    if node["type"] != "OUTPUT_MATERIAL"]
+            shader["node_count"] = len(shader["nodes"])
+            shader["link_count"] = len(shader["links"])
+            self.ctrl.update_shader_revision()
+            with self.subTest(change=change):
+                with self.assertRaisesRegex(ValueError, "node|edge|Surface"):
+                    self.proof()
+
     def test_missing_wrong_or_multiple_material_slots_fail_before_dispatch(self):
         mesh = self.ctrl.objects["MESH"]
         for values, count in [([], 0), (["Unrelated"], 1),

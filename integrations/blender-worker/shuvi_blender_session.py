@@ -127,6 +127,24 @@ def verify_shuvi41_copper_shader(snapshot: dict) -> str:
     ]
     if len(principled_nodes) != 1:
         raise ValueError("Copper shader needs exactly one Principled BSDF node")
+    # A Principled parameter readback is meaningless if the rendered Surface
+    # is connected to a different shader. Require an exact direct BSDF ->
+    # Material Output Surface edge and forbid ambiguous output/socket links.
+    if any(not isinstance(node, dict)
+           or not isinstance(node.get("name"), str)
+           or not node["name"] or len(node["name"]) > 128
+           or not isinstance(node.get("type"), str)
+           for node in nodes):
+        raise ValueError("Copper shader node metadata is invalid")
+    by_name = {node["name"]: node for node in nodes}
+    if len(by_name) != len(nodes):
+        raise ValueError("Copper shader node names are ambiguous")
+    outputs = [node["name"] for node in nodes if node["type"] == "OUTPUT_MATERIAL"]
+    if len(outputs) != 1:
+        raise ValueError("Copper shader needs exactly one Material Output node")
+    approved_edge = [principled_nodes[0], "BSDF", outputs[0], "Surface"]
+    direct_output_count = 0
+    seen_links = set()
     for link in links:
         if not isinstance(link, list) or len(link) != 4 or not all(
                 isinstance(x, str) for x in link):
@@ -134,6 +152,16 @@ def verify_shuvi41_copper_shader(snapshot: dict) -> str:
         if link[2] == principled_nodes[0] and link[3] in (
                 "Base Color", "Metallic", "Roughness"):
             raise ValueError("Copper shader fixed inputs are overridden by linked nodes")
+        if (link[0] not in by_name or link[2] not in by_name
+                or tuple(link) in seen_links):
+            raise ValueError("Copper shader references missing or duplicate graph edge")
+        seen_links.add(tuple(link))
+        if link[2] == outputs[0] and link[3] == "Surface":
+            if link != approved_edge:
+                raise ValueError("Copper shader Surface is not connected to fixed Principled BSDF")
+            direct_output_count += 1
+    if direct_output_count != 1:
+        raise ValueError("Copper shader lacks exactly one direct output Surface link")
     values = snapshot.get("principled")
     if not isinstance(values, dict):
         raise ValueError("Copper shader Principled parameters are missing")
