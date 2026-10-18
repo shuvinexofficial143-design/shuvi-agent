@@ -10,7 +10,7 @@ use crate::{ActionState,register_managed_process,unregister_managed_process,term
 struct PlanFile(PathBuf);
 impl Drop for PlanFile {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
 
-fn verify_output(output:&Value,root:&Path)->Result<(),String>{
+pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
     let artifact=output.get("artifact").ok_or("Blender output artifact receipt missing.")?;
     let name=artifact.get("path").and_then(Value::as_str).ok_or("Blender output path missing.")?;
     let expected=artifact.get("sha256").and_then(Value::as_str).ok_or("Blender output SHA-256 missing.")?;

@@ -9,6 +9,8 @@ test("Master observes disk-audited native terminal outcome without treating hear
  assert.match(scheduler,/fn read_only_status_projection_recovers_terminal_rust_receipt_without_disk_mutation/);
  assert.match(scheduler,/fn read_only_status_projection_refuses_missing_or_foreign_audit/);
  assert.match(scheduler,/journal\.audit_success==Some\(true\)/);
- assert.match(scheduler,/read_at\(&path\(app\)\?\)/);
+ assert.match(scheduler,/let _os=SchedulerOsLock::take\(&file\)\?/);
+ assert.match(scheduler,/let snapshot=read_at\(&file\)\?/);
+ assert.match(scheduler,/fn read_locked_at\(file:&Path\)/);
  assert.doesNotMatch(scheduler.match(/fn projected_terminal\([\s\S]+?\/\/\/ Never trusts/)[0],/persist\(|execute_tool|send_chat/);
 });

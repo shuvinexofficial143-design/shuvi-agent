@@ -29,6 +29,26 @@ pub(crate) struct NativeWorkerStatus {
     pub supervisor_heartbeat_age_ms:Option<u64>,
     pub supervisor_heartbeat_seq:Option<u64>,
     pub supervisor_health:String,
+    // On-disk OS worker evidence, NOT a live process probe or application ack.
+    pub process_receipt_phase:Option<String>,
+    pub process_receipt_action_id:Option<String>,
+    pub process_receipt_tool:Option<String>,
+    pub process_pid:Option<u32>,
+    pub process_exit_code:Option<i32>,
+    pub process_tree_contained:bool,
+    pub process_cancel_requested:bool,
+    pub process_os_liveness_verified:bool,
+    pub process_app_progress_verified:bool,
+    pub process_health:String,
+    pub resource_ownership_health:String,
+    pub resource_held_count:usize,
+    pub resource_retired_recent_count:usize,
+    pub resource_claims:Vec<crate::native_scheduler::resource_lanes::ResourceClaimObservation>,
+    // Last HMAC-validated worker observation recorded by trusted Rust.
+    // This does NOT attest to Blender's creative result or current liveness.
+    pub attested_worker_stage:Option<String>,
+    pub attested_worker_sequence:Option<u64>,
+    pub attested_worker_observed_at_ms:Option<u64>,
 }
 
 /// Called only *after* acquiring Rust's exclusive native desktop lease.
@@ -108,6 +128,16 @@ pub(crate) fn snapshot(
         durable_job_phase:None,durable_job_action_id:None,durable_job_tool:None,
         supervisor_heartbeat_at_ms:None,supervisor_heartbeat_age_ms:None,
         supervisor_heartbeat_seq:None,supervisor_health:"not_observed".into(),
+        process_receipt_phase:None,process_receipt_action_id:None,
+        process_receipt_tool:None,process_pid:None,process_exit_code:None,
+        process_tree_contained:false,process_cancel_requested:false,
+        process_os_liveness_verified:false,
+        process_app_progress_verified:false,process_health:"not_observed".into(),
+        resource_ownership_health:"not_observed".into(),
+        resource_held_count:0,resource_retired_recent_count:0,
+        resource_claims:Vec::new(),
+        attested_worker_stage:None,attested_worker_sequence:None,
+        attested_worker_observed_at_ms:None,
     }
 }
 
@@ -160,10 +190,301 @@ pub(crate) fn attach_durable_job(
     status
 }
 
+
+/// Attach ONLY persisted OS-process evidence to the existing read-only
+/// status response. A PID or successful OS exit is never a live process probe,
+/// an application heartbeat, a verified artifact, or task audit success.
+pub(crate) fn attach_owned_process_receipt(
+    mut status:NativeWorkerStatus,
+    receipt:Option<&crate::native_scheduler::owned_process::process_receipt::ProcessReceipt>
+)->NativeWorkerStatus{
+    let Some(receipt)=receipt else{return status};
+    status.process_receipt_phase=Some(receipt.phase.clone());
+    status.process_receipt_action_id=Some(receipt.action_id.clone());
+    status.process_receipt_tool=Some(receipt.tool.clone());
+    status.process_pid=receipt.pid;
+    status.process_exit_code=receipt.exit_code;
+    status.process_tree_contained=receipt.descendants_contained;
+    status.process_cancel_requested=receipt.cancel_requested;
+    // A durable record cannot prove an OS process is still present. Only an
+    // owned process handle/protocol can do so, even if the PID matches.
+    status.process_os_liveness_verified=false;
+    status.process_app_progress_verified=false;
+    if matches!(receipt.phase.as_str(),"launch_pending"|"running"){
+        let identity_live=status.lease_owned_by_this_process
+            &&status.state=="native_action_in_flight"
+            &&status.action_id.as_deref()==Some(receipt.action_id.as_str())
+            &&status.tool.as_deref()==Some(receipt.tool.as_str())
+            &&status.durable_job_action_id.as_deref()==Some(receipt.action_id.as_str())
+            &&status.durable_job_tool.as_deref()==Some(receipt.tool.as_str())
+            &&status.durable_job_phase.as_deref()==Some("running");
+        if identity_live{
+            status.process_health=if receipt.cancel_requested{
+                "owner_stop_requested_os_outcome_unverified".into()
+            }else{
+                "owned_launch_record_not_liveness_verified".into()
+            };
+        }else{
+            status.state="recovery_required".into();
+            status.requires_owner_review=true;
+            status.process_health="unresolved_or_foreign_os_process_record".into();
+        }
+    }else if receipt.phase=="owner_reviewed_unknown"{
+        status.process_health="owner_reviewed_os_outcome_unknown".into();
+    }else{
+        status.process_health="os_terminal_receipt_not_application_audit".into();
+    }
+    status.safe_to_auto_retry=false;
+    status
+}
+
+/// Attach only read-only, OS-lock-serialized durable ownership evidence.
+/// An old claimed path does not mean its worker is still alive.
+pub(crate) fn attach_resource_ownership(
+    mut status:NativeWorkerStatus,
+    evidence:crate::native_scheduler::resource_lanes::ResourceSnapshot,
+)->NativeWorkerStatus{
+    status.resource_ownership_health=evidence.health;
+    status.resource_held_count=evidence.held.len();
+    status.resource_retired_recent_count=evidence.retired_action_count;
+    if evidence.held.iter().any(|h|
+        h.health!="worker_journal_running_os_liveness_unverified"
+        &&h.health!="successful_audit_output_still_held"){
+        status.state="recovery_required".into();
+        status.requires_owner_review=true;
+    }
+    status.resource_claims=evidence.held;
+    status.safe_to_auto_retry=false;
+    status
+}
+pub(crate) fn attach_attested_worker_stage(
+    mut status:NativeWorkerStatus,
+    evidence:Option<&crate::native_scheduler::worker_attestation::AttestedStage>
+)->NativeWorkerStatus{
+    if let Some(proof)=evidence{
+        if status.durable_job_action_id.as_deref()==Some(proof.action_id.as_str())
+            &&status.durable_job_tool.as_deref()==Some("blender_run_plan"){
+            // Running signed-stage telemetry needs the matching exact UUID
+            // AND the full approved plan SHA256 from the durable output hold.
+            // An audited historical action can legitimately have no held
+            // output after certificate-verified release, but a still-running
+            // Blender action cannot.
+            let held=status.resource_claims.iter()
+                .find(|claim|claim.action_id==proof.action_id);
+            let foreign_plan=held.is_some_and(|claim|
+                claim.approved_plan_sha256.as_deref()
+                    !=Some(proof.approved_plan_sha256.as_str()));
+            let missing_running_claim=held.is_none()
+                &&status.durable_job_phase.as_deref()==Some("running");
+            let future_timestamp=proof.observed_at_ms>status.observed_at_ms;
+            if foreign_plan||missing_running_claim||future_timestamp{
+                status.state="recovery_required".into();
+                status.requires_owner_review=true;
+            }else{
+                status.attested_worker_stage=Some(proof.stage.clone());
+                status.attested_worker_sequence=Some(proof.sequence);
+                status.attested_worker_observed_at_ms=Some(proof.observed_at_ms);
+            }
+        }
+    }
+    // An archived HMAC-verified Python-worker stage is NOT fresh
+    // Blender application activity proof, an OS PID check, or retry authority.
+    status.progress_heartbeat_verified=false;
+    status.safe_to_auto_retry=false;
+    status
+}
 #[cfg(test)]
 mod tests{
     use super::*;
     fn uuid()->String{"123e4567-e89b-42d3-a456-426614174000".into()}
+
+    fn receipt(phase:&str,id:&str,tool:&str)->crate::native_scheduler::owned_process::process_receipt::ProcessReceipt{
+        crate::native_scheduler::owned_process::process_receipt::ProcessReceipt{
+            version:1,action_id:id.into(),tool:tool.into(),phase:phase.into(),
+            pid:if phase=="launch_pending"{None}else{Some(4321)},
+            exit_code:if phase=="exited"{Some(0)}else{None},
+            descendants_contained:phase!="launch_pending",app_progress_verified:false,
+            previous_action_ids:vec![],cancel_requested:false
+        }
+    }
+    #[test]
+    fn orphaned_resource_forces_recovery_not_idle_or_autoretry(){
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6000);
+        let report=attach_resource_ownership(base,
+            crate::native_scheduler::resource_lanes::ResourceSnapshot{
+                version:1,retired_action_count:0,
+                health:"output_resources_still_reserved".into(),
+                safe_to_auto_retry:false,
+                held:vec![crate::native_scheduler::resource_lanes::ResourceClaimObservation{
+                    action_id:uuid(),tool:"blender_run_plan".into(),
+                    read_paths:vec![],write_paths:vec!["C:/output".into()],
+                    health:"orphaned_or_previous_action_requires_owner_review".into(),
+                    approved_plan_sha256:None,
+                    evidence_verified:false,safe_to_auto_retry:false
+                }]
+            });
+        assert_eq!(report.state,"recovery_required");
+        assert!(report.requires_owner_review);
+        assert_eq!(report.resource_held_count,1);
+        assert!(!report.resource_claims[0].evidence_verified);
+        assert!(!report.safe_to_auto_retry);
+    }
+    #[test]
+    fn signed_worker_stage_does_not_manufacture_app_success_or_liveness(){
+        let id=uuid();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:id.clone(),tool:"blender_run_plan".into(),
+            phase:"running".into(),started_at_ms:1000,updated_at_ms:2000,
+            heartbeat_seq:1,audit_success:None,prior_action_ids:vec![]
+        };
+        let progress=crate::native_scheduler::worker_attestation::AttestedStage{
+            version:1,action_id:id,approved_plan_sha256:"a".repeat(64),
+            sequence:3,stage:"plan_verified".into(),observed_at_ms:1500
+        };
+        let idle=snapshot(false,&HashMap::new(),&HashMap::new(),None,3000);
+        let resources=crate::native_scheduler::resource_lanes::ResourceSnapshot{
+            version:1,retired_action_count:0,
+            health:"output_resources_still_reserved".into(),safe_to_auto_retry:false,
+            held:vec![crate::native_scheduler::resource_lanes::ResourceClaimObservation{
+                action_id:job.action_id.clone(),tool:"blender_run_plan".into(),
+                read_paths:vec![],write_paths:vec!["C:/approved-output".into()],
+                health:"worker_journal_running_os_liveness_unverified".into(),
+                approved_plan_sha256:Some("a".repeat(64)),
+                evidence_verified:false,safe_to_auto_retry:false
+            }]
+        };
+        let host=attach_attested_worker_stage(
+            attach_resource_ownership(
+                attach_durable_job(idle,Some(&job),3000),resources),
+            Some(&progress));
+        assert_eq!(host.attested_worker_stage.as_deref(),Some("plan_verified"));
+        assert!(!host.progress_heartbeat_verified);
+        assert!(!host.process_app_progress_verified);
+        assert!(!host.safe_to_auto_retry);
+        assert!(host.requires_owner_review);
+    }
+    #[test]
+    fn wrong_plan_or_missing_running_output_claim_quarantines_attested_stage(){
+        let id=uuid();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:id.clone(),tool:"blender_run_plan".into(),
+            phase:"running".into(),started_at_ms:1000,updated_at_ms:2000,
+            heartbeat_seq:1,audit_success:None,prior_action_ids:vec![]
+        };
+        let proof=crate::native_scheduler::worker_attestation::AttestedStage{
+            version:1,action_id:id.clone(),approved_plan_sha256:"a".repeat(64),
+            sequence:2,stage:"blender_session_attached".into(),
+            observed_at_ms:1500
+        };
+        let base=attach_durable_job(
+            snapshot(false,&HashMap::new(),&HashMap::new(),None,3000),
+            Some(&job),3000);
+        let missing=attach_attested_worker_stage(base.clone(),Some(&proof));
+        assert_eq!(missing.state,"recovery_required");
+        assert!(missing.attested_worker_stage.is_none());
+        let resource=crate::native_scheduler::resource_lanes::ResourceSnapshot{
+            version:1,retired_action_count:0,safe_to_auto_retry:false,
+            health:"output_resources_still_reserved".into(),
+            held:vec![crate::native_scheduler::resource_lanes::ResourceClaimObservation{
+                action_id:id,tool:"blender_run_plan".into(),
+                read_paths:vec![],write_paths:vec!["C:/output".into()],
+                health:"worker_journal_running_os_liveness_unverified".into(),
+                approved_plan_sha256:Some("b".repeat(64)),
+                evidence_verified:false,safe_to_auto_retry:false
+            }],
+        };
+        let wrong=attach_attested_worker_stage(
+            attach_resource_ownership(base,resource),Some(&proof));
+        assert_eq!(wrong.state,"recovery_required");
+        assert!(wrong.attested_worker_stage.is_none());
+        assert!(wrong.requires_owner_review);
+        assert!(!wrong.safe_to_auto_retry);
+        assert!(!wrong.progress_heartbeat_verified);
+    }
+    #[test]
+    fn last_archived_stage_after_certified_resource_release_remains_informational(){
+        let id=uuid();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:id.clone(),tool:"blender_run_plan".into(),
+            phase:"audit_verified".into(),started_at_ms:1000,
+            updated_at_ms:2000,heartbeat_seq:1,
+            audit_success:Some(true),prior_action_ids:vec![]
+        };
+        let archived=crate::native_scheduler::worker_attestation::AttestedStage{
+            version:1,action_id:id,approved_plan_sha256:"a".repeat(64),
+            sequence:4,stage:"artifact_rehashed".into(),observed_at_ms:1500
+        };
+        let base=attach_durable_job(
+            snapshot(false,&HashMap::new(),&HashMap::new(),None,3000),
+            Some(&job),3000);
+        let status=attach_attested_worker_stage(base,Some(&archived));
+        assert_eq!(status.attested_worker_stage.as_deref(),Some("artifact_rehashed"));
+        assert!(!status.safe_to_auto_retry);
+        assert!(!status.progress_heartbeat_verified);
+    }
+    #[test]
+    fn stopped_on_previous_host_is_a_recovery_case_not_a_verified_process_exit(){
+        let mut os=receipt("running",&uuid(),"blender_run_plan");
+        os.cancel_requested=true;
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6_000);
+        let report=attach_owned_process_receipt(base,Some(&os));
+        assert_eq!(report.state,"recovery_required");
+        assert!(report.requires_owner_review);
+        assert!(report.process_cancel_requested);
+        assert!(!report.process_os_liveness_verified);
+        assert!(!report.process_app_progress_verified);
+        assert!(!report.safe_to_auto_retry);
+    }
+    #[test]
+    fn persisted_pid_without_host_lease_requires_owner_review_not_liveness(){
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6_000);
+        let os=receipt("running",&uuid(),"premiere_insert_media");
+        let s=attach_owned_process_receipt(base,Some(&os));
+        assert_eq!(s.state,"recovery_required");
+        assert_eq!(s.process_pid,Some(4321));
+        assert_eq!(s.process_health,"unresolved_or_foreign_os_process_record");
+        assert!(s.requires_owner_review);
+        assert!(!s.process_os_liveness_verified);
+        assert!(!s.progress_heartbeat_verified);
+        assert!(!s.process_app_progress_verified);
+        assert!(!s.safe_to_auto_retry);
+    }
+    #[test]
+    fn matching_live_host_uuid_may_display_os_pid_but_never_app_progress(){
+        let (tools,started)=running();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:uuid(),tool:"premiere_insert_media".into(),phase:"running".into(),
+            started_at_ms:1_000,updated_at_ms:2_000,heartbeat_seq:1,
+            audit_success:None,prior_action_ids:vec![]
+        };
+        let os=receipt("running",&uuid(),"premiere_insert_media");
+        let s=attach_owned_process_receipt(
+            attach_durable_job(snapshot(true,&tools,&started,None,3_000),Some(&job),3_000),
+            Some(&os));
+        assert_eq!(s.state,"native_action_in_flight");
+        assert_eq!(s.process_pid,Some(4321));
+        assert_eq!(s.process_health,"owned_launch_record_not_liveness_verified");
+        assert!(!s.process_os_liveness_verified);
+        assert!(!s.process_app_progress_verified);
+        assert!(!s.safe_to_auto_retry);
+        let foreign=receipt("running","123e4567-e89b-42d3-a456-426614174009","premiere_insert_media");
+        let denied=attach_owned_process_receipt(s,Some(&foreign));
+        assert_eq!(denied.state,"recovery_required");
+        assert!(denied.requires_owner_review);
+    }
+    #[test]
+    fn clean_os_exit_zero_is_not_accepted_as_application_task_completion(){
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6_000);
+        let os=receipt("exited",&uuid(),"blender_run_plan");
+        let state=attach_owned_process_receipt(base,Some(&os));
+        assert_eq!(state.state,"idle");
+        assert_eq!(state.process_exit_code,Some(0));
+        assert_eq!(state.process_health,"os_terminal_receipt_not_application_audit");
+        assert!(!state.process_app_progress_verified);
+        assert!(!state.progress_heartbeat_verified);
+        assert!(!state.safe_to_auto_retry);
+    }
+
     fn running()->(HashMap<String,String>,HashMap<String,u64>){
         (HashMap::from([(uuid(),"premiere_insert_media".into())]),
          HashMap::from([(uuid(),1_000)]))

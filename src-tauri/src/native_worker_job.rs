@@ -2,13 +2,70 @@
 //! A tick proves only the supervisor loop is alive, NEVER that the tool or
 //! an external Adobe/Blender app progressed. No TTL unlock or auto retry.
 use serde::{Deserialize,Serialize};
-use std::{fs,path::{Path,PathBuf},sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},thread,time::Duration};
+use std::{fs,fs::OpenOptions,path::{Path,PathBuf},sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},thread,time::Duration};
 use tauri::{AppHandle,Manager};
 const MAX_BYTES:usize=2048;
 // Bounded replay window in addition to the globally audited action journal.
 const MAX_PRIOR_ACTIONS:usize=24;
 static JOB_LOCK:Mutex<()>=Mutex::new(());
 const HEARTBEAT_PERIOD:Duration=Duration::from_secs(4);
+
+// The regular Rust JOB_LOCK only protects one Shuvi process. The OS lock
+// serializes durable read/modify/write transactions between two Tauri
+// instances using the same per-user job journal. A crash closes the kernel
+// handle, but NEVER erases the durable running/unknown job.
+struct CrossProcessNativeJobLock(fs::File);
+impl CrossProcessNativeJobLock{
+    fn take(path:&Path)->Result<Self,String>{
+        let lock=path.with_extension("json.oslock");
+        match fs::symlink_metadata(&lock){
+            Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()=>{
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta.file_attributes()&0x400!=0{
+                        return Err("Native job OS lock reparse point rejected.".into());
+                    }
+                }
+            }
+            Ok(_)=>return Err("Native job OS lock path is not a regular file.".into()),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Err("Native job OS lock metadata unavailable.".into()),
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{OpenOptionsExt,MetadataExt};
+            const OPEN_REPARSE_POINT:u32=0x0020_0000;
+            let handle=OpenOptions::new().read(true).write(true)
+                .create(true).share_mode(0).custom_flags(OPEN_REPARSE_POINT)
+                .open(&lock)
+                .map_err(|_|"Another Shuvi instance holds the native job journal.".to_string())?;
+            let meta=handle.metadata()
+                .map_err(|_|"Native job OS lock handle unavailable.")?;
+            if !meta.is_file()||meta.file_attributes()&0x400!=0{
+                return Err("Native job OS lock opened a reparse point.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C" {fn flock(fd:i32,operation:i32)->i32;}
+            let handle=OpenOptions::new().read(true).write(true)
+                .create(true).open(&lock)
+                .map_err(|_|"Cannot open native job OS lock.".to_string())?;
+            if unsafe{flock(handle.as_raw_fd(),2|4)}!=0{
+                return Err("Another Shuvi instance holds the native job journal.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(not(any(unix,windows)))]
+        {
+            Err("OS-backed native job journal exclusion unavailable.".into())
+        }
+    }
+}
+
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -93,6 +150,7 @@ fn persist(path:&Path,record:&NativeJob)->Result<(),String>{
 }
 fn begin_at(path:&Path,action_id:&str,tool:&str,now:u64)->Result<NativeJob,String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let _os=CrossProcessNativeJobLock::take(path)?;
     let mut history=Vec::new();
     if let Some(last)=read_at(path)?{
         if !matches!(last.phase.as_str(),"audit_verified"|"owner_reviewed_unknown"){
@@ -116,6 +174,7 @@ fn begin_at(path:&Path,action_id:&str,tool:&str,now:u64)->Result<NativeJob,Strin
 }
 fn tick_at(path:&Path,id:&str,now:u64)->Result<(),String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let _os=CrossProcessNativeJobLock::take(path)?;
     let mut record=read_at(path)?.ok_or("Native job checkpoint missing.")?;
     if record.action_id!=id||record.phase!="running"||now<=record.updated_at_ms
        ||record.heartbeat_seq>=1_000_000{
@@ -127,6 +186,7 @@ fn tick_at(path:&Path,id:&str,now:u64)->Result<(),String>{
 }
 fn audited_at(path:&Path,id:&str,success:bool,now:u64)->Result<(),String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let _os=CrossProcessNativeJobLock::take(path)?;
     let mut record=read_at(path)?.ok_or("Native job checkpoint missing at audit.")?;
     if record.action_id!=id||record.phase!="running"||now<record.updated_at_ms{
         return Err("Native job finalization is stale or mismatched with its execution.".into());
@@ -145,6 +205,7 @@ fn reconcile_at(
     path:&Path,id:&str,tool:&str,verified_audit:Option<bool>,now:u64
 )->Result<NativeJob,String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let _os=CrossProcessNativeJobLock::take(path)?;
     let mut job=read_at(path)?.ok_or("No interrupted native worker job exists.")?;
     if job.phase!="running"||job.action_id!=id||job.tool!=tool{
         return Err("Owner review must match the exact interrupted native action and tool.".into());
@@ -162,19 +223,75 @@ fn reconcile_at(
 pub(crate) fn reconcile(
     app:&AppHandle,id:&str,tool:&str,verified_audit:Option<bool>,now:u64
 )->Result<NativeJob,String>{
-    reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)
+    // This is called from the existing owner-confirmed Tauri reconciliation
+    // under an exclusive desktop lease. Confirm the native UUID before
+    // touching the associated unresolved OS-only subprocess receipt.
+    let existing=read(app)?.ok_or("No durable native action for owner review.")?;
+    if existing.phase!="running"||existing.action_id!=id||existing.tool!=tool{
+        return Err("Owner review cannot acknowledge a different active action.".into());
+    }
+    // A recovered Blender edit must not become an audited DAG success unless
+    // the exact action's independently rehashed artifact still exists.
+    // Preflight BEFORE committing owner/process reconciliation: otherwise a
+    // forged successful audit could prematurely satisfy downstream DAG edges.
+    if verified_audit==Some(true)&&tool=="blender_run_plan"{
+        let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
+        if cert.action_id!=id||cert.tool!="blender_run_plan"{
+            return Err("Recovered Blender audit lacks exact verified output identity.".into());
+        }
+    }
+    crate::native_scheduler::owned_process::review_process_receipt_for_owner(app,id,tool)?;
+    let reviewed=reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)?;
+    // An owner-confirmed success after restart is not enough to free output:
+    // re-check the exact UUID's persisted certificate and actual file hash.
+    // Unknown/failed reconciliations remain quarantined indefinitely.
+    if reviewed.audit_success==Some(true){
+        crate::native_scheduler::resource_lanes::release_after_verified_audit(app,id)?;
+    }
+    Ok(reviewed)
 }
 pub(crate) fn begin(app:&AppHandle,id:&str,tool:&str,now:u64)->Result<(),String>{
+    // Recover a prior fully audited+artifact-verified output reservation if
+    // the host crashed between durable audit and normal resource release.
+    // An unknown/failed external effect MUST keep its exclusive reservation.
+    if let Some(prior)=read(app)?{
+        if prior.phase=="audit_verified"&&prior.audit_success==Some(true){
+            crate::native_scheduler::resource_lanes::release_after_verified_audit(
+                app,&prior.action_id)?;
+        }
+    }
     begin_at(&journal_path(app)?,id,tool,now).map(|_|())
 }
 pub(crate) fn audit(app:&AppHandle,id:&str,success:bool,now:u64)->Result<(),String>{
-    audited_at(&journal_path(app)?,id,success,now)
+    // Never publish a successful Blender action journal from a stale or
+    // changed saved file; an OS exit and one-time earlier hash are inadequate.
+    if success {
+        if let Some(current)=read(app)?{
+            if current.action_id==id&&current.tool=="blender_run_plan"{
+                crate::native_blender_action_artifact::read_verified(app,id)?;
+            }
+        }
+    }
+    audited_at(&journal_path(app)?,id,success,now)?;
+    // The audited exact UUID plus independently rehashed final certificate
+    // is the sole automatic release condition. Failed actions remain held.
+    if success {
+        crate::native_scheduler::resource_lanes::release_after_verified_audit(app,id)?;
+    }
+    Ok(())
+}
+fn read_locked_at(path:&Path)->Result<Option<NativeJob>,String>{
+    let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let _os=CrossProcessNativeJobLock::take(path)?;
+    read_at(path)
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<NativeJob>,String>{
-    let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
-    read_at(&journal_path(app)?)
+    read_locked_at(&journal_path(app)?)
 }
 pub(crate) fn require_resolved(app:&AppHandle)->Result<(),String>{
+    // A healthy action journal cannot erase missing/unknown owned process
+    // evidence, including a crash before the OS PID could be recorded.
+    crate::native_scheduler::owned_process::require_process_receipt_clear(app)?;
     if read(app)?.is_some_and(|job|!matches!(job.phase.as_str(),"audit_verified"|"owner_reviewed_unknown")){
         return Err("An unfinished durable native worker job blocks all new desktop mutations until independent owner review.".into());
     }
@@ -221,6 +338,79 @@ mod tests{
     }
     const A:&str="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
     const B:&str="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
+    #[test]
+    fn other_instance_lock_blocks_all_mutations_and_status_read(){
+        let p=file();
+        let foreign=CrossProcessNativeJobLock::take(&p).unwrap();
+        assert!(begin_at(&p,A,"read_file",1000).is_err());
+        assert!(read_locked_at(&p).is_err());
+        drop(foreign);
+        begin_at(&p,A,"read_file",1000).unwrap();
+        let foreign=CrossProcessNativeJobLock::take(&p).unwrap();
+        assert!(tick_at(&p,A,1100).is_err());
+        assert!(audited_at(&p,A,true,1200).is_err());
+        assert!(reconcile_at(&p,A,"read_file",None,1400).is_err());
+        assert_eq!(fs::read(&p).unwrap().len()>0,true);
+        drop(foreign);
+        tick_at(&p,A,1100).unwrap();
+        audited_at(&p,A,true,1200).unwrap();
+        assert_eq!(read_locked_at(&p).unwrap().unwrap().audit_success,Some(true));
+        fs::remove_file(&p).unwrap();
+        fs::remove_file(p.with_extension("json.oslock")).unwrap();
+    }
+    #[test]
+    fn independent_threads_cannot_both_begin_durable_native_job(){
+        use std::sync::{Arc,Barrier};
+        let p=file();
+        let gate=Arc::new(Barrier::new(3));
+        let first_path=p.clone();
+        let second_path=p.clone();
+        let first_gate=Arc::clone(&gate);
+        let second_gate=Arc::clone(&gate);
+        std::thread::scope(|scope|{
+            let a=scope.spawn(move||{
+                first_gate.wait();begin_at(&first_path,A,"read_file",1000).is_ok()
+            });
+            let b=scope.spawn(move||{
+                second_gate.wait();begin_at(&second_path,B,"read_file",1000).is_ok()
+            });
+            gate.wait();
+            assert_eq!((a.join().unwrap() as usize)+(b.join().unwrap() as usize),1);
+        });
+        assert_eq!(read_locked_at(&p).unwrap().unwrap().phase,"running");
+        fs::remove_file(&p).unwrap();
+        fs::remove_file(p.with_extension("json.oslock")).unwrap();
+    }
+    #[test]
+    fn supervisor_tick_cannot_reopen_already_audited_job(){
+        use std::sync::{Arc,Barrier};
+        let p=file();begin_at(&p,A,"read_file",1000).unwrap();
+        let ready=Arc::new(Barrier::new(3));
+        let left=p.clone();let right=p.clone();
+        let l_gate=Arc::clone(&ready);let r_gate=Arc::clone(&ready);
+        std::thread::scope(|scope|{
+            let t=scope.spawn(move||{l_gate.wait();tick_at(&left,A,1100)});
+            let a=scope.spawn(move||{r_gate.wait();audited_at(&right,A,true,1200)});
+            ready.wait();
+            let _=t.join().unwrap();
+            assert!(a.join().unwrap().is_ok());
+        });
+        let terminal=read_locked_at(&p).unwrap().unwrap();
+        assert_eq!(terminal.phase,"audit_verified");
+        assert_eq!(terminal.audit_success,Some(true));
+        assert!(tick_at(&p,A,1300).is_err());
+        fs::remove_file(&p).unwrap();
+        fs::remove_file(p.with_extension("json.oslock")).unwrap();
+    }
+    #[test]
+    fn native_job_lock_path_directory_never_admits_new_action(){
+        let p=file();
+        let lock=p.with_extension("json.oslock");
+        fs::create_dir(&lock).unwrap();
+        assert!(begin_at(&p,A,"read_file",1000).is_err());
+        assert!(!p.exists());
+        fs::remove_dir(lock).unwrap();
+    }
     #[test]
     fn durable_start_supervisor_tick_and_audit_are_bound_to_exact_action(){
         let p=file();
