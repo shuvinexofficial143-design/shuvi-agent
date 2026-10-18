@@ -1653,3 +1653,41 @@ looks professional, or a Windows host has passed acceptance. Existing
 permissions, Stage-1/Stage-2 source/hash proof, other teams and pinned
 upstream contracts are unchanged. Real host E2E visual verification and
 separately approved Adobe import remain outstanding.
+
+
+## Team-41 — owner-controlled in-flight session cancellation (source / CI)
+
+Before this milestone, `blender_session_close` acquired the same native
+`SessionRegistry.current` mutex held throughout every synchronous
+`blender_session_plan` / object probe. A long-running, unresponsive plan
+could block its *owner's* approved close for the full 120-second command
+deadline. The existing resource/lifetime watchdog was independent, but
+an ordinary owner close was not.
+
+The existing high-risk, audited and owner-approved close action now has
+a second narrow mutex containing only the **authenticated native session
+UUID**, the already-registered broker PID and a shared invalidation bit.
+After a successful broker readiness handshake, native Rust publishes
+that exact tuple; retirement clears it conditionally, preserving newer
+sessions and rejecting a foreign/stale UUID. If no native operation is
+in flight, close retains the original graceful broker-close behavior.
+If a plan or probe holds the ordinary mutex, close invalidates *only*
+the matching session and requests termination through the existing
+OS-start-time-checked registered-process-tree API before waiting for
+the worker lock. The in-flight response loop checks invalidation
+before accepting a buffered success and again after receiving a
+broker response. The worker retires its owned child/process tree,
+leaving no implicit reconnect or retry path.
+
+The cancellation response states only that the session was retired
+after a cancellation request. It explicitly labels the in-flight
+operation **outcome unknown**, reports root-exit confirmation only
+if this close action actually observed it, and does not imply that a
+partially written .blend or PNG was rolled back, a descendant was
+individually observed exiting or any artifact became accepted.
+A wrong session ID cannot invalidate or terminate another session.
+Rust tests cover exact-ID refusal and prove the cancellation lane
+remains reachable while another thread holds the plan mutex;
+Node source-contract tests cover authorization-independent plumbing.
+This is source/CI behavior; **live Windows/Blender session cancellation
+and visual/application-level acceptance still require a real host run**.

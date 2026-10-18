@@ -107,6 +107,22 @@ const PLAN_DEADLINE:Duration=Duration::from_secs(120);
 #[derive(Default)]
 pub(crate) struct SessionRegistry {
     current:Mutex<Option<OwnedSession>>,
+    // A narrow, session-ID-bound emergency stop lane. An in-flight plan owns
+    // current for up to 120 seconds; close must not wait for that lock to
+    // invalidate its exact previously registered child.
+    cancellable:Mutex<Option<CancellationTarget>>,
+}
+
+struct CancellationTarget {
+    session_id:String,
+    pid:u32,
+    invalidated:Arc<AtomicBool>,
+}
+
+fn invalidate_exact_session(target:&CancellationTarget,id:&str)->Result<u32,String>{
+    if target.session_id!=id{return Err("Blender session ID mismatch.".into());}
+    target.invalidated.store(true,Ordering::Release);
+    Ok(target.pid)
 }
 
 struct OwnedSession {
@@ -178,6 +194,11 @@ fn reader(mut stdout:impl Read+Send+'static)->Receiver<Vec<u8>> {
 fn receive(session:&mut OwnedSession,state:&ActionState,deadline:Duration)->Result<Value,String> {
     let start=Instant::now();
     loop {
+        // Check before a buffered reply: an owner-canceled mutation must never
+        // be promoted to success, even when its broker reply arrives in a race.
+        if session.invalidated.load(Ordering::Acquire){
+            return Err("Blender session stopped/invalidated during an in-flight command; outcome unknown, never replay.".into());
+        }
         // A graceful close may exit immediately after writing its final
         // acknowledgement. Read already-buffered replies before probing exit.
         match session.replies.try_recv() {
@@ -225,7 +246,7 @@ fn receive(session:&mut OwnedSession,state:&ActionState,deadline:Duration)->Resu
 
 fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Value>,allow_render:bool,expected_revision:Option<&str>,deadline:Duration)->Result<Value,String>{
     if session.invalidated.load(Ordering::Acquire){
-        return Err("Blender session was invalidated by the native watchdog.".into());
+        return Err("Blender session was stopped or invalidated; no automatic replay.".into());
     }
     if session.created.elapsed()>SESSION_MAX_AGE{
         return Err("Blender session expired; inspect and start a fresh explicitly approved session.".into());
@@ -251,7 +272,7 @@ fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Val
         .map_err(|_|"Blender session command delivery uncertain; no replay allowed.".to_string())?;
     let answer=receive(session,state,deadline)?;
     if session.invalidated.load(Ordering::Acquire){
-        return Err("Blender session invalidated while command was running; never replay.".into());
+        return Err("Blender session stopped/invalidated while command was running; outcome unknown, never replay.".into());
     }
     if answer.get("session_id").and_then(Value::as_str)!=Some(session.session_id.as_str()){
         return Err("Blender broker returned a different session identity.".into());
@@ -259,10 +280,18 @@ fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Val
     Ok(answer)
 }
 
-fn retire(state:&ActionState,slot:&mut Option<OwnedSession>)->bool {
+fn retire(registry:&SessionRegistry,state:&ActionState,slot:&mut Option<OwnedSession>)->bool {
     if let Some(session)=slot.take(){
         let pid=session.child.id();
+        let id=session.session_id.clone();
         drop(session);
+        // Clear only the matching session latch. Never overwrite a newer
+        // session's cancellation authority or leak a stale PID capability.
+        if let Ok(mut cancel)=registry.cancellable.lock(){
+            if cancel.as_ref().is_some_and(|target|target.session_id==id&&target.pid==pid){
+                *cancel=None;
+            }
+        }
         let root_exited=!managed_process_identity_matches(state,pid).unwrap_or(false);
         unregister_managed_process(state,pid);
         root_exited
@@ -306,7 +335,7 @@ fn spawn_watchdog(
             match state.blender_session.current.try_lock(){
                 Ok(mut slot)=>{
                     if slot.as_ref().is_some_and(|s|s.session_id==id && s.child.id()==pid){
-                        retire(&state,&mut slot);
+                        retire(&state.blender_session,&state,&mut slot);
                     }
                     return;
                 },
@@ -420,8 +449,21 @@ pub(crate) fn start(
             let watchdog=session.watchdog_stop.clone();
             let invalidated=session.invalidated.clone();
             *slot=Some(session);
+            // Publish cancellation authority only for the authenticated ready
+            // session and its registered process identity.
+            let install=registry.cancellable.lock()
+                .map_err(|_|"Blender cancellation ownership lock poisoned.".to_string())
+                .and_then(|mut active|{
+                    if active.is_some(){return Err("An earlier Blender cancellation target was not retired.".into());}
+                    *active=Some(CancellationTarget{session_id:id.into(),pid,invalidated:invalidated.clone()});
+                    Ok(())
+                });
+            if let Err(error)=install{
+                retire(registry,state,&mut slot);
+                return Err(error);
+            }
             if let Err(error)=spawn_watchdog(app,id,pid,start_time,watchdog,invalidated) {
-                retire(state,&mut slot);
+                retire(registry,state,&mut slot);
                 return Err(error);
             }
             Ok(json!({"status":"ready","session_id":id,"authenticated":true,
@@ -454,7 +496,7 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     // A stale identity or interrupted response quarantines the owned session.
     // Wrong caller-supplied ID is not evidence the current child is unhealthy.
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id) {
-        retire(state,&mut slot);
+        retire(registry,state,&mut slot);
     }
     result
 }
@@ -872,7 +914,7 @@ pub(crate) fn objects(
             "requires_new_action_approval_for_mutation":true}))
     })();
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
-        retire(state,&mut slot);
+        retire(registry,state,&mut slot);
     }
     result
 }
@@ -1008,19 +1050,58 @@ pub(crate) fn plan(
             "input_checkpoint":session.source_checkpoint.as_ref().map(|s|s.json())}))
     })();
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
-        retire(state,&mut slot);
+        retire(registry,state,&mut slot);
     }
     result
 }
 
 pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Result<Value,String>{
-    let mut slot=registry.current.lock().map_err(|_|"Blender session ownership lock poisoned.".to_string())?;
+    // Fast path keeps the existing graceful close. When a plan/probe holds
+    // current, use an independent ID-checked stop lane FIRST: waiting for
+    // current before signaling would make cancellation ineffective.
+    let (mut slot,cancel_requested)=match registry.current.try_lock(){
+        Ok(slot)=>(slot,false),
+        Err(std::sync::TryLockError::WouldBlock)=>{
+            let active=registry.cancellable.lock()
+                .map_err(|_|"Blender cancellation ownership lock poisoned.".to_string())?;
+            let target=active.as_ref().ok_or("No ready owned Blender session is available to cancel.")?;
+            let pid=invalidate_exact_session(target,id)?;
+            // This API checks native registered PID and OS process start
+            // identity. It cannot terminate an arbitrary caller-supplied PID.
+            // Also wake receive() even if termination itself fails: the
+            // in-flight command must never be reported as verified.
+            let _=terminate_registered_process_tree(state,pid);
+            drop(active);
+            (registry.current.lock()
+                .map_err(|_|"Blender session ownership lock poisoned.".to_string())?,true)
+        },
+        Err(std::sync::TryLockError::Poisoned(_))=>
+            return Err("Blender session ownership lock poisoned.".into()),
+    };
+    if cancel_requested{
+        // The running plan may already have retired on the interruption
+        // error. A new session must never be closed by an old stop request.
+        let (retired_here,root_exited)=if slot.as_ref().is_some_and(|s|s.session_id==id){
+            (true,retire(registry,state,&mut slot))
+        }else if slot.is_some(){
+            return Err("Blender cancellation ID no longer owns the active session.".into());
+        }else{
+            (false,false)
+        };
+        return Ok(json!({"status":"cancellation_requested_session_retired",
+            "session_id":id,"owned_session_registry_empty":slot.is_none(),
+            "broker_root_exit_confirmed":retired_here&&root_exited,
+            "broker_root_exit_confirmation_unavailable":!retired_here,
+            "in_flight_operation_outcome":"unknown",
+            "descendant_exit_individually_unverified":true,
+            "no_automatic_replay":true,"no_automatic_reconnect":true}));
+    }
     let session=slot.as_mut().ok_or("No active owned Blender session.")?;
     if session.session_id!=id{return Err("Blender session ID mismatch.".into());}
     // Even if the graceful close command is lost, the owned process tree is
     // stopped; never reuse the identity after a close attempt.
     let response=request(session,state,"close",None,false,None,PROBE_DEADLINE);
-    let root_exited=retire(state,&mut slot);
+    let root_exited=retire(registry,state,&mut slot);
     match response {
         Ok(v) if v.get("status").and_then(Value::as_str)==Some("closing") && root_exited=>
             Ok(json!({"status":"closed","session_id":id,"broker_root_exit_confirmed":true,
@@ -1031,6 +1112,40 @@ pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Resul
     }
 }
 
+
+#[cfg(test)]
+mod exact_session_cancellation_tests{
+    use super::*;
+    #[test]
+    fn wrong_session_id_cannot_invalidate_another_owner(){
+        let signal=Arc::new(AtomicBool::new(false));
+        let target=CancellationTarget{session_id:"owned-A".into(),pid:42,
+            invalidated:signal.clone()};
+        assert!(invalidate_exact_session(&target,"owned-B").is_err());
+        assert!(!signal.load(Ordering::Acquire));
+        assert_eq!(invalidate_exact_session(&target,"owned-A").unwrap(),42);
+        assert!(signal.load(Ordering::Acquire));
+    }
+    #[test]
+    fn cancellation_lane_is_reachable_while_plan_holds_current_mutex(){
+        let registry=Arc::new(SessionRegistry::default());
+        let plan_guard=registry.current.lock().unwrap();
+        let signal=Arc::new(AtomicBool::new(false));
+        *registry.cancellable.lock().unwrap()=Some(CancellationTarget{
+            session_id:"owned-A".into(),pid:84,invalidated:signal.clone()});
+        let other_thread=registry.clone();
+        let (tx,rx)=mpsc::sync_channel(1);
+        let handle=thread::spawn(move||{
+            let guard=other_thread.cancellable.lock().unwrap();
+            tx.send(invalidate_exact_session(guard.as_ref().unwrap(),"owned-A"))
+                .unwrap();
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(),84);
+        assert!(signal.load(Ordering::Acquire));
+        drop(plan_guard);
+        handle.join().unwrap();
+    }
+}
 
 #[cfg(test)]
 mod fixed_stage_native_sequence_tests{

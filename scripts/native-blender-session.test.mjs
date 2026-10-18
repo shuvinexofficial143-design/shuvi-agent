@@ -63,6 +63,20 @@ test("native registry checks real managed PID identity, resource limit and abort
   assert.doesNotMatch(native,/Command::new\("powershell|shell\(|\.arg\("-c"\)/);
 });
 
+test("owner-approved close has exact-session cancellation lane independent of active plan",()=>{
+  assert.match(native,/cancellable:Mutex<Option<CancellationTarget>>/);
+  assert.match(native,/fn invalidate_exact_session\(target:&CancellationTarget,id:&str\)/);
+  assert.match(native,/if target\.session_id!=id\{return Err/);
+  assert.match(native,/match registry\.current\.try_lock\(\)/);
+  assert.match(native,/Err\(std::sync::TryLockError::WouldBlock\)/);
+  assert.match(native,/invalidate_exact_session\(target,id\)\?/);
+  assert.match(native,/terminate_registered_process_tree\(state,pid\)/);
+  assert.match(native,/in_flight_operation_outcome":\s*"unknown"/);
+  assert.match(native,/no_automatic_replay":true/);
+  assert.match(native,/fn cancellation_lane_is_reachable_while_plan_holds_current_mutex\(/);
+  assert.match(native,/fn wrong_session_id_cannot_invalidate_another_owner\(/);
+});
+
 test("session broker uses fixed authenticated Blender launch and no model Python execution",()=>{
   for(const text of [
     "from shuvi_blender_agent.process import LaunchConfig, launch",
