@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,hardLinkSync} from "node:fs";
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,linkSync} from "node:fs";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {createHash} from "node:crypto";
@@ -67,7 +67,7 @@ test("M63 denied hardlinked desktop binary, foreign executable name and malforme
   const f=fixture();
   try{
     const alias=join(f.installed,"another-hardlink.exe");
-    hardLinkSync(f.mainExecutablePath,alias);
+    linkSync(f.mainExecutablePath,alias);
     assert.throws(()=>verify(f),/single-link regular/);
     rmSync(alias);
     const foreign=join(f.installed,"foreign.exe");
