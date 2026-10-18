@@ -10,6 +10,17 @@ use crate::{blender_input_checkpoint,ActionState,register_managed_process,unregi
 struct PlanFile(PathBuf);
 impl Drop for PlanFile {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+enum ResourceEvidence { WithinLimit, OverHardLimit, Unavailable }
+
+fn classify_resource_evidence(sample:Result<bool,()>)->ResourceEvidence{
+    match sample{
+        Ok(true)=>ResourceEvidence::OverHardLimit,
+        Ok(false)=>ResourceEvidence::WithinLimit,
+        Err(())=>ResourceEvidence::Unavailable,
+    }
+}
+
 pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
     let artifact=output.get("artifact").ok_or("Blender output artifact receipt missing.")?;
     let name=artifact.get("path").and_then(Value::as_str).ok_or("Blender output path missing.")?;
@@ -215,19 +226,40 @@ pub(crate) fn execute(
     // The Python launcher owns the Blender child. Remote Stop can terminate
     // that tree, and an independent watchdog enforces the native 4 GB ceiling.
     let hard_limit_triggered=AtomicBool::new(false);
+    let resource_evidence_unavailable=AtomicBool::new(false);
     let termination_unconfirmed=AtomicBool::new(false);
     let output=thread::scope(|scope|{
         let monitor=scope.spawn(||{
-            while managed_process_identity_matches(state,pid).unwrap_or(false){
-                match current_runtime_status(state){
-                    Ok(status) if status.over_hard_limit=>{
+            loop {
+                match managed_process_identity_matches(state,pid){
+                    Ok(true)=>{},
+                    Ok(false)=>break,
+                    Err(_)=>{
+                        // Loss of registered OS-start-time identity evidence
+                        // cannot be reinterpreted as successful RAM safety.
+                        resource_evidence_unavailable.store(true,Ordering::Release);
+                        termination_unconfirmed.store(true,Ordering::Release);
+                        break;
+                    }
+                }
+                let sample=current_runtime_status(state)
+                    .map(|status|status.over_hard_limit).map_err(|_|());
+                match classify_resource_evidence(sample){
+                    ResourceEvidence::OverHardLimit=>{
                         hard_limit_triggered.store(true,Ordering::Release);
                         let confirmed=terminate_registered_process_tree(state,pid).unwrap_or(false);
                         termination_unconfirmed.store(!confirmed,Ordering::Release);
                         break;
                     }
-                    Ok(_)=>{},
-                    Err(_)=>break,
+                    ResourceEvidence::WithinLimit=>{},
+                    ResourceEvidence::Unavailable=>{
+                        // Never turn missing live resource evidence into a
+                        // verified mutation after an unmonitored interval.
+                        resource_evidence_unavailable.store(true,Ordering::Release);
+                        let confirmed=terminate_registered_process_tree(state,pid).unwrap_or(false);
+                        termination_unconfirmed.store(!confirmed,Ordering::Release);
+                        break;
+                    }
                 }
                 thread::sleep(Duration::from_millis(250));
             }
@@ -246,6 +278,13 @@ pub(crate) fn execute(
             "Blender plan exceeded the 4 GB hard RAM ceiling; process-tree termination is unconfirmed. Inspect before retry."
         }else{
             "Blender plan exceeded the 4 GB hard RAM ceiling and its managed process tree was stopped. Inspect before retry."
+        }.into());
+    }
+    if resource_evidence_unavailable.load(Ordering::Acquire){
+        return Err(if termination_unconfirmed.load(Ordering::Acquire){
+            "Blender plan RAM/process identity evidence became unavailable; managed termination is unconfirmed. Outcome unknown, inspect before retry."
+        }else{
+            "Blender plan RAM evidence became unavailable; registered process tree was stopped. Outcome unknown, inspect before retry."
         }.into());
     }
     let output=output.map_err(|_|"Blender plan outcome unknown after deadline or cancellation; inspect before retry.".to_string())?;
@@ -280,4 +319,15 @@ pub(crate) fn execute(
         "source_action_id":action_id,"artifact_manifest":manifest,
         "approved_plan_lineage":plan_lineage,
         "input_checkpoint":input_proof.as_ref().map(|p|p.json())}))
+}
+
+#[cfg(test)]
+mod resource_evidence_tests{
+    use super::*;
+    #[test]
+    fn one_off_native_memory_sample_fails_closed_when_unavailable(){
+        assert_eq!(classify_resource_evidence(Ok(false)),ResourceEvidence::WithinLimit);
+        assert_eq!(classify_resource_evidence(Ok(true)),ResourceEvidence::OverHardLimit);
+        assert_eq!(classify_resource_evidence(Err(())),ResourceEvidence::Unavailable);
+    }
 }

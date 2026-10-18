@@ -117,3 +117,16 @@ test("one-off worker requires every named typed step to have a successful PlanRu
   assert.ok(py.includes('require_complete_step_report'));
   assert.ok(exec.includes("verify_final_artifact_binding(plan,&value)?"));
 });
+
+test("one-off native RAM watchdog treats a missing sample or process identity as outcome unknown",()=>{
+  const monitor=exec.slice(exec.indexOf("let monitor=scope.spawn"),exec.indexOf("let result=bounded_child::collect_with_deadline"));
+  assert.match(exec,/enum ResourceEvidence \{ WithinLimit, OverHardLimit, Unavailable \}/);
+  assert.match(exec,/fn classify_resource_evidence\(sample:Result<bool,\(\)>\)/);
+  assert.match(monitor,/match managed_process_identity_matches\(state,pid\)/);
+  assert.match(monitor,/ResourceEvidence::Unavailable=>\{/);
+  assert.match(monitor,/resource_evidence_unavailable\.store\(true,Ordering::Release\)/);
+  assert.match(monitor,/terminate_registered_process_tree\(state,pid\)/);
+  assert.match(exec,/if resource_evidence_unavailable\.load\(Ordering::Acquire\)\{/);
+  assert.match(exec,/Outcome unknown, inspect before retry/);
+  assert.match(exec,/fn one_off_native_memory_sample_fails_closed_when_unavailable\(/);
+});

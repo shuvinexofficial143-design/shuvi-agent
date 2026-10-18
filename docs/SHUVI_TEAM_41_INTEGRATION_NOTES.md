@@ -1742,3 +1742,28 @@ concurrent close serialization at this final barrier. Node source-contract
 tests require this ordering strictly *after* manifest/reopen verification.
 This is a **source/CI safety fix**, not proof of a real Windows/Blender
 close race, visual quality, production Adobe import or native host E2E.
+
+
+## Team-41 — one-off Blender RAM monitor fail-closed evidence (source / CI)
+
+The ordinary one-off `blender_run_plan` action already owns a registered,
+start-time-verified Python/Blender process tree with a 4 GB hard-RAM
+watchdog. However, when its periodic RAM sample failed, the watchdog
+formerly exited its loop silently, leaving the rest of that approved
+plan potentially unmonitored while still capable of returning verified.
+
+The one-off Rust worker now distinguishes a confirmed within-budget sample,
+a confirmed over-budget sample, and **unavailable resource evidence**.
+Unexpected loss of the owned PID's OS-start-time identity or inability to
+sample native RAM sets a separate terminal uncertainty latch. When the
+same owned process identity is still verifiable, a missing sample requests
+termination through the registered-process-tree API; the final response
+explicitly distinguishes termination confirmed from unconfirmed.
+Neither case may be promoted as `status=verified`; both require owner
+inspection before any new approval. This uses the existing approval and
+process ownership infrastructure and does not introduce automatic retries.
+
+Native Rust classification tests and Node control-flow regressions are
+included. This is source/CI watchdog assurance, **not** measurement of an
+actual Windows host, proof that every OS descendant exited, or Blender
+render/application acceptance.
