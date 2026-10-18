@@ -56,7 +56,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 25 tests/);
+  assert.match(result.stderr,/Ran 27 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -144,4 +144,21 @@ test("new saved-scene failure modes have executable Python regression coverage",
       "test_persisted_copper_mesh_requires_unique_nondegenerate_3d_faces",
       "test_saved_scene_rejects_nonobject_changes_between_read_only_requests"
   ])assert.ok(reopenTests.includes("def "+testName+"("),testName);
+});
+
+test("Blender checkpoint copy is SHA-bound across separate read-only reopen and native byte rehash",()=>{
+  const helperSource=readFileSync(helper,"utf8");
+  for(const proof of [
+    "def _stable_checkpoint_bytes(saved: Path) -> str:",
+    "initial_file_sha256 = _stable_checkpoint_bytes(saved)",
+    "reopened_file_sha256 = _stable_checkpoint_bytes(saved)",
+    "reopened_file_sha256 != initial_file_sha256",
+    '"checkpoint_file_sha256": reopened_file_sha256',
+    '"checkpoint_bytes_stable_during_reopen": True',
+    "test_saved_checkpoint_modified_during_read_only_reopen_fails_closed"
+  ])assert.ok((helperSource+"\n"+reopenTests).includes(proof),proof);
+  for(const proof of [
+    'proof.get("checkpoint_bytes_stable_during_reopen").and_then(Value::as_bool)!=Some(true)',
+    'proof.get("checkpoint_file_sha256").and_then(Value::as_str)!=Some(expected)'
+  ])assert.ok(rust.includes(proof),proof);
 });

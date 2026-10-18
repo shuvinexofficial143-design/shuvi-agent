@@ -382,12 +382,66 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
              "proof_copper_shader_revision": proof_copper_shader_revision}
 
 
+def _stable_checkpoint_bytes(saved: Path) -> str:
+    """Read one bounded real .blend file without following a final symlink.
+
+    This catches file substitution while the read-only host is opening a
+    checkpoint. The final native receipt independently hashes the bytes.
+    """
+    import os
+    import stat
+
+    if saved.is_symlink():
+        raise ValueError("Blender saved checkpoint is a symbolic link")
+    before = saved.stat()
+    if (not stat.S_ISREG(before.st_mode) or not 12 <= before.st_size <= 128 * 1024 * 1024):
+        raise ValueError("Blender checkpoint size or type violates reopen policy")
+    fd = os.open(saved, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+    h = hashlib.sha256()
+    try:
+        with os.fdopen(fd, "rb", closefd=True) as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (
+                    before.st_dev, before.st_ino, before.st_size):
+                raise ValueError("Blender checkpoint identity changed before reopen read")
+            data = stream.read(12)
+            if (len(data) != 12 or data[:7] != b"BLENDER"
+                    or data[7:8] not in (b"-", b"_")
+                    or data[8:9].lower() != b"v"
+                    or not all(48 <= b <= 57 for b in data[9:12])):
+                raise ValueError("Blender reopen checkpoint header is invalid")
+            h.update(data)
+            count = len(data)
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > 128 * 1024 * 1024:
+                    raise ValueError("Blender reopen checkpoint byte budget exceeded")
+                h.update(chunk)
+            after = os.fstat(stream.fileno())
+            if (after.st_dev, after.st_ino, after.st_size) != (
+                    opened.st_dev, opened.st_ino, opened.st_size) or count != after.st_size:
+                raise ValueError("Blender checkpoint changed during reopen hash")
+    except Exception:
+        # os.fdopen owns fd only after creation. Any read error must abort.
+        raise
+    path_after = saved.stat()
+    if saved.is_symlink() or (path_after.st_dev, path_after.st_ino, path_after.st_size) != (
+            before.st_dev, before.st_ino, before.st_size):
+        raise ValueError("Blender saved checkpoint path was replaced")
+    return h.hexdigest()
+
+
 def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
     """Close the writer first; launch a NEW read-only, authenticated host."""
     from shuvi_blender_agent.client import BlenderController
     from shuvi_blender_agent.process import LaunchConfig, launch
     from shuvi_blender_agent.safety import SafetyPolicy
 
+    initial_file_sha256 = _stable_checkpoint_bytes(saved)
     with launch(LaunchConfig(
         executable=blender_exe,
         blend_file=saved,
@@ -395,6 +449,9 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
         policy=SafetyPolicy(),
     )) as session:
         reopened = capture_scene(BlenderController(session.client), saved)
+    reopened_file_sha256 = _stable_checkpoint_bytes(saved)
+    if reopened_file_sha256 != initial_file_sha256:
+        raise ValueError("Saved Blender checkpoint bytes changed while reopening")
     if reopened != original:
         raise ValueError("Saved Blender checkpoint content differs after independent reopen")
     if saved.name == "shuvi41-proof-material.blend":
@@ -408,7 +465,9 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
                 or reopened.get("proof_key_light_verified") is not True
                 or reopened.get("active_camera_name") != "Shuvi41ProofCamera"):
             raise ValueError("Saved copper material/look, proof camera or light missing after independent reopen")
-    return {"verified": True, "fingerprint": reopened["fingerprint"],
+    return {"verified": True, "checkpoint_file_sha256": reopened_file_sha256,
+            "checkpoint_bytes_stable_during_reopen": True,
+            "fingerprint": reopened["fingerprint"],
             "mesh_fingerprint": reopened["mesh_fingerprint"],
             "object_count": reopened["object_count"], "read_only": True,
             "mesh_geometry_verified": True, "mesh_count": reopened["mesh_count"],

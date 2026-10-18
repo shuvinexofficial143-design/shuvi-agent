@@ -108,3 +108,12 @@ test("saved copper .blend independently reopens Principled shader graph, not jus
   ])assert.ok(rust.includes(token),token);
   assert.ok(oneShot.includes('proof.get("proof_copper_shader_revision")'));
 });
+
+test("BLEND handoff preserves and cross-checks bytes-stable reopen SHA against current on-disk native proof",()=>{
+  for(const t of [
+    '"checkpoint_bytes_stable_during_reopen":saved',
+    '"checkpoint_file_sha256":if saved',
+    'evidence.get("checkpoint_file_sha256").and_then(Value::as_str)!=Some(hash)',
+    '"checkpoint_file_sha256":evidence["checkpoint_file_sha256"]'
+  ])assert.ok(rust.includes(t),t);
+});

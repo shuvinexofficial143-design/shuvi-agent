@@ -22,6 +22,15 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
     match (kind,canonical.extension().and_then(|s|s.to_str()).map(|s|s.to_ascii_lowercase()).as_deref()) {
         ("BLEND",Some("blend"))=>{
             let proof=output.get("checkpoint_reopen").ok_or("Independent Blender checkpoint reopen proof missing.")?;
+            // Bind the owned Python process's separate before/after reopen
+            // file SHA to this exact artifact receipt. Native hashes the real
+            // on-disk bytes independently below.
+            if proof.get("checkpoint_bytes_stable_during_reopen").and_then(Value::as_bool)!=Some(true)
+                ||proof.get("checkpoint_file_sha256").and_then(Value::as_str)!=Some(expected)
+                ||expected.len()!=64
+                ||!expected.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()){
+                return Err("Blender checkpoint file was not stable and SHA-bound across independent reopen.".into());
+            }
             // The supplementary copper-look checkpoint requires independent
             // persisted material-slot verification, not just a valid .blend
             // header and the writer's earlier mutation acknowledgement.

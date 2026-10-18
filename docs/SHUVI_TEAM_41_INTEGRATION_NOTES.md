@@ -1493,3 +1493,35 @@ Synthetic fake-controller tests cover file-source swaps, camera swaps,
 render-resolution edits, collection changes, object-type changes and
 frame changes between initial and final observations. No mutable Blender
 operation or background worker was added.
+
+## Team-41 — Byte-stable independent .blend checkpoint reopen (source verification)
+
+An earlier independent writer/reopen snapshot matched Blender scene
+geometry and shader readback but could not independently establish
+that the actual on-disk .blend file remained identical while the
+second read-only Blender process was loading it. This milestone adds
+a bounded, read-only SHA-256 check **before launching** and **after
+closing** the separate read-only reopen process. It rejects a final
+symbolic-link path, bad Blender header, non-regular files, out-of-policy
+size, replaced filesystem identity, changed length, or different
+before/after hashes; files are streamed in 64-KiB chunks, max 128 MiB.
+This is not a mutating operation and does not bypass the original
+owner approvals or source-checkpoint inspection.
+
+The broker returns `checkpoint_bytes_stable_during_reopen=true` and
+`checkpoint_file_sha256` **only after** both successful reads.
+The existing Rust native file verifier now rejects any saved BLEND
+receipt whose reopen digest does not exactly match the expected
+artifact SHA-256 or whose stability proof is false, then independently
+hashes the real current file as before. The historical handoff
+manifest retains the digest with explicit historical provenance;
+reverification checks its equality to the present-day artifact
+digest and independently re-hashes the present on-disk bytes. This
+does not cryptographically sign historical Python readback, prevent
+all concurrent filesystem attacks, or constitute licensed Windows
+Blender acceptance.
+
+Fixture tests validate both stable copies and tampering during the
+separate read-only session, malformed/symlink .blend headers and
+forged native or manifest digest claims. Unrelated PNG
+verification retains its existing structural integrity guard.

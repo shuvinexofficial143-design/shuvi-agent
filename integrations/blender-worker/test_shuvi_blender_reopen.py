@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shuvi_blender_reopen import capture_scene, reopen_checkpoint
+from shuvi_blender_reopen import capture_scene, reopen_checkpoint, _stable_checkpoint_bytes
 
 
 class Request:
@@ -299,6 +299,9 @@ class ReopenTests(unittest.TestCase):
         with patch.dict(sys.modules, fake):
             proof = reopen_checkpoint(Path("/dummy/blender"), material, original)
             self.assertTrue(proof["proof_copper_material_verified"])
+            self.assertTrue(proof["checkpoint_bytes_stable_during_reopen"])
+            self.assertEqual(proof["checkpoint_file_sha256"],
+                             hashlib.sha256(material.read_bytes()).hexdigest())
             self.assertTrue(proof["shader_parameters_independently_verified"])
             self.assertEqual(proof["proof_copper_shader_revision"],
                              copper_shader_snapshot()["shader_revision"])
@@ -315,6 +318,63 @@ class ReopenTests(unittest.TestCase):
                 CopperProofController(material, material="Wrong"), material)
             with self.assertRaisesRegex(ValueError, "copper material/look"):
                 reopen_checkpoint(Path("/dummy/blender"), material, unverified_original)
+
+    def test_checkpoint_hash_requires_real_regular_bounded_blend_bytes(self):
+        self.assertEqual(_stable_checkpoint_bytes(self.file),
+                         hashlib.sha256(self.file.read_bytes()).hexdigest())
+        changed = self.file.with_name("invalid.blend")
+        changed.write_bytes(b"incorrect content")
+        with self.assertRaisesRegex(ValueError, "header"):
+            _stable_checkpoint_bytes(changed)
+        changed.write_bytes(b"BLENDER-v430")
+        self.assertEqual(_stable_checkpoint_bytes(changed),
+                         hashlib.sha256(changed.read_bytes()).hexdigest())
+        changed.write_bytes(b"BLEND")
+        with self.assertRaisesRegex(ValueError, "size"):
+            _stable_checkpoint_bytes(changed)
+        changed.unlink()
+        try:
+            changed.symlink_to(self.file)
+        except (OSError, NotImplementedError):
+            pass  # Windows fixture host may not permit creating symlinks.
+        else:
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                _stable_checkpoint_bytes(changed)
+
+    def test_saved_checkpoint_modified_during_read_only_reopen_fails_closed(self):
+        # A second process can load the first bytes and exit normally while
+        # another actor has replaced the checkpoint on disk.
+        original = capture_scene(FakeController(self.file), self.file)
+        process = types.ModuleType("shuvi_blender_agent.process")
+        safety = types.ModuleType("shuvi_blender_agent.safety")
+        client = types.ModuleType("shuvi_blender_agent.client")
+        class SafetyPolicy:
+            allow_mutations = False
+            allow_file_writes = False
+        class LaunchConfig:
+            def __init__(self, **kwargs):
+                self.policy = kwargs["policy"]
+        class Session:
+            client = "read-only"
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                self_file = self_file_path
+                self_file.write_bytes(b"BLENDER-v430modified-between-processes")
+                return None
+        self_file_path = self.file
+        process.LaunchConfig = LaunchConfig
+        process.launch = lambda config: Session()
+        safety.SafetyPolicy = SafetyPolicy
+        client.BlenderController = lambda _transport: FakeController(
+            self.file, session="session-B")
+        with patch.dict(sys.modules, {
+            "shuvi_blender_agent.process": process,
+            "shuvi_blender_agent.safety": safety,
+            "shuvi_blender_agent.client": client
+        }):
+            with self.assertRaisesRegex(ValueError, "bytes changed while reopening"):
+                reopen_checkpoint(Path("/dummy/blender"), self.file, original)
 
     def test_shaded_copper_checkpoint_rejects_tampered_principled_values(self):
         material = self.file.with_name("shuvi41-proof-material.blend")
@@ -620,6 +680,9 @@ class ReopenTests(unittest.TestCase):
             proof = reopen_checkpoint(Path("/dummy/blender"), self.file, original)
             self.assertEqual(proof["fingerprint"], original["fingerprint"])
             self.assertTrue(proof["verified"] and proof["read_only"])
+            self.assertTrue(proof["checkpoint_bytes_stable_during_reopen"])
+            self.assertEqual(proof["checkpoint_file_sha256"],
+                             hashlib.sha256(self.file.read_bytes()).hexdigest())
             self.assertTrue(proof["mesh_geometry_verified"])
             self.assertEqual(proof["mesh_count"], 1)
             self.assertEqual(proof["mesh_fingerprint"], original["mesh_fingerprint"])

@@ -222,6 +222,8 @@ pub(crate) fn build(
         "evidence":{
             "native_file_sha256_readback":true,
             "independent_read_only_reopen":saved,
+            "checkpoint_bytes_stable_during_reopen":saved,
+            "checkpoint_file_sha256":if saved {proof.unwrap()["checkpoint_file_sha256"].clone()}else{Value::Null},
             "scene_fingerprint":if saved {proof.unwrap()["fingerprint"].clone()}else{Value::Null},
             "object_count":if saved {proof.unwrap()["object_count"].clone()}else{Value::Null},
             "mesh_geometry_verified":saved,
@@ -297,8 +299,10 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
     let kind_label=match kind{
         "BLEND"=>{
             let evidence=manifest.get("evidence").ok_or("Blender proof missing.")?;
-            if evidence.get("independent_read_only_reopen").and_then(Value::as_bool)!=Some(true){
-                return Err("Blender source reopen evidence missing.".into());
+            if evidence.get("independent_read_only_reopen").and_then(Value::as_bool)!=Some(true)
+                ||evidence.get("checkpoint_bytes_stable_during_reopen").and_then(Value::as_bool)!=Some(true)
+                ||evidence.get("checkpoint_file_sha256").and_then(Value::as_str)!=Some(hash){
+                return Err("Blender source reopen file SHA history is missing or contradictory.".into());
             }
             let material_look=Path::new(file).file_name().and_then(|x|x.to_str())
                 ==Some("shuvi41-proof-material.blend");
@@ -322,6 +326,8 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
             }
             receipt["checkpoint_reopen"]=json!({
                 "verified":true,"read_only":true,
+                "checkpoint_bytes_stable_during_reopen":true,
+                "checkpoint_file_sha256":evidence["checkpoint_file_sha256"],
                 "fingerprint":evidence["scene_fingerprint"],
                 "object_count":evidence["object_count"],
                 "mesh_geometry_verified":evidence["mesh_geometry_verified"],
@@ -403,6 +409,8 @@ mod tests {
             "destructive_allowed":false,"executed_steps":2,
             "artifact":{"path":path,"bytes":size,"sha256":digest,"format":"BLEND"},
             "checkpoint_reopen":{"verified":true,"read_only":true,"fingerprint":"a".repeat(64),
+                "checkpoint_bytes_stable_during_reopen":true,
+                "checkpoint_file_sha256":digest,
                 "object_count":2,"mesh_geometry_verified":true,
                 "mesh_fingerprint":"c".repeat(64),
                 "mesh_count":1,"total_vertices":3,"total_faces":1}
@@ -421,6 +429,8 @@ mod tests {
         assert_eq!(data["source_session_id"],SESSION);
         assert_eq!(data["artifact"]["sha256"],sha);
         assert_eq!(data["evidence"]["independent_read_only_reopen"],true);
+        assert_eq!(data["evidence"]["checkpoint_bytes_stable_during_reopen"],true);
+        assert_eq!(data["evidence"]["checkpoint_file_sha256"],sha);
         assert_eq!(data["handoff"]["import_performed"],false);
         assert_eq!(data["handoff"]["host_live_acceptance_proven"],false);
         assert_eq!(data["handoff"]["requires_new_action_approval"],true);
@@ -441,6 +451,14 @@ mod tests {
         assert!(build(&good,&f.0,ACTION,Some("stale")).is_err());
         let mut bad=good.clone();bad.as_object_mut().unwrap().remove("checkpoint_reopen");
         assert!(build(&bad,&f.0,ACTION,None).is_err());
+        for (field,value) in [
+            ("checkpoint_file_sha256",json!("f".repeat(64))),
+            ("checkpoint_bytes_stable_during_reopen",json!(false)),
+        ]{
+            let mut forged=good.clone();
+            forged["checkpoint_reopen"][field]=value;
+            assert!(build(&forged,&f.0,ACTION,None).is_err(),"{field}");
+        }
     }
 
     #[test]
@@ -606,6 +624,12 @@ mod tests {
         assert!(reverify(&forged_manifest,&f.0).is_err());
         let mut forged_manifest=manifest.clone();
         forged_manifest["evidence"]["shader_parameters_independently_verified"]=json!(false);
+        assert!(reverify(&forged_manifest,&f.0).is_err());
+        let mut forged_manifest=manifest.clone();
+        forged_manifest["evidence"]["checkpoint_file_sha256"]=json!("0".repeat(64));
+        assert!(reverify(&forged_manifest,&f.0).is_err());
+        let mut forged_manifest=manifest.clone();
+        forged_manifest["evidence"]["checkpoint_bytes_stable_during_reopen"]=json!(false);
         assert!(reverify(&forged_manifest,&f.0).is_err());
         let mut forged_manifest=manifest.clone();
         forged_manifest["evidence"]["proof_copper_shader_revision"]=json!("bad");
