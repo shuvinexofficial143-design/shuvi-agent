@@ -55,7 +55,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 21 tests/);
+  assert.match(result.stderr,/Ran 23 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -102,4 +102,17 @@ test("independent saved scene reopen checks every object across exact typed page
     "test_paged_saved_scene_checks_cross_page_identity_and_cursor",
     "test_saved_mesh_rejects_repeated_face_indices_even_with_matching_digest"
   ]) assert.ok(source.includes(token),token);
+});
+
+test("saved meshes reconcile authenticated upstream datablock metadata with fully inspected vertices and polygons",()=>{
+  const source=readFileSync(helper,"utf8");
+  for (const token of [
+    "def _saved_mesh_metadata(item: dict) -> tuple[int, int, int]:",
+    'data.get("object_type") != "MESH"',
+    'for name in ("vertices", "polygons", "edges"):',
+    "metadata_vertices, metadata_faces, _ = _saved_mesh_metadata(item)",
+    "len(vertices) != metadata_vertices or len(faces) != metadata_faces",
+    "test_saved_mesh_datablock_counts_match_actual_inspected_geometry",
+    "test_missing_or_oversized_saved_mesh_metadata_fails_before_mesh_probe"
+  ])assert.ok(source.includes(token),token);
 });

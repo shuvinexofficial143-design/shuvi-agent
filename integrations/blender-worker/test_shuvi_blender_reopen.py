@@ -36,6 +36,7 @@ def fixture(saved, *, session="session-A", name="Cube"):
         dimensions=[2, 2, 2], visibility={"hide_render": False},
         collections=["Collection"], materials=["Blue"], material_slot_count=1,
         modifiers=[], modifier_count=0, details_truncated=False,
+        data={"object_type": "MESH", "vertices": 3, "polygons": 1, "edges": 3},
         object_id=session+":object-1", revision="f" * 64,
     )
     return scene, obj
@@ -147,6 +148,8 @@ class CopperProofController(ProofController):
         self.obj["name"] = "Shuvi41ProofMesh"
         self.obj["materials"] = [material] if slots == 1 else [material, "ExtraSlot"]
         self.obj["material_slot_count"] = slots
+        self.obj["data"] = {"object_type": "MESH", "vertices": 8,
+                            "polygons": 6, "edges": 12}
         self.obj["visibility"] = {"hide_render": hidden}
         self.metallic = metallic
 
@@ -466,6 +469,37 @@ class ReopenTests(unittest.TestCase):
                 return result
         with self.assertRaisesRegex(ValueError, "repeated index"):
             capture_scene(RepeatedFace(self.file), self.file)
+
+    def test_saved_mesh_datablock_counts_match_actual_inspected_geometry(self):
+        # A separately valid geometry SHA is insufficient when object-list
+        # metadata says the saved object contains another topology.
+        for mismatched in [
+            {"vertices": 4}, {"polygons": 2},
+            {"edges": True}, {"vertices": -1},
+            {"object_type": "CAMERA"},
+        ]:
+            ctrl = FakeController(self.file)
+            ctrl.obj["data"].update(mismatched)
+            with self.subTest(mismatched=mismatched), self.assertRaisesRegex(
+                    ValueError, "datablock|census"):
+                capture_scene(ctrl, self.file)
+
+    def test_missing_or_oversized_saved_mesh_metadata_fails_before_mesh_probe(self):
+        class Counting(FakeController):
+            mesh_inspections = 0
+            def execute(self, request):
+                if request.operation == "mesh.inspect":
+                    self.mesh_inspections += 1
+                return super().execute(request)
+        for metadata in (None, {},
+                         {"object_type": "MESH", "vertices": 4097,
+                          "polygons": 1, "edges": 5}):
+            ctrl = Counting(self.file)
+            ctrl.obj["data"] = metadata
+            with self.subTest(metadata=metadata), self.assertRaisesRegex(
+                    ValueError, "datablock|upstream topology"):
+                capture_scene(ctrl, self.file)
+            self.assertEqual(ctrl.mesh_inspections, 0)
 
     def test_invalid_saved_object_revision_cannot_be_verified(self):
         for value in ("invalid", "F" * 64, None, True):

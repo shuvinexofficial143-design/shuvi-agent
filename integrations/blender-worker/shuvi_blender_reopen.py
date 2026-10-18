@@ -115,6 +115,28 @@ def _reopen_page_items(page: dict, *, session_id: str, revision: str,
     return items
 
 
+def _saved_mesh_metadata(item: dict) -> tuple[int, int, int]:
+    """Exact independent typed Blender objects.list Mesh datablock counts.
+
+    Pinned upstream inspector reports data.object_type and vertex/polygon/
+    edge counts. Check this before mesh.inspect; then bind its returned
+    arrays to the object page, so a valid SHA for the *wrong* geometry
+    cannot certify the saved object's mesh.
+    """
+    data = item.get("data")
+    if not isinstance(data, dict) or data.get("object_type") != "MESH":
+        raise ValueError("Blender saved mesh lacks authenticated datablock counts")
+    counts = []
+    for name in ("vertices", "polygons", "edges"):
+        value = data.get(name)
+        if type(value) is not int or not 0 <= value <= 100_000_000:
+            raise ValueError("Blender saved mesh datablock count is malformed")
+        counts.append(value)
+    if counts[0] > 4096 or counts[1] > 4096:
+        raise ValueError("Blender saved mesh exceeds upstream topology readback")
+    return tuple(counts)
+
+
 def capture_scene(controller, expected_path: Path, *, require_saved_file: bool = True) -> dict:
     """Fingerprint full bounded object paging; deny missing/truncated/unstable reads."""
     from shuvi_blender_agent.contracts import Request, Status
@@ -210,6 +232,7 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
                 object_id = item.get("object_id")
                 if not isinstance(object_id, str) or not object_id.startswith(session_id + ":"):
                     raise ValueError("Blender mesh lacks live session-local object identity")
+                metadata_vertices, metadata_faces, _ = _saved_mesh_metadata(item)
                 geometry = call("mesh.inspect", {"object_id": object_id})
                 if geometry.get("object_id") != object_id or geometry.get("name") != item["name"]:
                     raise ValueError("Blender mesh identity changed during geometry inspection")
@@ -224,6 +247,8 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
                                       for x in face)
                                for face in faces)):
                     raise ValueError("Blender mesh geometry readback is malformed")
+                if len(vertices) != metadata_vertices or len(faces) != metadata_faces:
+                    raise ValueError("Blender saved mesh datablock census contradicts inspected topology")
                 if any(len(set(face)) != len(face) for face in faces):
                     raise ValueError("Blender mesh polygon contains a repeated index")
                 total_vertices += len(vertices)

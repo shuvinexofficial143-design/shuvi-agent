@@ -1439,3 +1439,22 @@ payload, and bounds aggregate polygon indices to 32768 to avoid unbounded
 mesh proof work. This is purely a read-only verification improvement;
 there are no new edit permissions, arbitrary scripts, Blender host runs or
 changes to the pinned upstream adapter.
+
+## Team-41 — Saved mesh datablock-to-topology correlation
+
+Independent checkpoint Save/Reopen now correlates each upstream
+`objects.list` mesh snapshot's actual Blender datablock counts
+(`data.object_type=MESH`, `vertices`, `polygons`, `edges`) to
+its same-session typed `mesh.inspect` readback. Non-integer, missing,
+negative or over-limit mesh metadata is refused before a secondary
+mesh inspection. Even if the `mesh.inspect` coordinates/faces have
+their own valid SHA-256, a mismatch against object-list vertex or
+polygon counts fails closed. Real pinned upstream `data_summary`
+reports these exact typed fields. Fixture tests distinguish this
+behavior from SHA-only acceptance and prove early rejection uses no
+mesh-inspection calls.
+
+This is a genuine source/reopen integrity check but does not substitute
+for actual licensed Windows Blender host acceptance or manual visual QA.
+The previous native permissions, job ownership and artifact delivery
+remain unchanged.
