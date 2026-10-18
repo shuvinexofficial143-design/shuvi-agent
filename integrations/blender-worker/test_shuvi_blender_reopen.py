@@ -117,17 +117,44 @@ class ProofController(FakeController):
         return super().execute(request)
 
 
+def copper_shader_snapshot(*, metallic=0.65, roughness=0.31,
+                           base_color=None):
+    if base_color is None:
+        base_color = [0.8, 0.41, 0.16, 1.0]
+    snap = {
+        "material_name": "Shuvi41ProofCopper", "node_count": 2,
+        "link_count": 1,
+        "nodes": [
+            {"name": "Material Output", "type": "OUTPUT_MATERIAL", "image": None},
+            {"name": "Principled BSDF", "type": "BSDF_PRINCIPLED", "image": None},
+        ],
+        "links": [["Principled BSDF", "BSDF", "Material Output", "Surface"]],
+        "principled": {"base_color": base_color, "metallic": metallic,
+                      "roughness": roughness},
+        "auxiliary": {}, "textures": {},
+    }
+    snap["shader_revision"] = hashlib.sha256(json.dumps(
+        snap, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()).hexdigest()
+    return snap
+
+
 class CopperProofController(ProofController):
     """Material-look fixed mesh with real bounded paged geometry readback."""
     def __init__(self, saved, *, session="session-A", material="Shuvi41ProofCopper",
-                 slots=1, hidden=False, energy=950.0):
+                 slots=1, hidden=False, energy=950.0, metallic=0.65):
         super().__init__(saved, session=session, energy=energy)
         self.obj["name"] = "Shuvi41ProofMesh"
         self.obj["materials"] = [material] if slots == 1 else [material, "ExtraSlot"]
         self.obj["material_slot_count"] = slots
         self.obj["visibility"] = {"hide_render": hidden}
+        self.metallic = metallic
 
     def execute(self, request):
+        if request.operation == "material.shader_inspect":
+            if request.payload != {"material_name": "Shuvi41ProofCopper"}:
+                raise AssertionError("Reopen requested unexpected material")
+            return DummyResult(copper_shader_snapshot(metallic=self.metallic))
         if request.operation == "mesh.inspect":
             self.geometry_read = True
             vertices = [
@@ -173,6 +200,9 @@ class ReopenTests(unittest.TestCase):
         reader = capture_scene(CopperProofController(material, session="session-B"), material)
         self.assertEqual(writer, reader)
         self.assertTrue(writer["proof_copper_material_verified"])
+        self.assertTrue(writer["proof_copper_shader_verified"])
+        self.assertEqual(writer["proof_copper_shader_revision"],
+                         copper_shader_snapshot()["shader_revision"])
         self.assertEqual(writer["mesh_count"], 1)
         self.assertEqual(writer["total_vertices"], 8)
         self.assertEqual(writer["total_faces"], 6)
@@ -230,11 +260,13 @@ class ReopenTests(unittest.TestCase):
         with patch.dict(sys.modules, fake):
             proof = reopen_checkpoint(Path("/dummy/blender"), material, original)
             self.assertTrue(proof["proof_copper_material_verified"])
-            self.assertFalse(proof["shader_parameters_independently_verified"])
+            self.assertTrue(proof["shader_parameters_independently_verified"])
+            self.assertEqual(proof["proof_copper_shader_revision"],
+                             copper_shader_snapshot()["shader_revision"])
             self.assertTrue(proof["read_only"])
             self.assertFalse(calls[0]["policy"].allow_mutations)
             for options in ({"material": "Wrong"}, {"slots": 2}, {"hidden": True},
-                            {"energy": 250.0}):
+                            {"energy": 250.0}, {"metallic": 0.35}):
                 provider.options = options
                 with self.subTest(options=options):
                     with self.assertRaisesRegex(ValueError, "differs|copper material/look"):
@@ -244,6 +276,18 @@ class ReopenTests(unittest.TestCase):
                 CopperProofController(material, material="Wrong"), material)
             with self.assertRaisesRegex(ValueError, "copper material/look"):
                 reopen_checkpoint(Path("/dummy/blender"), material, unverified_original)
+
+    def test_shaded_copper_checkpoint_rejects_tampered_principled_values(self):
+        material = self.file.with_name("shuvi41-proof-material.blend")
+        material.write_bytes(b"BLENDER-v430")
+        original = capture_scene(CopperProofController(material), material)
+        self.assertTrue(original["proof_copper_shader_verified"])
+        for value in (0.35, 0.55, 0.0):
+            with self.subTest(metallic=value):
+                with self.assertRaisesRegex(ValueError, "Saved copper shader"):
+                    capture_scene(CopperProofController(material, metallic=value), material)
+        self.assertFalse(capture_scene(ProofController(self.file), self.file)[
+            "proof_copper_shader_verified"])
 
     def test_real_shape_camera_light_claims_survive_fresh_session(self):
         writer = capture_scene(ProofController(self.file), self.file)

@@ -1362,3 +1362,27 @@ reject changed base color, metallic/roughness, wrong upstream shader
 revision, node-graph overrides and missing Principled nodes. This is
 not a render-completion, appearance or final visual-quality attestation,
 and no Blender application has been launched in this source-only CI.
+
+## Shuvi 41 — persisted Copper shader parameters across independent save/reopen
+
+The pinned upstream adapter already supports the typed read-only
+`material.shader_inspect` operation. We now reuse the existing strict
+`verify_shuvi41_copper_shader` validator when capturing the supplementary
+`shuvi41-proof-material.blend` checkpoint in both the writer process and
+the **separate read-only reopened Blender process**. This verifies the
+Principled BSDF material name, exact one Principled node, bounded shader
+node graph, immutable source-computed revision, fixed copper base color,
+metallic (0.65) and roughness (0.31), with no incoming links overriding
+the three fixed inputs. Writer/reopen snapshots must agree including
+the shader-graph revision; a slot name alone is insufficient.
+
+For this example Copper material only, the saved checkpoint receipt,
+native output verifier and manifest now require the **actual independent
+shader parameter evidence** and carry the bounded shader revision. Its
+historical downstream manifest review checks these attestations and
+current saved file SHA, but **does not** pretend to reopen Blender again
+or recheck that the shader is still live inside the current file.
+Normal `model1`, `model2`, `render` scenes and unrelated materials
+are unchanged. The optional `look_render` still retains its separate
+pre-render typed shader inspection at render time. No rendering, merge,
+live Blender execution, arbitrary model code or approval bypass occurs.

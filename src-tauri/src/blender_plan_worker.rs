@@ -30,8 +30,11 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
                     ||proof.get("proof_camera_verified").and_then(Value::as_bool)!=Some(true)
                     ||proof.get("proof_key_light_verified").and_then(Value::as_bool)!=Some(true)
                     ||proof.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
-                    ||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(false)){
-                return Err("Saved material .blend lacks independent reopened copper slot and active camera/light proof.".into());
+                    ||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)
+                    ||proof.get("proof_copper_shader_revision").and_then(Value::as_str)
+                        .is_none_or(|digest|digest.len()!=64||
+                            !digest.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()))){
+                return Err("Saved material .blend lacks independent reopened copper shader, slot, camera or light proof.".into());
             }
             let fingerprint=proof.get("fingerprint").and_then(Value::as_str)
                 .ok_or("Blender reopen scene fingerprint missing.")?;

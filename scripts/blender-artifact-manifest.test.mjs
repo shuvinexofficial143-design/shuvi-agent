@@ -83,7 +83,7 @@ test("saved optional copper .blend requires independently reopened slot and came
     'proof.and_then(|p|p.get("proof_copper_material_verified"))',
     '"material_look_checkpoint_verified":material_look',
     '"proof_copper_material_verified":if material_look {Value::Bool(true)}else{Value::Null}',
-    '"shader_parameters_independently_verified":if material_look {Value::Bool(false)}else{Value::Null}',
+    '"shader_parameters_independently_verified":if material_look {Value::Bool(true)}else{Value::Null}',
     '"material_look_reopened_again_by_this_review":false',
     "copper_look_handoff_requires_independent_reopened_material_camera_and_light",
     "stage2_checkpoint_is_not_mistaken_for_optional_look_proof"
@@ -97,4 +97,14 @@ test("material-render preflight historical provenance includes independently aut
     'let shader=proof.get("shader_graph_revision")',
     '||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)'
   ])assert.ok(rust.includes(p),p);
+});
+
+test("saved copper .blend independently reopens Principled shader graph, not just material slot",()=>{
+  for(const token of [
+    '"proof_copper_shader_revision":if material_look',
+    'proof.and_then(|p|p.get("proof_copper_shader_revision"))',
+    'evidence.get("proof_copper_shader_revision")',
+    '("proof_copper_shader_revision",json!("invalid"))'
+  ])assert.ok(rust.includes(token),token);
+  assert.ok(oneShot.includes('proof.get("proof_copper_shader_revision")'));
 });

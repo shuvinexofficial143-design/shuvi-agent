@@ -55,7 +55,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 16 tests/);
+  assert.match(result.stderr,/Ran 17 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -67,8 +67,21 @@ test("independent material look reopen proves one persisted copper slot with act
     'item["material_slot_count"] == 1',
     'saved.name == "shuvi41-proof-material.blend"',
     'reopened.get("proof_copper_material_verified") is not True',
-    '"shader_parameters_independently_verified": False',
+    '"proof_copper_shader_verified": proof_copper_shader_verified',
   ])assert.ok(helperSource.includes(evidence),evidence);
   assert.ok(rust.includes('proof.get("proof_copper_material_verified")'));
   assert.ok(rust.includes('proof.get("shader_parameters_independently_verified")'));
+});
+
+test("saved supplementary copper look now requires typed shader graph inspection in both writer and read-only reopen",()=>{
+  const source=readFileSync(helper,"utf8");
+  for(const snippet of [
+    'call("material.shader_inspect", {',
+    'verify_shuvi41_copper_shader(observed_shader)',
+    'proof_copper_shader_revision = verify_shuvi41_copper_shader(observed_shader)',
+    'reopened.get("proof_copper_shader_verified") is not True',
+    'reopened.get("proof_copper_shader_revision") !=',
+    '"shader_parameters_independently_verified":',
+    '"proof_copper_shader_revision": reopened["proof_copper_shader_revision"]'
+  ])assert.ok(source.includes(snippet),snippet);
 });

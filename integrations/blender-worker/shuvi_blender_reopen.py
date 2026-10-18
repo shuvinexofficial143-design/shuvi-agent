@@ -199,6 +199,16 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         proof_copper_meshes_seen == 1
         and proof_copper_material_verified_count == 1
     )
+    # Require independent typed read-only shader inspection at save/reopen,
+    # not merely the material slot name persisted on a particular mesh.
+    proof_copper_shader_verified = False
+    proof_copper_shader_revision = None
+    if saved.name == "shuvi41-proof-material.blend" and proof_copper_material_verified:
+        from shuvi_blender_session import verify_shuvi41_copper_shader
+        observed_shader = call("material.shader_inspect", {
+            "material_name": "Shuvi41ProofCopper"})
+        proof_copper_shader_revision = verify_shuvi41_copper_shader(observed_shader)
+        proof_copper_shader_verified = True
 
     # Geometry readback may take multiple calls. Ensure all pages and mesh
     # snapshots belong to one unchanged source revision, not a mixed scene.
@@ -226,7 +236,9 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             "active_camera_name": active_camera_name,
             "proof_camera_verified": proof_camera_verified,
             "proof_key_light_verified": proof_key_light_verified,
-            "proof_copper_material_verified": proof_copper_material_verified}
+            "proof_copper_material_verified": proof_copper_material_verified,
+             "proof_copper_shader_verified": proof_copper_shader_verified,
+             "proof_copper_shader_revision": proof_copper_shader_revision}
 
 
 def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
@@ -247,6 +259,10 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
     if saved.name == "shuvi41-proof-material.blend":
         if (original.get("proof_copper_material_verified") is not True
                 or reopened.get("proof_copper_material_verified") is not True
+                or reopened.get("proof_copper_shader_verified") is not True
+                or original.get("proof_copper_shader_verified") is not True
+                or reopened.get("proof_copper_shader_revision") !=
+                    original.get("proof_copper_shader_revision")
                 or reopened.get("proof_camera_verified") is not True
                 or reopened.get("proof_key_light_verified") is not True
                 or reopened.get("active_camera_name") != "Shuvi41ProofCamera"):
@@ -260,4 +276,7 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
             "proof_camera_verified": reopened["proof_camera_verified"],
             "proof_key_light_verified": reopened["proof_key_light_verified"],
             "proof_copper_material_verified": reopened["proof_copper_material_verified"],
-            "shader_parameters_independently_verified": False}
+            "shader_parameters_independently_verified":
+                 saved.name == "shuvi41-proof-material.blend"
+                 and reopened["proof_copper_shader_verified"] is True,
+             "proof_copper_shader_revision": reopened["proof_copper_shader_revision"]}

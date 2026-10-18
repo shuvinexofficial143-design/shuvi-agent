@@ -192,7 +192,10 @@ pub(crate) fn build(
         ==Some("shuvi41-proof-material.blend");
     if material_look && (
         proof.and_then(|p|p.get("proof_copper_material_verified")).and_then(Value::as_bool)!=Some(true)
-        ||proof.and_then(|p|p.get("shader_parameters_independently_verified")).and_then(Value::as_bool)!=Some(false)
+        ||proof.and_then(|p|p.get("shader_parameters_independently_verified")).and_then(Value::as_bool)!=Some(true)
+        ||proof.and_then(|p|p.get("proof_copper_shader_revision")).and_then(Value::as_str)
+            .is_none_or(|digest|digest.len()!=64||
+                !digest.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()))
         ||proof.and_then(|p|p.get("active_camera_name")).and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
         ||proof.and_then(|p|p.get("proof_camera_verified")).and_then(Value::as_bool)!=Some(true)
         ||proof.and_then(|p|p.get("proof_key_light_verified")).and_then(Value::as_bool)!=Some(true)
@@ -224,7 +227,8 @@ pub(crate) fn build(
             "mesh_geometry_verified":saved,
             "material_look_checkpoint_verified":material_look,
             "proof_copper_material_verified":if material_look {Value::Bool(true)}else{Value::Null},
-            "shader_parameters_independently_verified":if material_look {Value::Bool(false)}else{Value::Null},
+            "shader_parameters_independently_verified":if material_look {Value::Bool(true)}else{Value::Null},
+            "proof_copper_shader_revision":if material_look {proof.unwrap()["proof_copper_shader_revision"].clone()}else{Value::Null},
             "material_render_source":material,
             "active_camera_name":if saved {proof.unwrap()["active_camera_name"].clone()}else{Value::Null},
             "proof_camera_verified":if saved {proof.unwrap()["proof_camera_verified"].clone()}else{Value::Null},
@@ -301,7 +305,10 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
             if material_look && (
                 evidence.get("material_look_checkpoint_verified").and_then(Value::as_bool)!=Some(true)
                 ||evidence.get("proof_copper_material_verified").and_then(Value::as_bool)!=Some(true)
-                ||evidence.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(false)
+                ||evidence.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)
+                ||evidence.get("proof_copper_shader_revision").and_then(Value::as_str)
+                    .is_none_or(|digest|digest.len()!=64||
+                        !digest.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()))
                 ||evidence.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
                 ||evidence.get("proof_camera_verified").and_then(Value::as_bool)!=Some(true)
                 ||evidence.get("proof_key_light_verified").and_then(Value::as_bool)!=Some(true)){
@@ -309,7 +316,8 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
             }
             if !material_look && (evidence.get("material_look_checkpoint_verified").and_then(Value::as_bool)==Some(true)
                 ||evidence.get("proof_copper_material_verified").and_then(Value::as_bool)==Some(true)
-                ||evidence.get("shader_parameters_independently_verified").and_then(Value::as_bool)==Some(true)){
+                ||evidence.get("shader_parameters_independently_verified").and_then(Value::as_bool)==Some(true)
+                ||evidence.get("proof_copper_shader_revision").is_some_and(|v|!v.is_null())){
                 return Err("Unrelated saved scene cannot impersonate the copper-look proof.".into());
             }
             receipt["checkpoint_reopen"]=json!({
@@ -322,6 +330,7 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
                 "proof_key_light_verified":evidence["proof_key_light_verified"],
                 "proof_copper_material_verified":evidence["proof_copper_material_verified"],
                 "shader_parameters_independently_verified":evidence["shader_parameters_independently_verified"],
+                "proof_copper_shader_revision":evidence["proof_copper_shader_revision"],
                 "mesh_fingerprint":evidence["mesh_fingerprint"],
                 "mesh_count":evidence["mesh_count"],
                 "total_vertices":evidence["total_vertices"],
@@ -566,21 +575,24 @@ mod tests {
         let mut receipt=proof(&file,bytes.len() as u64,&sha);
         let reopened=&mut receipt["checkpoint_reopen"];
         reopened["proof_copper_material_verified"]=json!(true);
-        reopened["shader_parameters_independently_verified"]=json!(false);
+        reopened["shader_parameters_independently_verified"]=json!(true);
+        reopened["proof_copper_shader_revision"]=json!("f".repeat(64));
         reopened["active_camera_name"]=json!("Shuvi41ProofCamera");
         reopened["proof_camera_verified"]=json!(true);
         reopened["proof_key_light_verified"]=json!(true);
         let manifest=build(&receipt,&f.0,ACTION,Some(SESSION)).unwrap();
         assert_eq!(manifest["evidence"]["material_look_checkpoint_verified"],true);
         assert_eq!(manifest["evidence"]["proof_copper_material_verified"],true);
-        assert_eq!(manifest["evidence"]["shader_parameters_independently_verified"],false);
+        assert_eq!(manifest["evidence"]["shader_parameters_independently_verified"],true);
+        assert_eq!(manifest["evidence"]["proof_copper_shader_revision"],"f".repeat(64));
         let review=reverify(&manifest,&f.0).unwrap();
         assert_eq!(review["current_file_integrity_verified"],true);
         assert_eq!(review["material_look_checkpoint_historical_proof_only"],true);
         assert_eq!(review["material_look_reopened_again_by_this_review"],false);
         for (key,value) in [
             ("proof_copper_material_verified",json!(false)),
-            ("shader_parameters_independently_verified",json!(true)),
+            ("shader_parameters_independently_verified",json!(false)),
+            ("proof_copper_shader_revision",json!("invalid")),
             ("active_camera_name",json!("WrongCamera")),
             ("proof_camera_verified",json!(false)),
             ("proof_key_light_verified",json!(false)),
@@ -593,7 +605,10 @@ mod tests {
         forged_manifest["evidence"]["proof_copper_material_verified"]=json!(false);
         assert!(reverify(&forged_manifest,&f.0).is_err());
         let mut forged_manifest=manifest.clone();
-        forged_manifest["evidence"]["shader_parameters_independently_verified"]=json!(true);
+        forged_manifest["evidence"]["shader_parameters_independently_verified"]=json!(false);
+        assert!(reverify(&forged_manifest,&f.0).is_err());
+        let mut forged_manifest=manifest.clone();
+        forged_manifest["evidence"]["proof_copper_shader_revision"]=json!("bad");
         assert!(reverify(&forged_manifest,&f.0).is_err());
         fs::write(&source,b"BLENDER-v430changed-copper-look").unwrap();
         assert!(reverify(&manifest,&f.0).is_err());
