@@ -16,7 +16,7 @@ if(!/^(?:x86_64|aarch64|i686)-pc-windows-msvc$/.test(target)){
 const args=[
   "build","--locked","--release",
   "--manifest-path",join("src-tauri","Cargo.toml"),
-  "--bin","shuvi-readonly-hash-worker","--target",target
+  "--bin","shuvi-readonly-hash-worker","--features","sha-worker-build","--target",target
 ];
 const result=spawnSync("cargo",args,{stdio:"inherit",shell:false,windowsHide:true});
 if(result.error||result.status!==0){

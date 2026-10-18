@@ -9,7 +9,9 @@ const signer=read("scripts/check-shuvi-release-signatures.ps1");
 test("M61 executes ONLY fixed SHA-verified extracted real NSIS worker after matching current signed-off source bytes",()=>{
  assert.match(payload,/\$workers\[0\]\.Directory\.FullName/);
  assert.match(payload,/\$main\[0\]\.Directory\.FullName -cne \$workerDir/);
- assert.match(payload,/Get-FileHash -LiteralPath \$workers\[0\]\.FullName -Algorithm SHA256/);
+ assert.match(payload,/Get-ShuviFileSha256 -LiteralPath \$workers\[0\]\.FullName/);
+ assert.match(payload,/\[Security\.Cryptography\.SHA256\]::Create\(\)/);
+ assert.match(payload,/\[IO\.FileShare\]::Read/);
  assert.match(payload,/Get-Command 'node\.exe'/);
  assert.match(payload,/Join-Path \$PSScriptRoot 'check-installed-shuvi-worker\.mjs'/);
  assert.match(payload,/\$node\.Source \$smokeScript --manifest \$manifestFile --install-dir \$workerDir/);

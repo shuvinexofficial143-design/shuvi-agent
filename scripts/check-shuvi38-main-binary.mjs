@@ -15,8 +15,20 @@ const attribute=key=>packageBlock.match(new RegExp("^"+key+"\\s*=\\s*\"([^\"]+)\
 if(attribute("name")!=="shuvi"||attribute("default-run")!=="shuvi"){
   throw Error("Tauri's main Cargo binary must be explicitly default-run=shuvi, never SHA sidecar.");
 }
-if(/\[\[bin\]\]/.test(cargo)){
-  throw Error("Explicit Cargo binary targets require a separate main/sidecar selection review.");
+const sections=cargo.split(/(?=^\[[^\r\n]+\]\s*$)/m);
+const binBlocks=sections.filter(s=>s.startsWith("[[bin]]"));
+const featureBlock=sections.find(s=>s.startsWith("[features]"));
+// Tauri CLI 2.11.5 explicitly excludes Cargo bins with unmet required-features;
+// otherwise it adds every src/bin executable PLUS each externalBin to NSIS.
+if(binBlocks.length!==1||!featureBlock
+   ||!/^sha-worker-build\s*=\s*\[\s*\]\s*$/m.test(featureBlock)
+   ||/^default\s*=/m.test(featureBlock)
+   ||!/^name\s*=\s*"shuvi-readonly-hash-worker"\s*$/m.test(binBlocks[0])
+   ||!/^path\s*=\s*"src\/bin\/shuvi-readonly-hash-worker.rs"\s*$/m.test(binBlocks[0])
+   ||!/^required-features\s*=\s*\["sha-worker-build"\]\s*$/m.test(binBlocks[0])
+   ||JSON.stringify([...binBlocks[0].matchAll(/^\s*([\w-]+)\s*=/gm)].map(m=>m[1]).sort())
+      !==JSON.stringify(["name","path","required-features"].sort())){
+  throw Error("SHA worker must be feature-gated out of Tauri Cargo binaries and packaged solely via externalBin.");
 }
 if(!/^\[lib\]\s*$/m.test(cargo)||!/^\s*name\s*=\s*"shuvi_lib"\s*$/m.test(cargo)){
   throw Error("Shuvi native library entrypoint changed.");
@@ -42,4 +54,4 @@ const bins=overlay.bundle?.externalBin;
 if(!Array.isArray(bins)||bins.length!==1||bins[0]!=="binaries/shuvi-readonly-hash-worker"){
   throw Error("Installer overlay must contain only the fixed SHA externalBin.");
 }
-console.log("PASS: Cargo default-run selects Shuvi desktop; SHA verifier is only an NSIS externalBin.");
+console.log("PASS: Cargo default-run selects Shuvi desktop; feature-gated SHA verifier is only an NSIS externalBin.");

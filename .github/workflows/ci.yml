@@ -54,7 +54,7 @@ jobs:
       - name: Rust verification with attestation
         run: npm run verify:rust
       - name: Build exact read-only SHA sidecar binary
-        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --bin shuvi-readonly-hash-worker
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --bin shuvi-readonly-hash-worker --features sha-worker-build
       - name: Execute real Windows SHA worker and tamper-rejection fixtures
         run: node scripts/check-native-sha-sidecar.mjs
       - name: M59 real Windows installed-layout SHA worker fixture and pin mismatch denial

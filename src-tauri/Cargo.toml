@@ -6,6 +6,17 @@ description = "Shuvi permission-first AI computer agent"
 authors = ["Shuvi"]
 edition = "2021"
 
+# Compile the fixed worker explicitly for sidecar staging/tests. Tauri must
+# otherwise bundle it exactly once via externalBin, never as a second Cargo
+# non-main binary with the same installed executable filename.
+[features]
+sha-worker-build = []
+
+[[bin]]
+name = "shuvi-readonly-hash-worker"
+path = "src/bin/shuvi-readonly-hash-worker.rs"
+required-features = ["sha-worker-build"]
+
 [lib]
 name = "shuvi_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

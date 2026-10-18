@@ -52,11 +52,13 @@ test("NSIS packaging builds exact Windows sidecar per target without untrusted d
  assert.match(builder,/cargo/);
  assert.match(builder,/--locked/);
  assert.match(builder,/--release/);
+ assert.match(builder,/"--features","sha-worker-build"/);
+ assert.match(read("src-tauri/Cargo.toml"),/required-features = \["sha-worker-build"\]/);
  assert.match(builder,/--target/);
  assert.match(builder,/copyFileSync\(source,dest\)/);
  assert.match(builder,/windows-msvc/);
  assert.doesNotMatch(builder,/curl|Invoke-WebRequest|wget|https?:/);
- assert.match(workflow,/cargo build --manifest-path src-tauri\/Cargo\.toml --locked --bin shuvi-readonly-hash-worker/);
+ assert.match(workflow,/cargo build --manifest-path src-tauri\/Cargo\.toml --locked --bin shuvi-readonly-hash-worker --features sha-worker-build/);
  assert.match(workflow,/node scripts\/check-native-sha-sidecar\.mjs/);
  assert.match(smoke,/spawnSync\(binary/);
  assert.match(smoke,/Wrong expected digest/);

@@ -9,7 +9,8 @@ const manifest=read("scripts/native-pinned-release-manifest.mjs");
 const pkg=JSON.parse(read("package.json"));
 
 test("M60 only a real extracted NSIS payload with exact worker SHA satisfies package acceptance",()=>{
- assert.match(payload,/Get-ShuviFileSha256 -LiteralPath \$workers\[0\]\.FullName/);
+ assert.match(payload,/\$packedWorkerSha=Get-ShuviFileSha256 -LiteralPath \$workers\[0\]\.FullName/);
+ assert.match(payload,/\$packedWorkerSha -cne \$manifest\.workerSha256/);
  assert.match(payload,/Get-ShuviFileSha256 -LiteralPath \$installer/);
  assert.match(payload,/\$workers\.Count -ne 1 -or \$main\.Count -ne 1/);
  assert.match(payload,/Get-ChildItem -LiteralPath \$extract -File -Recurse -Force/);

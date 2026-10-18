@@ -39,6 +39,8 @@ test("M66 follow-up: real Cargo metadata explicitly selects main Shuvi, sidecar 
   assert.equal(result.status,0,result.stderr);
   assert.match(result.stdout,/default-run selects Shuvi desktop/);
   assert.match(sources["src-tauri/Cargo.toml"],/^default-run = "shuvi"$/m);
+  assert.match(sources["src-tauri/Cargo.toml"],/^required-features = \["sha-worker-build"\]$/m);
+  assert.match(sources["src-tauri/Cargo.toml"],/^sha-worker-build = \[\]$/m);
 });
 test("M66 follow-up: absent default-run cannot regress to arbitrary src/bin target",()=>{
   fail(files=>{files["src-tauri/Cargo.toml"]=files["src-tauri/Cargo.toml"]
@@ -64,6 +66,32 @@ test("M66 follow-up: installer overlay cannot drop or substitute the fixed worke
   fail(files=>{files["src-tauri/tauri.sha-sidecar.conf.json"]=JSON.stringify(
     {bundle:{externalBin:["binaries/other"]}});},/only the fixed SHA externalBin/);
 });
+test("M66 NSIS never includes a competing second Cargo worker with the same installed filename",()=>{
+  fail(files=>{files["src-tauri/Cargo.toml"]=files["src-tauri/Cargo.toml"]
+    .replace('required-features = ["sha-worker-build"]','required-features = []');},
+    /feature-gated out of Tauri Cargo binaries/);
+  fail(files=>{files["src-tauri/Cargo.toml"]=files["src-tauri/Cargo.toml"]
+    .replace('[features]','[features]\ndefault = ["sha-worker-build"]');},
+    /feature-gated out of Tauri Cargo binaries/);
+  fail(files=>{files["src-tauri/Cargo.toml"]=files["src-tauri/Cargo.toml"]
+    .replace('sha-worker-build = []','');},
+    /feature-gated out of Tauri Cargo binaries/);
+  fail(files=>{files["src-tauri/Cargo.toml"]+='\n[[bin]]\nname = "other"\n';},
+    /feature-gated out of Tauri Cargo binaries/);
+  fail(files=>{files["src-tauri/Cargo.toml"]=files["src-tauri/Cargo.toml"]
+    .replace('name = "shuvi-readonly-hash-worker"','name = "other"');},
+    /feature-gated out of Tauri Cargo binaries/);
+});
+
+test("M66 pinned Windows worker build is explicit; Tauri production build omits that feature",()=>{
+  const prepare=readFileSync("scripts/prepare-native-sha-sidecar.mjs","utf8");
+  const builder=readFileSync("scripts/build-pinned-sha-installer.mjs","utf8");
+  const workflow=readFileSync(".github/workflows/ci.yml","utf8");
+  assert.match(prepare,/"--bin","shuvi-readonly-hash-worker","--features","sha-worker-build"/);
+  assert.match(workflow,/--bin shuvi-readonly-hash-worker --features sha-worker-build/);
+  assert.doesNotMatch(builder,/--features.*sha-worker-build/);
+});
+
 test("M66 follow-up: production installer checks binary selection before building any Rust EXE",()=>{
   const scripts=JSON.parse(readFileSync("package.json","utf8")).scripts;
   const cmd=scripts["build:windows-installer"];

@@ -102,9 +102,14 @@ try{
       throw 'Actual NSIS main/worker file unsafe or redirected.'
     }
   }
+  $packedWorkerSha=Get-ShuviFileSha256 -LiteralPath $workers[0].FullName
   if($workers[0].Length -ne $manifest.workerBytes -or
-     (Get-ShuviFileSha256 -LiteralPath $workers[0].FullName) -cne $manifest.workerSha256){
-    throw 'Actual COMPRESSED NSIS payload SHA worker bytes do not match compiled main app pin.'
+     $packedWorkerSha -cne $manifest.workerSha256){
+    # Immutable SHA/size diagnostics expose a bundle duplication/overwrite,
+    # while still denying worker execution and all later release witnesses.
+    throw ('Actual COMPRESSED NSIS payload SHA worker bytes do not match compiled main app pin.'+
+      ' stagedBytes='+$manifest.workerBytes+' packedBytes='+$workers[0].Length+
+      ' stagedSha256='+$manifest.workerSha256+' packedSha256='+$packedWorkerSha)
   }
   # M61: the only executable run during package test is the fixed,
   # SHA-matched, compiled read-only worker from the ACTUAL NSIS payload.
