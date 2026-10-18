@@ -41,6 +41,19 @@ verifyUnsignedReleaseEvidence({manifestPath,sidecarPath:sidecar,nsisDir:nsis});
 if(manifest.workerSha256!==before){
   throw Error("NSIS output worker hash does not match the compile-time main EXE pin input.");
 }
+// M60: fail the production build if the REAL compressed NSIS payload has
+// no exact fixed worker or it differs byte-for-byte from the pinned source.
+// Never EXECUTE the installer during this inspection.
+const payload=spawnSync("powershell.exe",[
+  "-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
+  "-File",resolve("scripts","check-real-nsis-payload.ps1"),
+  "-ManifestPath",manifestPath,
+  "-NsiBundleDirectory",nsis,
+  "-SidecarPath",sidecar
+],{stdio:"inherit",shell:false,windowsHide:true});
+if(payload.error||payload.status!==0){
+  throw Error("Actual compressed NSIS worker payload mismatches pinned SHA or is uninspectable.");
+}
 console.log("Pinned Shuvi SHA worker integrity guard embedded for target "+target+".");
 console.log("Unsigned NSIS release witness: "+manifestPath);
 console.log("Installer SHA-256: "+manifest.installerSha256);
