@@ -1144,3 +1144,45 @@ object-page delivery and mid-inspection scene revision changes.
 Rust tests independently exercise structure and false evidence claims.
 These source-only CI tests **do not** prove host Blender behavior or
 professional geometry outcomes until live acceptance is authorized.
+
+## Team-41 — bounded medium-mesh compact geometry summaries (source only)
+
+The prior read-only `blender_session_objects` addition returned all
+vertices/faces for small meshes only (at most 128 vertices, 128 faces,
+512 polygon indices). Medium meshes previously returned no actionable
+geometry evidence. This milestone adds a **separate, compact read-only**
+overview for meshes within **1,024 vertices, 1,024 faces and 4,096 indices**
+using the existing pinned, authenticated upstream `mesh.inspect` operation.
+No new native action, user permission, disk write or arbitrary script is
+introduced. The source controller is never replaced.
+
+The Python broker validates **every** upstream vertex, finite coordinate,
+polygon reference, non-duplicate index and the complete upstream geometry
+revision against a locally recomputed canonical SHA-256. It only emits
+bounded vertex/face counts, polygon index count, axis-aligned local
+geometry minimum/maximum, source geometry SHA and conservative flags.
+**Medium-mesh vertex and face arrays are not returned**. Thus an otherwise
+large scene cannot create an enormous native model-visible JSON reply.
+`mesh_topology_inspected=false` and `geometry_available=false` continue
+to distinguish compact overview from full transferred geometry; the
+new `mesh_overview_available=true` indicates a validated summary.
+The downstream Rust gate separately checks scalar bounds, digest
+format, count consistency and truthful no-native-rehash/no-arrays claims.
+
+Meshes over the 1,024/1,024/4,096 budget remain
+`geometry_truncated=true`, `mesh_overview_available=false` with
+no invented digest or bounds. The broker checks that the scene revision
+has not changed during either full small-mesh or medium-mesh multi-step
+inspection before returning the page. Read-only calls still consume
+bounded session command capacity and time. Upstream `mesh.inspect`
+itself has a fixed 4,096-vertex/4,096-face cap, so meshes above that
+may fail closed instead of returning even counts; a separate approved
+paginated topology contract would be necessary for much larger meshes.
+
+New Python fixtures cover 200-vertex mesh digest, counts, local bounds,
+tampered/NaN/out-of-range elements, broken face indices, oversized meshes
+and integration with authenticated object pages. New native Rust tests
+reject forged geometry counts/bounds, mislabeled digest verification,
+claims of transferred arrays and inconsistent legacy statuses.
+These are source/CI checks; actual Blender scene/modeling acceptance
+remains unverified until an owner-approved disposable Windows test.

@@ -452,13 +452,60 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     result
 }
 
+/// Verify a compact 129..1024-element mesh summary without pretending that
+/// its coordinates or faces were transmitted or SHA-recomputed by Rust.
+fn verify_medium_mesh_overview(item:&Value)->Result<bool,String>{
+    let present=item.get("mesh_overview_available").and_then(Value::as_bool)
+        .unwrap_or(false);
+    let overview=item.get("mesh_overview").filter(|v|!v.is_null());
+    if !present{
+        if overview.is_some(){return Err("Unclaimed mesh overview carries data.".into());}
+        return Ok(false);
+    }
+    let proof=overview.filter(|v|v.is_object())
+        .ok_or("Mesh overview attestation is missing.")?;
+    let vertices=proof.get("vertex_count").and_then(Value::as_u64).unwrap_or(0);
+    let faces=proof.get("face_count").and_then(Value::as_u64).unwrap_or(0);
+    let loops=proof.get("face_index_count").and_then(Value::as_u64).unwrap_or(0);
+    if !(3..=1024).contains(&vertices)
+        || !(1..=1024).contains(&faces)
+        || loops<3*faces ||loops>4096 ||loops>32*faces
+        ||(vertices<=128 && faces<=128 && loops<=512) {
+        return Err("Medium mesh overview counts exceed allowed range.".into());
+    }
+    let finite3=|key:&str|proof.get(key).and_then(Value::as_array).is_some_and(|v|{
+        v.len()==3 &&v.iter().all(|n|n.as_f64().is_some_and(|x|x.is_finite()&&x.abs()<=1_000_000.0))
+    });
+    if !finite3("bounds_min")||!finite3("bounds_max"){
+        return Err("Medium mesh bounding box is malformed.".into());
+    }
+    let mins=proof["bounds_min"].as_array().ok_or("No mesh minimum bounds.")?;
+    let maxs=proof["bounds_max"].as_array().ok_or("No mesh maximum bounds.")?;
+    if (0..3).any(|i|mins[i].as_f64().unwrap_or(f64::INFINITY)>
+                           maxs[i].as_f64().unwrap_or(f64::NEG_INFINITY)){
+        return Err("Medium mesh bounding box has reversed limits.".into());
+    }
+    let hash=proof.get("geometry_sha256").and_then(Value::as_str).unwrap_or("");
+    if hash.len()!=64||!hash.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase())
+        ||proof.get("digest_checked_in_authenticated_broker").and_then(Value::as_bool)!=Some(true)
+        ||proof.get("native_digest_recomputed").and_then(Value::as_bool)!=Some(false)
+        ||proof.get("complete_source_validated_in_broker").and_then(Value::as_bool)!=Some(true)
+        ||proof.get("full_vertex_face_arrays_transferred").and_then(Value::as_bool)!=Some(false)
+        ||proof.get("vertices").is_some()||proof.get("faces").is_some(){
+        return Err("Medium mesh overview digest/transmission claims invalid.".into());
+    }
+    Ok(true)
+}
+
 /// Validate complete small-mesh topology independently of the owned broker.
 /// The broker verifies the source SHA over actual vertices/faces. Rust checks
 /// geometry structure but deliberately does not claim to re-hash float JSON.
 fn verify_read_only_topology(item:&Value,kind:&str)->Result<(),String>{
     let touched=item.get("geometry_available").is_some()
         ||item.get("geometry_truncated").is_some()
-        ||item.get("mesh_geometry_summary").is_some();
+        ||item.get("mesh_geometry_summary").is_some()
+        ||item.get("mesh_overview_available").is_some()
+        ||item.get("mesh_overview").is_some();
     let topology=item.get("mesh_topology_inspected").and_then(Value::as_bool)
         .ok_or("Mesh topology status missing.")?;
     if !touched {
@@ -472,11 +519,16 @@ fn verify_read_only_topology(item:&Value,kind:&str)->Result<(),String>{
         .ok_or("Mesh truncation status missing.")?;
     if !available{
         if !truncated||topology||item.get("mesh_geometry_summary").is_some_and(|v|!v.is_null()){
-            return Err("Incomplete mesh cannot claim topology content.".into());
+            return Err("Incomplete mesh cannot claim full topology content.".into());
         }
+        // Independently inspect the bounded compact summary, if present.
+        verify_medium_mesh_overview(item)?;
         return Ok(());
     }
     if truncated||!topology{return Err("Available mesh has incomplete topology proof.".into());}
+    if verify_medium_mesh_overview(item)?{
+        return Err("Full mesh geometry cannot simultaneously claim compact-only overview.".into());
+    }
     let proof=item.get("mesh_geometry_summary").filter(|x|x.is_object())
         .ok_or("Mesh geometry proof missing.")?;
     let vertices=proof.get("vertices").and_then(Value::as_array)
@@ -533,7 +585,9 @@ fn verified_object_views(items:&[Value],session_id:&str)->Result<(),String>{
                 ||item.get("shader_nodes_inspected").and_then(Value::as_bool)==Some(true)
                 ||item.get("mesh_topology_inspected").and_then(Value::as_bool)==Some(true)
                 ||item.get("geometry_available").and_then(Value::as_bool)==Some(true)
-                ||item.get("mesh_geometry_summary").is_some_and(|v|!v.is_null()){
+                ||item.get("mesh_geometry_summary").is_some_and(|v|!v.is_null())
+                ||item.get("mesh_overview_available").and_then(Value::as_bool)==Some(true)
+                ||item.get("mesh_overview").is_some_and(|v|!v.is_null()){
                 return Err("Unavailable Blender details cannot claim validation.".into());
             }
             continue;
@@ -804,6 +858,49 @@ mod read_only_object_view_tests {
         let mut wrong=mesh;
         wrong["type"]=json!("CAMERA");
         assert!(verified_object_views(&[wrong],"session-A").is_err());
+    }
+    #[test]
+    fn medium_mesh_summary_is_bounded_and_never_claims_full_transferred_arrays(){
+        let mut item=page_object("MESH");
+        item["mesh_topology_inspected"]=json!(false);
+        item["geometry_available"]=json!(false);
+        item["geometry_truncated"]=json!(true);
+        item["mesh_geometry_summary"]=Value::Null;
+        item["mesh_overview_available"]=json!(true);
+        item["mesh_overview"]=json!({
+            "vertex_count":200,"face_count":198,"face_index_count":594,
+            "bounds_min":[0.0,-2.0,0.0],"bounds_max":[3.0,4.0,5.0],
+            "geometry_sha256":"a".repeat(64),
+            "digest_checked_in_authenticated_broker":true,
+            "native_digest_recomputed":false,
+            "complete_source_validated_in_broker":true,
+            "full_vertex_face_arrays_transferred":false
+        });
+        verified_object_views(&[item.clone()],"session-A").unwrap();
+        for (path,value) in [
+            ("/mesh_overview/face_index_count",json!(5000)),
+            ("/mesh_overview/vertex_count",json!(0)),
+            ("/mesh_overview/bounds_min/1",json!(5.0)),
+            ("/mesh_overview/geometry_sha256",json!("bad")),
+            ("/mesh_overview/digest_checked_in_authenticated_broker",json!(false)),
+            ("/mesh_overview/native_digest_recomputed",json!(true)),
+            ("/mesh_overview/full_vertex_face_arrays_transferred",json!(true)),
+            ("/mesh_overview_available",json!(false)),
+            ("/mesh_overview/vertices",json!([[0,0,0]])),
+            ("/geometry_truncated",json!(false)),
+        ]{
+            let mut bad=item.clone();
+            if path=="/mesh_overview/vertices" {
+                bad["mesh_overview"]["vertices"]=value;
+            }else{
+                *bad.pointer_mut(path).unwrap()=value;
+            }
+            assert!(verified_object_views(&[bad],"session-A").is_err(),"{path}");
+        }
+        let mut bad=item;
+        bad["details_available"]=json!(false);
+        bad["details"]=Value::Null;
+        assert!(verified_object_views(&[bad],"session-A").is_err());
     }
     #[test]
     fn large_mesh_never_fabricates_verified_geometry(){

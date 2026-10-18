@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 31 tests/);
+  assert.match(run.stderr,/Ran 34 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -177,7 +177,7 @@ test("read-only Blender objects can return fully bounded vertex/face topology fr
   for(const text of [
     "def read_bounded_mesh_topology(controller, item: dict, session_id: str)",
     '"mesh.inspect", {"object_id": identity}',
-    "len(vertices) > 128 or len(faces) > 128",
+    "len(vertices) <= 128 and len(faces) <= 128",
     '"mesh_geometry_summary": {',
     '"digest_checked_in_authenticated_broker": True',
     '"native_digest_recomputed": False',
@@ -192,4 +192,23 @@ test("read-only Blender objects can return fully bounded vertex/face topology fr
     "small_mesh_topology_checks_all_bounded_vertices_and_faces",
     "large_mesh_never_fabricates_verified_geometry"
   ])assert.ok(native.includes(text),text);
+});
+
+test("medium Blender meshes return independently checked compact 3D extents and counts, without transferring 1024 vertices/faces",()=>{
+  for(const token of [
+    "len(vertices) > 1024 or len(faces) > 1024 or loops > 4096",
+    "bounds_min = [min(vertex[axis] for vertex in vertices)",
+    "bounds_max = [max(vertex[axis] for vertex in vertices)",
+    '"mesh_overview_available": True',
+    '"complete_source_validated_in_broker": True',
+    '"full_vertex_face_arrays_transferred": False',
+    'row.get("mesh_overview_available") is True'
+  ])assert.ok(broker.includes(token),token);
+  for(const token of [
+    'fn verify_medium_mesh_overview(item:&Value)->Result<bool,String>',
+    'verify_medium_mesh_overview(item)?',
+    'medium_mesh_summary_is_bounded_and_never_claims_full_transferred_arrays',
+    'full_vertex_face_arrays_transferred',
+    'face_index_count'
+  ])assert.ok(native.includes(token),token);
 });

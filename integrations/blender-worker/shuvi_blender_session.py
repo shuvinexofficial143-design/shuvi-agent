@@ -388,17 +388,18 @@ def bounded_object_details(item: dict) -> dict:
 
 
 def read_bounded_mesh_topology(controller, item: dict, session_id: str) -> dict:
-    """Read-only mesh.inspect with actual small-mesh topology and revision proof.
+    """Typed read-only mesh.inspect with two distinct bounded output modes.
 
-    Large meshes are explicitly unavailable, never represented by a
-    misleading partial geometry digest. No mutation or approval occurs.
+    Small meshes include every vertex/face. Medium meshes have their *whole*
+    bounded source validated in the authenticated broker, but publish ONLY
+    a compact bounding box, counts and SHA; never infer missing full arrays.
+    Large meshes remain explicitly unavailable without a partial digest.
     """
     from math import isfinite
     from shuvi_blender_agent.contracts import Request, Status
 
     identity = item["object_id"]
-    if (not isinstance(identity, str)
-            or not identity.startswith(session_id + ":")):
+    if not isinstance(identity, str) or not identity.startswith(session_id + ":"):
         raise ValueError("Mesh inspection object identity is stale")
     result = controller.execute(Request(
         "mesh.inspect", {"object_id": identity}, timeout_ms=10_000))
@@ -411,10 +412,12 @@ def read_bounded_mesh_topology(controller, item: dict, session_id: str) -> dict:
     if (not isinstance(vertices, list) or not 3 <= len(vertices) <= 4096
             or not isinstance(faces, list) or not 1 <= len(faces) <= 4096):
         raise ValueError("Mesh geometry readback has invalid counts")
-    if (len(vertices) > 128 or len(faces) > 128
-            or sum(len(face) if isinstance(face, list) else 513 for face in faces) > 512):
+    loops = sum(len(face) if isinstance(face, list) else 32769 for face in faces)
+    if (len(vertices) > 1024 or len(faces) > 1024 or loops > 4096):
         return {"mesh_topology_inspected": False, "geometry_available": False,
-                "geometry_truncated": True, "mesh_geometry_summary": None}
+                "geometry_truncated": True, "mesh_geometry_summary": None,
+                "mesh_overview_available": False, "mesh_overview": None}
+
     for vertex in vertices:
         if (not isinstance(vertex, list) or len(vertex) != 3
                 or any(type(n) not in (int, float) or not isfinite(n)
@@ -431,13 +434,33 @@ def read_bounded_mesh_topology(controller, item: dict, session_id: str) -> dict:
     calculated = hashlib.sha256(canonical).hexdigest()
     if mesh.get("geometry_revision") != calculated:
         raise ValueError("Mesh read-only topology digest differs from actual vertices/faces")
-    return {"mesh_topology_inspected": True, "geometry_available": True,
-            "geometry_truncated": False,
-            "mesh_geometry_summary": {
+    if len(vertices) <= 128 and len(faces) <= 128 and loops <= 512:
+        return {"mesh_topology_inspected": True, "geometry_available": True,
+                "geometry_truncated": False,
+                "mesh_overview_available": False, "mesh_overview": None,
+                "mesh_geometry_summary": {
+                    "vertex_count": len(vertices), "face_count": len(faces),
+                    "vertices": vertices, "faces": faces, "geometry_sha256": calculated,
+                    "digest_checked_in_authenticated_broker": True,
+                    "native_digest_recomputed": False,
+                }}
+
+    # Medium 129..1024 vertex/face mesh: validate EVERY upstream component
+    # above, but do not send the arrays through the JSON-lines native channel.
+    bounds_min = [min(vertex[axis] for vertex in vertices) for axis in range(3)]
+    bounds_max = [max(vertex[axis] for vertex in vertices) for axis in range(3)]
+    return {"mesh_topology_inspected": False, "geometry_available": False,
+            "geometry_truncated": True, "mesh_geometry_summary": None,
+            "mesh_overview_available": True,
+            "mesh_overview": {
                 "vertex_count": len(vertices), "face_count": len(faces),
-                "vertices": vertices, "faces": faces, "geometry_sha256": calculated,
+                "face_index_count": loops,
+                "bounds_min": bounds_min, "bounds_max": bounds_max,
+                "geometry_sha256": calculated,
                 "digest_checked_in_authenticated_broker": True,
                 "native_digest_recomputed": False,
+                "complete_source_validated_in_broker": True,
+                "full_vertex_face_arrays_transferred": False,
             }}
 
 
@@ -619,7 +642,7 @@ def serve(argv: list[str] | None = None) -> int:
                     # Mesh reads cross multiple authenticated requests.
                     # Reject mixed scene revisions rather than giving stale
                     # geometry to an AI planning a follow-up mutation.
-                    if any(row.get("geometry_available") is True for row in objects):
+                    if any(row.get("geometry_available") is True or row.get("mesh_overview_available") is True for row in objects):
                         final_scene = controller.execute(Request(
                             "scene.inspect", timeout_ms=10_000))
                         if (final_scene.status != Status.SUCCEEDED
