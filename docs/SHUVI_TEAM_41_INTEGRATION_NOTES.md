@@ -1311,3 +1311,15 @@ mesh.inspect calls, honest skip flags, no invented missing counts,
 and preserved session ownership. Rust tests cover false full-geometry
 claims on skipped objects. This improves practical host
 responsiveness but is not real Windows Blender acceptance evidence.
+
+## Shuvi 41 — broker/native JSON-line frame boundary
+
+The authenticated persistent Python broker emits one newline-delimited JSON
+response. Native Rust refuses to buffer a body at or above 131,072 bytes.
+A broker response exactly 131,072 bytes was incorrectly permitted by its
+old `>131072` guard, then rejected by the native framing reader when the
+newline arrived. The broker now rejects a JSON **body >=131072 bytes**
+before writing anything; the longest accepted body is 131,071 bytes, with
+one trailing newline. A fixture regression exercises both adjacent
+boundaries without launching Blender. No permissions or actual file
+operations were altered.

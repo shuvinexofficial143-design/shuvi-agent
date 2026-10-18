@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 44 tests/);
+  assert.match(run.stderr,/Ran 45 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -281,4 +281,11 @@ test("resource-budgeted object discovery limits authenticated mesh.inspect fanou
   ])assert.ok(native.includes(contract),contract);
   assert.match(broker,/MAX_COMMANDS = 48/);
   assert.match(native,/const PROBE_DEADLINE:Duration=Duration::from_secs\(15\)/);
+});
+
+test("broker JSON-line frame guard rejects the exact native max, preserving one newline byte",()=>{
+  assert.ok(broker.includes('if len(raw.encode("utf-8")) >= 131072:'));
+  assert.ok(native.includes("const MAX_FRAME:usize=131072;"));
+  assert.ok(native.includes("if data.len()>=MAX_FRAME{return;}"));
+  assert.ok(broker.includes("Bounded Blender broker response exceeded"));
 });

@@ -22,7 +22,10 @@ OUTPUT_OPS = frozenset(("file.checkpoint", "render.execute"))
 
 def protocol(reply: dict) -> None:
     raw = json.dumps(reply, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    if len(raw.encode("utf-8")) > 131072:
+    # The Rust reader rejects frames once buffered bytes reach MAX_FRAME.
+    # Check >=, not >: a 131072-byte body plus its newline would otherwise
+    # silently kill the owned reader without a typed error.
+    if len(raw.encode("utf-8")) >= 131072:
         raise ValueError("Bounded Blender broker response exceeded")
     sys.stdout.write(raw + "\n")
     sys.stdout.flush()

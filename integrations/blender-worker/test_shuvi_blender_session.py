@@ -139,6 +139,21 @@ class PersistentSessionTests(unittest.TestCase):
         replies = [json.loads(line) for line in stdout.getvalue().splitlines()]
         return code, replies
 
+    def test_broker_jsonline_limit_agrees_with_native_frame_before_newline(self):
+        # JSON body of exactly 131072 bytes must be rejected; native Rust
+        # refuses to buffer any further byte once it reaches MAX_FRAME.
+        base = len(json.dumps({"message": ""}, separators=(",", ":")).encode())
+        safe = {"message": "a" * (131071 - base)}
+        output = io.StringIO()
+        with patch.object(sys, "stdout", output):
+            worker.protocol(safe)
+        self.assertEqual(len(output.getvalue().encode("utf-8")), 131072)
+        self.assertTrue(output.getvalue().endswith("\n"))
+        too_big = {"message": "a" * (131072 - base)}
+        with patch.object(sys, "stdout", io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "response exceeded"):
+                worker.protocol(too_big)
+
     def test_reject_unknown_operation(self):
         with self.assertRaisesRegex(ValueError, "not supported"):
             worker.validate({"version": 1, "session_id": SESSION_ID, "op": "exec"}, SESSION_ID)
