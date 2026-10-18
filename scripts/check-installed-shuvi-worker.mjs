@@ -40,17 +40,31 @@ try{
     ||evidence.source!=="owned_windows_sha256_sidecar"){
     throw Error("Installed worker emitted invalid or mismatched SHA evidence.");
   }
-  // Immutable receipt and negative digest proof: not merely exit-code 0.
-  if(launch(A,input,correct,proofFile).status===0){
-    throw Error("Installed sidecar unexpectedly overwrote existing UUID evidence.");
+  // Require that NEGATIVE fixtures genuinely ran the installed executable
+  // and EXITED with a nonzero code. Failure to START a child or TIMEOUT is
+  // never a valid security-rejection proof.
+  const firstReceipt=readFileSync(proofFile);
+  const replay=launch(A,input,correct,proofFile);
+  if(replay.error||replay.signal||!Number.isInteger(replay.status)
+      ||replay.status===0||!readFileSync(proofFile).equals(firstReceipt)){
+    throw Error("Installed sidecar UUID-replay denial was not independently proven.");
   }
   const refused=join(temp,"native-bg-hash-"+B+".json");
   const bad=launch(B,input,"0".repeat(64),refused);
-  if(bad.status===0||existsSync(refused))throw Error("Installed worker accepted incorrect expected SHA.");
+  if(bad.error||bad.signal||!Number.isInteger(bad.status)
+     ||bad.status===0||existsSync(refused)){
+    throw Error("Installed worker failed to prove wrong SHA refusal by real nonzero process exit.");
+  }
   const invalid=spawnSync(installedWorker,["--unapproved-operation"],{
     cwd:temp,timeout:30000,encoding:"utf8",windowsHide:true,shell:false
   });
-  if(invalid.status===0)throw Error("Installed worker accepted unapproved command.");
+  if(invalid.error||invalid.signal||!Number.isInteger(invalid.status)||invalid.status===0){
+    throw Error("Installed worker failed to prove unapproved-command denial by real nonzero process exit.");
+  }
+  // Even the negative paths must leave the original source bytes untouched.
+  if(!readFileSync(input).equals(bytes)){
+    throw Error("SHA verifier mutated the input during positive or negative case.");
+  }
   const result={
     schemaVersion:1,target:manifest.target,
     installedWorkerSha256:manifest.workerSha256,
