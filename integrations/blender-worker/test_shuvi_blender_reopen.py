@@ -391,9 +391,10 @@ class ReopenTests(unittest.TestCase):
             "proof_camera_verified": True,
             "active_camera_name": "Shuvi41ProofCamera",
         }
-        from shuvi_blender_agent import files as real_files
         checked = {"sha256": digest, "bytes": path.stat().st_size}
-        with (patch.object(real_files, "read_output", return_value=checked),
+        real_files = types.ModuleType("shuvi_blender_agent.files")
+        real_files.read_output = lambda *_: checked
+        with (patch.dict(sys.modules, {"shuvi_blender_agent.files": real_files}),
                 patch("shuvi_blender_reopen.capture_scene", return_value=live)):
             good = verify_in_session_stage1(FakeController(self.file), receipt, "a" * 64)
             self.assertTrue(good["verified"])
@@ -436,14 +437,16 @@ class ReopenTests(unittest.TestCase):
                 "fixed_stage_geometry_verified": True,
                 "proof_camera_verified": True,
                 "active_camera_name": "Shuvi41ProofCamera"}
-        from shuvi_blender_agent import files as real_files
         checked = {"sha256": digest, "bytes": path.stat().st_size}
-        with (patch.object(real_files, "read_output", return_value=checked),
+        real_files = types.ModuleType("shuvi_blender_agent.files")
+        real_files.read_output = lambda *_: checked
+        with (patch.dict(sys.modules, {"shuvi_blender_agent.files": real_files}),
                 patch("shuvi_blender_reopen.capture_scene", return_value=live)):
             with self.assertRaisesRegex(ValueError, "Scene revision changed"):
                 verify_in_session_stage1(FakeController(self.file), receipt, "0" * 64)
         changed={"sha256":"0"*64,"bytes":path.stat().st_size}
-        with patch.object(real_files, "read_output", return_value=changed):
+        real_files.read_output = lambda *_: changed
+        with patch.dict(sys.modules, {"shuvi_blender_agent.files": real_files}):
             with self.assertRaisesRegex(ValueError, "checkpoint bytes changed"):
                 verify_in_session_stage1(FakeController(self.file), receipt, "a" * 64)
 
