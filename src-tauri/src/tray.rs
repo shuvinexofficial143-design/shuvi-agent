@@ -86,7 +86,7 @@ pub fn build_voice_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     )?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(tauri::include_image!("../icons/icon.png"))
+        .icon(tauri::include_image!("icons/icon.png"))
         .menu(&menu)
         .tooltip("Shuvi Voice Companion - Push-to-Talk (Ctrl+Shift+Space)")
         .on_menu_event(|app, event| match event.id().as_ref() {
