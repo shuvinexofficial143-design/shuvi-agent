@@ -287,7 +287,13 @@ pub(crate) fn reserved_output_policy(
         let operation=step.pointer("/request/operation").and_then(Value::as_str);
         if !matches!(operation,Some("file.checkpoint"|"render.execute")){continue;}
         let filename=step.pointer("/request/payload/name").and_then(Value::as_str);
-        let matched=match filename{
+        // Win32 filenames are case-insensitive and may alias a final dot
+        // or space. Never let a generic plan bypass fixed stage policies
+        // simply by spelling the reserved basename differently.
+        let folded=filename.map(|name|{
+            name.trim_end_matches(|c:char|c==' '||c=='.').to_ascii_lowercase()
+        });
+        let matched=match folded.as_deref(){
             Some("shuvi41-proof-stage1.blend")=>Some("model1"),
             Some("shuvi41-proof-stage2.blend")=>Some("model2"),
             Some("shuvi41-proof-render.png")=>Some("render"),
@@ -441,6 +447,33 @@ mod tests{
         wrong["steps"][0]["request"]["payload"]["samples"]=json!(256);
         assert_eq!(derive(&wrong).unwrap()["acceptance_stage"],"other");
         assert!(receipt_matches(&json!({"approved_plan_lineage":derive(&plan).unwrap()}),"render").is_err());
+    }
+    #[test]
+    fn windows_reserved_blender_names_are_protected_against_case_and_dot_aliases(){
+        let revision="a".repeat(64);
+        for (stage,filename) in [
+            ("model1","SHUVI41-PROOF-STAGE1.BLEND"),
+            ("model2","Shuvi41-Proof-Stage2.BlEnD"),
+            ("render","SHUVI41-PROOF-RENDER.PNG"),
+            ("look","SHUVI41-PROOF-MATERIAL.BLEND"),
+            ("look_render","SHUVI41-PROOF-MATERIAL-RENDER.PNG"),
+            ("model1","shuvi41-proof-stage1.blend."),
+            ("model2","shuvi41-proof-stage2.blend  ")
+        ] {
+            let mut plan=crate::blender_acceptance_recipe::expected_plan(stage,&revision).unwrap();
+            let last=plan["steps"].as_array().unwrap().len()-1;
+            plan["steps"][last]["request"]["payload"]["name"]=json!(filename);
+            let lineage=derive(&plan).unwrap();
+            assert_eq!(lineage["acceptance_stage"],"other","{filename}");
+            let source=if stage=="look_render"{Some("/approved/shuvi41-proof-material.blend")}
+                else{Some("/approved/shuvi41-proof-stage2.blend")};
+            assert!(reserved_output_policy(&plan,&lineage,source,true,true).is_err(),
+                    "reserved basename escaped native policy: {filename}");
+        }
+        let generic=json!({"steps":[step("checkpoint","file.checkpoint",
+            json!({"name":"ordinary.blend"}),json!([]))]});
+        assert!(reserved_output_policy(&generic,&json!({"acceptance_stage":"other"}),
+            None,false,false).is_ok());
     }
     #[test]
     fn final_artifact_binding_rejects_correct_hash_wrong_filename_and_format(){

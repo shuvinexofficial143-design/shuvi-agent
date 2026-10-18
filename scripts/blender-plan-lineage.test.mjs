@@ -87,3 +87,10 @@ test("native receipt count and final operation cannot be inferred from a complet
   assert.ok(session.includes("verify_final_artifact_binding(plan,&response)?"));
   assert.ok(oneOff.includes("verify_final_artifact_binding(plan,&value)?"));
 });
+
+test("Win32 reserved output aliases cannot be used by generic Blender model plans to bypass native stage gates",()=>{
+  assert.ok(lineage.includes("let folded=filename.map("));
+  assert.ok(lineage.includes("trim_end_matches(|c:char|c==' '||c=='.')"));
+  assert.ok(lineage.includes("let matched=match folded.as_deref()"));
+  assert.ok(lineage.includes("fn windows_reserved_blender_names_are_protected_against_case_and_dot_aliases()"));
+});

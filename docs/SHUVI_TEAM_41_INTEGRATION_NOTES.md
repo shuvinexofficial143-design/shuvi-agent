@@ -1552,3 +1552,21 @@ fixtures test good Stage-1/2 pyramids, wrong heights, wrong winding,
 nonreserved saves, native rejection of forged/missing proof and
 historical manifest forgery. Source/CI checks are not licensed
 Blender host visual acceptance.
+
+## Team-41 — Windows reserved artifact alias protection
+
+The five fixed acceptance output basenames are now matched by the
+native pre-dispatch policy after ASCII case folding and trimming any
+trailing Win32-dot/space alias. A generic third-party/model plan
+requesting `SHUVI41-PROOF-STAGE1.BLEND` or the analogous Copper
+material/render name cannot avoid fixed typed recipe + source SHA +
+permission checks simply because Windows resolves the destination
+case-insensitively. A wrong-case or trailing-dot plan still fails
+the **exact typed recipe** requirement, rather than being silently
+rewritten or promoted. Generic, non-reserved Blender checkpoints
+retain their existing approval flow. Unit regressions exercise all
+five names and common Windows basename spellings.
+
+This guards the documented Win32 basename aliases; the production
+output folder remains owner-approved and native path/SHA verification
+is still mandatory. It is not evidence of a live Windows Blender run.
