@@ -3,8 +3,9 @@
 // Does not download binaries, execute a shell, or accept a model-chosen path.
 import {spawnSync,execFileSync} from "node:child_process";
 import {createHash} from "node:crypto";
-import {existsSync,readFileSync,statSync} from "node:fs";
-import {resolve} from "node:path";
+import {existsSync,readFileSync,statSync,mkdirSync} from "node:fs";
+import {createUnsignedReleaseEvidence,verifyUnsignedReleaseEvidence} from "./native-pinned-release-manifest.mjs";
+import {resolve,join} from "node:path";
 
 if(process.platform!=="win32")throw Error("Pinned Shuvi installer requires Windows build host.");
 const host=execFileSync("rustc",["--print","host-tuple"],{encoding:"utf8"}).trim();
@@ -27,5 +28,21 @@ if(r.error||r.status!==0)throw Error("Pinned Windows NSIS build failed or was in
 if(sha()!==before||statSync(sidecar).size!==size){
   throw Error("Prepared fixed SHA sidecar bytes changed during installer build.");
 }
+// Build completed; independently hash the single actual NSIS setup EXE
+// together with the exact fixed compiled SHA worker staged for Tauri.
+const nsis=resolve("src-tauri","target",target,"release","bundle","nsis");
+const manifestDir=resolve(".shuvi-release");
+mkdirSync(manifestDir,{recursive:true});
+const manifestPath=join(manifestDir,"shuvi-pinned-nsis-"+target+".json");
+const manifest=createUnsignedReleaseEvidence({
+  target,sidecarPath:sidecar,nsisDir:nsis,outPath:manifestPath,
+});
+verifyUnsignedReleaseEvidence({manifestPath,sidecarPath:sidecar,nsisDir:nsis});
+if(manifest.workerSha256!==before){
+  throw Error("NSIS output worker hash does not match the compile-time main EXE pin input.");
+}
 console.log("Pinned Shuvi SHA worker integrity guard embedded for target "+target+".");
+console.log("Unsigned NSIS release witness: "+manifestPath);
+console.log("Installer SHA-256: "+manifest.installerSha256);
+console.log("Worker SHA-256: "+manifest.workerSha256);
 console.log("WARNING: SHA pinning is not code signing; final installer signing and installed-Windows acceptance are separate.");
