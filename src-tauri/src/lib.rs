@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod voice;
+mod tray;
 mod web_bridge;
 mod target_window_capture;
 mod remote_agent;
@@ -36,6 +37,7 @@ use std::{
     path::{Component, Path},
     process::{Command, Stdio},
     sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}},
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -19526,6 +19528,15 @@ fn export_diagnostics(
 pub fn run() {
     tauri::Builder::default()
         .manage(ActionState::default())
+        .manage(Arc::new(Mutex::new(tray::VoiceTrayState::default())))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .setup(|app| {
+            tray::build_voice_tray(app.handle())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+            tray::register_push_to_talk_shortcut(app.handle())
+                .map_err(|error| Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_providers,
             list_xkiro_models,
@@ -19585,6 +19596,13 @@ pub fn run() {
             voice::voice_engine_status,
             voice::voice_transcribe,
             voice::voice_speak,
+            tray::voice_tray_state,
+            tray::voice_tray_update_state,
+            tray::voice_tray_simulate_push_to_talk,
+            tray::voice_tray_simulate_push_to_talk_release,
+            tray::voice_tray_toggle_mute,
+            tray::voice_tray_open_voice_companion,
+            tray::voice_tray_check_engine,
             remote_agent::remote_agent_status,
             remote_agent::remote_agent_pair,
             remote_agent::remote_agent_disconnect,

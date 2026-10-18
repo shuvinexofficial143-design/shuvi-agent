@@ -62,6 +62,8 @@ let audioProcessor: ScriptProcessorNode | null = null;
 let inputSampleRate = SAMPLE_RATE;
 let voiceConfig: VoiceConfig = { whisperExePath: '', whisperModelPath: '' };
 let operationId = 0;
+let recordingRequestId = 0;
+let engineAvailable = false;
 let lastTranscript = '';
 
 // ============================================================================
@@ -121,16 +123,48 @@ async function initializeVoiceCompanion(): Promise<void> {
 
   voiceConfig = await loadConfig();
   setupEventListeners();
+  await setupTrayEventListeners();
   setState('idle');
 
   if (!navigator.mediaDevices?.getUserMedia) {
     updateStatus('Microphone capture is unavailable in this browser');
     recordButton.setAttribute('aria-disabled', 'true');
   } else {
-    updateStatus('Ready - Press and hold to record');
+    updateStatus('Ready - Press and hold to record (or use Ctrl+Shift+Space)');
   }
 
   await checkEngineStatus(voiceConfig);
+}
+
+// ============================================================================
+// Tray Event Listeners
+// ============================================================================
+
+async function setupTrayEventListeners(): Promise<void> {
+  // Browser preview uses DOM events; the native window uses Tauri events.
+  const start = (): void => {
+    if (currentState === 'idle' && !isMuted) void startRecording();
+  };
+  const stop = (): void => { void stopRecording(); };
+  const toggle = (): void => { toggleMute(); };
+  const checkEngine = (): void => { void checkEngineStatus(voiceConfig); };
+
+  window.addEventListener('voice:start_recording', start);
+  window.addEventListener('voice:stop_recording', stop);
+  window.addEventListener('voice:toggle_mute', toggle);
+  window.addEventListener('voice:check_engine', checkEngine);
+
+  try {
+    const { listen } = await import('@tauri-apps/api/event');
+    await Promise.all([
+      listen('voice:start_recording', start),
+      listen('voice:stop_recording', stop),
+      listen('voice:toggle_mute', toggle),
+      listen('voice:check_engine', checkEngine),
+    ]);
+  } catch {
+    // Browser preview has no Tauri event bridge; DOM listeners remain active.
+  }
 }
 
 // ============================================================================
@@ -166,6 +200,8 @@ async function checkEngineStatus(config: VoiceConfig): Promise<void> {
       },
     });
 
+    engineAvailable = result.available;
+    void syncTrayState();
     if (result.available) {
       updateStatus('Local STT engine ready');
     } else {
@@ -216,6 +252,7 @@ function setupEventListeners(): void {
 
 async function startRecording(): Promise<void> {
   if (currentState !== 'idle' || isMuted || !navigator.mediaDevices?.getUserMedia) return;
+  const requestId = ++recordingRequestId;
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -223,7 +260,7 @@ async function startRecording(): Promise<void> {
       video: false,
     });
 
-    if (isMuted || currentState !== 'idle') {
+    if (requestId !== recordingRequestId || isMuted || currentState !== 'idle') {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
@@ -259,6 +296,7 @@ async function startRecording(): Promise<void> {
     startRecordingTimeout();
   } catch (error) {
     cleanupCapture();
+    if (requestId !== recordingRequestId || isMuted) return;
     setState('error');
     updateStatus(`Microphone access denied or unavailable: ${formatError(error)}`);
   }
@@ -276,7 +314,11 @@ function startRecordingTimeout(): void {
 }
 
 async function stopRecording(): Promise<void> {
-  if (currentState !== 'recording') return;
+  if (currentState !== 'recording') {
+    // A release during getUserMedia permission must cancel the pending start.
+    recordingRequestId += 1;
+    return;
+  }
   const capturedOperation = operationId;
   cleanupCapture();
 
@@ -333,6 +375,7 @@ async function stopRecordingWithError(message: string): Promise<void> {
 
 function cancelRecording(): void {
   operationId += 1;
+  recordingRequestId += 1;
   cleanupCapture();
   audioChunks = [];
   startTime = null;
@@ -355,6 +398,7 @@ function toggleMute(): void {
   isMuted = !isMuted;
   if (isMuted) {
     operationId += 1;
+    recordingRequestId += 1;
     cleanupCapture();
     audioChunks = [];
     startTime = null;
@@ -377,6 +421,19 @@ function updateMuteButton(): void {
 // ============================================================================
 // Native Integration
 // ============================================================================
+
+async function syncTrayState(): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('voice_tray_update_state', {
+      is_recording: currentState === 'recording',
+      engine_available: engineAvailable,
+      is_muted: isMuted,
+    });
+  } catch {
+    // Browser preview and older native shells have no tray command.
+  }
+}
 
 async function transcribeAudio(audioData: Uint8Array, config: VoiceConfig): Promise<{ text?: string } | null> {
   try {
@@ -422,6 +479,7 @@ function setState(state: VoiceState): void {
   }
   recordButton?.classList.toggle('recording', state === 'recording');
   recordButton?.classList.toggle('disabled', state === 'processing' || state === 'error' || isMuted);
+  void syncTrayState();
 }
 
 function updateStatus(message: string): void {

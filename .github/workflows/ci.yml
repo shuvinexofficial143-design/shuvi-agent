@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "feature/shuvi43-local-voice"]
   pull_request:
 
 concurrency:
@@ -37,6 +37,8 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+      - name: Compile native Rust crate
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
       - name: Windows read-only readiness script execution
         shell: pwsh
         run: |
