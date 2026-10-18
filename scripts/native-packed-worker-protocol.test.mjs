@@ -25,6 +25,12 @@ test("M61 actual package worker must prove real digest, replay, invalid program 
  assert.match(smoke,/uuidEvidenceReplayRejected:true/);
  assert.match(smoke,/shaMismatchRejected:true/);
  assert.match(smoke,/unknownCommandRejected:true/);
+ assert.match(smoke,/const replay=launch\(A,input,correct,proofFile\)/);
+ assert.match(smoke,/replay\.error\|\|replay\.signal\|\|!Number\.isInteger\(replay\.status\)/);
+ assert.match(smoke,/bad\.error\|\|bad\.signal\|\|!Number\.isInteger\(bad\.status\)/);
+ assert.match(smoke,/invalid\.error\|\|invalid\.signal\|\|!Number\.isInteger\(invalid\.status\)/);
+ assert.match(smoke,/readFileSync\(input\)\.equals\(bytes\)/);
+ assert.match(smoke,/readFileSync\(proofFile\)\.equals\(firstReceipt\)/);
  assert.match(smoke,/mainApplicationVerified:false/);
  assert.match(smoke,/ownerDesktopEndToEndVerified:false/);
  assert.match(payload,/\$smoke\.mainApplicationVerified -ne \$false/);
