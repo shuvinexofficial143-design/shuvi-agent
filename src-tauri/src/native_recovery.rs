@@ -48,8 +48,13 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
         return Err("Native recovery budget counters exceed the owner limits.".into());
     }
     if !matches!(value.phase.as_str(),"model_reserved"|"readback_reserved"|"awaiting_approval"|"executing"|
-        "audit_verified"|"paused"|"outcome_unknown"){
+        "audit_verified"|"native_denied"|"paused"|"outcome_unknown"){
+
         return Err("Unsupported native recovery transition.".into());
+    }
+    if value.phase=="native_denied"&&
+       (value.version!=2||value.revision.is_none()){
+        return Err("Native denial requires revisioned v2 inspection evidence.".into());
     }
     if value.updated_at==0||value.expires_at==0||
        value.expires_at>value.updated_at.saturating_add(TWO_HOURS)||
@@ -62,7 +67,8 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
             return Err("Invalid native recovery action identifier.".into());
         }
     }
-    if matches!(value.phase.as_str(),"readback_reserved"|"awaiting_approval"|"executing"|"audit_verified")&&
+    if matches!(value.phase.as_str(),"readback_reserved"|"awaiting_approval"|"executing"|"audit_verified"|"native_denied")&&
+
        (value.action_id.is_none()||value.staged_actions==0){
         return Err("Native recovery action phase has no staged identity.".into());
     }
@@ -134,6 +140,14 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
                (previous.phase!="executing"||previous.action_id!=next.action_id||
                 previous.staged_actions!=next.staged_actions){
                 return Err("Native audit verification must follow that action's execution.".into());
+            }
+            // A native_denied checkpoint is inspection-only. In particular,
+            // it never grants a fresh model reservation or action execution.
+            if next.phase=="native_denied"&&
+               (previous.phase!="executing"||previous.action_id!=next.action_id||
+                next.action_id.is_none()||previous.staged_actions!=next.staged_actions||
+                previous.model_requests!=next.model_requests){
+                return Err("Native denial must match the exact in-flight prepared action.".into());
             }
             if next.phase=="awaiting_approval"&&
                (!matches!(previous.phase.as_str(),"model_reserved"|"outcome_unknown"|"readback_reserved")||
@@ -216,6 +230,37 @@ mod tests{
             expires_at:7_200_001,updated_at:1,phase:"executing".into(),
             action_id:Some("action-1".into())
         }
+    }
+    #[test]
+    fn native_denial_is_ordered_owner_review_evidence_not_new_execution_permission() {
+        let executing=state();
+        let denied=NativeRecoveryRecord{
+            revision:Some(2),phase:"native_denied".into(),..executing.clone()
+        };
+        assert!(valid(&denied).is_ok());
+        assert!(validate_advance(Some(&executing),&denied).is_ok());
+        assert!(validate_advance(Some(&NativeRecoveryRecord{
+            phase:"awaiting_approval".into(),..executing.clone()
+        }),&denied).is_err());
+        assert!(validate_advance(Some(&executing),&NativeRecoveryRecord{
+            action_id:Some("foreign-action".into()),..denied.clone()
+        }).is_err());
+        assert!(validate_advance(Some(&executing),&NativeRecoveryRecord{
+            model_requests:2,..denied.clone()
+        }).is_err());
+        assert!(validate_advance(Some(&denied),&NativeRecoveryRecord{
+            revision:Some(3),phase:"model_reserved".into(),
+            model_requests:2,..denied.clone()
+        }).is_err());
+        assert!(validate_advance(Some(&denied),&NativeRecoveryRecord{
+            revision:Some(3),phase:"executing".into(),..denied.clone()
+        }).is_err());
+        assert!(valid(&NativeRecoveryRecord{
+            revision:None,..denied.clone()
+        }).is_err());
+        assert!(valid(&NativeRecoveryRecord{
+            action_id:None,..denied
+        }).is_err());
     }
     #[test]
     fn rejects_overbudget_or_uncorrelated_action_phases(){

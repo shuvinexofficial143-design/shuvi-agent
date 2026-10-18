@@ -1,0 +1,156 @@
+import {cleanObservedLabel,exactUiSelector} from "./native-observation-text.mjs";
+import {currentObservedWindows} from "./native-window-observation-session.mjs";
+import {normalizedProcessStartTicks} from "./native-window-target-guard.mjs";
+
+// The native audit is checked by native-agent.ts BEFORE constructing this.
+// An observed UI control is not a native capability or permission to act.
+export const MAX_CONTROL_AGE_MS=45_000;
+const ACTION_ID=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const TARGETED=new Set(["ui_click","ui_set_value","ui_toggle","ui_focus","ui_expand_collapse","ui_scroll","ui_send_keys"]);
+const allowedString=(s,max=180)=>typeof s==="string"&&s.length<=max&&s.length>0&&
+ cleanObservedLabel(s,max)===s.trim() ? s.trim() : "";
+// Model-supplied selectors must be exactly what will be matched.
+// String.trim() can hide newlines, bidi marks and other control formatting.
+const strictRequestedSelector=exactUiSelector;
+
+function findWindow(windows,title){
+ if(!strictRequestedSelector(title))return null;
+ const matching=windows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
+ return matching.length===1?matching[0]:null;
+}
+export function parseRuntimeId(value){
+ if(!Array.isArray(value)||value.length===0||value.length>64||
+  !value.every(n=>Number.isSafeInteger(n)&&n>=-2147483648&&n<=2147483647))return null;
+ return Object.freeze([...value]);
+}
+// Transient UIA identity never authorizes native mutations; it only binds
+// an independently audited readback to the original selected control.
+export function observedControlIdentity(proposal,snapshot,windowSession,nowMs=Date.now()){
+ const rows=currentObservedControls(snapshot,windowSession,nowMs);
+ if(!rows.length||!strictRequestedSelector(proposal?.arguments?.window)||!snapshot||
+  snapshot.title.toLowerCase()!==proposal.arguments.window.toLowerCase())return null;
+ const id=proposal.arguments.automation_id,name=proposal.arguments.name;
+ if(!id&&!name)return null;
+ if(id!=null&&id!==""&&!strictRequestedSelector(id,180))return null;
+ if(name!=null&&name!==""&&!strictRequestedSelector(name,180))return null;
+ const matches=rows.filter(c=>
+  (id?c.id===id.trim():true)&&
+  (name?c.name.toLowerCase()===name.trim().toLowerCase():true));
+ if(matches.length!==1)return null;
+ const item=matches[0];
+ return Object.freeze({runtimeId:item.runtimeId??null,controlType:item.role});
+}
+// Native RuntimeId identity is transient inspection evidence, not approval.
+// Preserve the existing public accessor for callers that only need RuntimeId.
+export function observedControlRuntimeId(proposal,snapshot,windowSession,nowMs=Date.now()){
+ return observedControlIdentity(proposal,snapshot,windowSession,nowMs)?.runtimeId??null;
+}
+function parseControls(result,expectedWindow){
+ if(result?.success!==true||result.tool!=="ui_discover"||
+  (result.exit_code!=null&&result.exit_code!==0)||
+  typeof result.stdout!=="string"||result.stdout.length>250_000)return null;
+ let rows;
+ try{rows=JSON.parse(result.stdout);}catch{return null;}
+ if(!Array.isArray(rows)||rows.length===0||rows.length>160)return null;
+ const controls=[];
+ // Different element labels must not silently share a single native UIA
+ // RuntimeId. That is contradictory identity evidence, not a unique target.
+ const seenRuntimeIds=new Set();
+ for(const row of rows){
+  if(!row||typeof row!=="object"||Array.isArray(row))return null;
+  // The audited discovery output itself must report the same live native
+  // root identity. A cached ui_windows snapshot is never enough.
+  if(!expectedWindow||!Number.isSafeInteger(row.ObservedWindowHwnd)||
+   !Number.isSafeInteger(row.ObservedWindowPid)||
+   row.ObservedWindowHwnd!==expectedWindow.hwnd||
+   row.ObservedWindowPid!==expectedWindow.pid||
+   (expectedWindow.processStartTicks!==undefined&&
+    normalizedProcessStartTicks(row.ObservedWindowProcessStartTicks)!==expectedWindow.processStartTicks)||
+   (row.ObservedWindowProcessStartTicks!=null&&
+    normalizedProcessStartTicks(row.ObservedWindowProcessStartTicks)===null))return null;
+  const id=row.AutomationId==null||row.AutomationId===""?"":allowedString(row.AutomationId,180);
+  const name=row.Name==null||row.Name===""?"":allowedString(row.Name,180);
+  const role=allowedString(row.ControlType,100);
+  if(!role||(!id&&!name))return null;
+  if(row.IsEnabled!=null&&typeof row.IsEnabled!=="boolean")return null;
+  if(row.IsOffscreen!=null&&typeof row.IsOffscreen!=="boolean")return null;
+  const runtimeId=row.ControlRuntimeId==null?null:parseRuntimeId(row.ControlRuntimeId);
+  if(row.ControlRuntimeId!=null&&!runtimeId)return null;
+  if(runtimeId){
+   const key=runtimeId.join(",");
+   if(seenRuntimeIds.has(key))return null;
+   seenRuntimeIds.add(key);
+  }
+  controls.push(Object.freeze({
+   name,id,role,enabled:row.IsEnabled===true?true:row.IsEnabled===false?false:null,
+   offscreen:row.IsOffscreen===true?true:row.IsOffscreen===false?false:null,
+   runtimeId
+  }));
+ }
+ return Object.freeze(controls);
+}
+
+// An audited read must be linked to the *current* unique HWND/PID evidence,
+// not just to a title generated by a model or remembered from another step.
+export function newAuditedControlObservation(result,actionId,requestedWindow,windowSession,nowMs=Date.now()){
+ if(typeof actionId!=="string"||!ACTION_ID.test(actionId)||
+  !Number.isSafeInteger(nowMs)||nowMs<0||nowMs>Number.MAX_SAFE_INTEGER-MAX_CONTROL_AGE_MS)return null;
+ const win=findWindow(currentObservedWindows(windowSession,nowMs),requestedWindow);
+ const controls=win?parseControls(result,win):null;
+ if(!win||!controls)return null;
+ return Object.freeze({
+  version:1,sourceTool:"ui_discover",sourceActionId:actionId,
+  windowSourceActionId:windowSession.sourceActionId,
+  title:win.title,pid:win.pid,hwnd:win.hwnd,
+  ...(win.processStartTicks===undefined?{}:{processStartTicks:win.processStartTicks}),
+  observedAtMs:nowMs,expiresAtMs:nowMs+MAX_CONTROL_AGE_MS,controls
+ });
+}
+export function currentObservedControls(snapshot,windowSession,nowMs=Date.now()){
+ if(!snapshot||snapshot.version!==1||snapshot.sourceTool!=="ui_discover"||
+  !ACTION_ID.test(snapshot.sourceActionId??"")||
+  !Number.isSafeInteger(nowMs)||!Number.isSafeInteger(snapshot.expiresAtMs)||
+  nowMs<snapshot.observedAtMs||nowMs>=snapshot.expiresAtMs||
+  snapshot.expiresAtMs-snapshot.observedAtMs!==MAX_CONTROL_AGE_MS||
+  snapshot.windowSourceActionId!==windowSession?.sourceActionId)return [];
+ const win=findWindow(currentObservedWindows(windowSession,nowMs),snapshot.title);
+ if(!win||win.hwnd!==snapshot.hwnd||win.pid!==snapshot.pid||
+  (snapshot.processStartTicks??null)!==(win.processStartTicks??null)||
+  !Array.isArray(snapshot.controls)||snapshot.controls.length===0)return [];
+ return snapshot.controls;
+}
+
+// Only a *successful* audited UIA discovery activates this additional guard.
+// A failed/stale discovery prevents subsequent blind reuse. Before first
+// discovery, the pre-existing Rust UIA exact-selector/approval guard remains.
+export function checkObservedControlTarget(proposal,snapshot,windowSession,nowMs=Date.now()){
+ if(!TARGETED.has(proposal?.tool))return {allowed:true,reason:"not_targeted_ui_control"};
+ if(snapshot===undefined)return {allowed:true,reason:"native_exact_matching_without_discovery"};
+ const rows=currentObservedControls(snapshot,windowSession,nowMs);
+ if(!rows.length)return {allowed:false,reason:"UI control inventory stale or invalid; request a fresh audited ui_discover."};
+ const windowName=proposal?.arguments?.window;
+ if(!findWindow(currentObservedWindows(windowSession,nowMs),windowName)||
+  snapshot.title.toLocaleLowerCase("en-US")!==windowName.trim().toLocaleLowerCase("en-US"))
+  return {allowed:false,reason:"UI action window differs from inspected HWND/PID."};
+ const id=proposal?.arguments?.automation_id;
+ const name=proposal?.arguments?.name;
+ // Never try to trim a model-provided nonstring selector; reject the
+ // complete proposal when either supplied selector is malformed, even if
+ // the other would match a genuine observed control.
+ if((id!=null&&id!==""&&!strictRequestedSelector(id,180))||
+    (name!=null&&name!==""&&!strictRequestedSelector(name,180)))
+  return {allowed:false,reason:"UI action selector malformed or unsafe."};
+ // Keyboard-only window focus and scroll may not carry a target selector;
+ // preserve the trusted native matching path after exact window binding.
+ if(!id&&!name&&["ui_scroll"].includes(proposal.tool))
+  return {allowed:true,reason:"window_bound_native_scroll"};
+ if(!allowedString(id??"",180)&&!allowedString(name??"",180))
+  return {allowed:false,reason:"UI action has no observed control selector."};
+ const matches=rows.filter(c=>
+  (id?c.id===id.trim():true)&&(name?c.name.toLocaleLowerCase("en-US")===name.trim().toLocaleLowerCase("en-US"):true));
+ if(matches.length!==1)return {allowed:false,reason:matches.length?"Duplicate UIA controls match selector.":"UIA control not observed in this window."};
+ const selected=matches[0];
+ if(selected.enabled===false||selected.offscreen===true)
+  return {allowed:false,reason:"UIA control disabled or off-screen; no guessed hidden click."};
+ return {allowed:true,reason:"observed_control_unique"};
+}
