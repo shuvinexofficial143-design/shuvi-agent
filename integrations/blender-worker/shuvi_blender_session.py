@@ -15,6 +15,7 @@ from pathlib import Path
 
 MAX_REQUEST_BYTES = 65536
 MAX_COMMANDS = 48
+MAX_TOPOLOGY_READS_PER_PAGE = 2  # Limit upstream mesh.inspect latency per read-only request.
 MAX_INPUT_BYTES = 128 * 1024 * 1024
 OUTPUT_OPS = frozenset(("file.checkpoint", "render.execute"))
 
@@ -408,6 +409,19 @@ def native_mesh_binary_commitment(vertices: list, faces: list) -> str:
     return h.hexdigest()
 
 
+def budget_skipped_mesh(item: dict) -> dict:
+    """Conservative read-only fallback when the per-page mesh probe budget
+    is used. Never invent a missing count, geometry SHA, or coordinates.
+    """
+    counts = authenticated_mesh_counts(item)
+    return {"mesh_counts_available": counts is not None,
+            "mesh_counts": counts,
+            "mesh_topology_inspected": False, "geometry_available": False,
+            "geometry_truncated": True, "mesh_geometry_summary": None,
+            "mesh_overview_available": False, "mesh_overview": None,
+            "mesh_inspection_skipped": "page_work_budget"}
+
+
 def verify_object_page_contract(page: dict, query: dict, session_id: str,
                                 revision: str) -> None:
     """Validate real upstream paging, filters, and unique object identities
@@ -705,6 +719,7 @@ def serve(argv: list[str] | None = None) -> int:
                     verify_object_page_contract(
                         page, payload, session_id, expected_revision)
                     objects = []
+                    inspected_meshes = 0
                     for item in page["items"]:
                         if not isinstance(item, dict):
                             raise ValueError("Invalid Blender object page item")
@@ -721,8 +736,23 @@ def serve(argv: list[str] | None = None) -> int:
                         # The old minimal object response remains supported,
                         # without an invented topology claim.
                         if kind == "MESH" and observed["details_available"]:
-                            observed.update(read_bounded_mesh_topology(
-                                controller, item, session_id))
+                            counts = authenticated_mesh_counts(item)
+                            exceeds_upstream = counts is not None and (
+                                counts["vertex_count"] > 4096
+                                or counts["face_count"] > 4096
+                                or counts["vertex_count"] < 3
+                                or counts["face_count"] < 1)
+                            if exceeds_upstream:
+                                # This helper does NOT dispatch mesh.inspect
+                                # for objects outside the upstream limits.
+                                observed.update(read_bounded_mesh_topology(
+                                    controller, item, session_id))
+                            elif inspected_meshes < MAX_TOPOLOGY_READS_PER_PAGE:
+                                inspected_meshes += 1
+                                observed.update(read_bounded_mesh_topology(
+                                    controller, item, session_id))
+                            else:
+                                observed.update(budget_skipped_mesh(item))
                         objects.append({
                             "object_id": obj_id, "name": name,
                             "type": kind, "revision": rev,

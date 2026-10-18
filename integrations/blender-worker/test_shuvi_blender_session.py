@@ -913,6 +913,65 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertEqual(replies[-1]["status"], "outcome_unknown")
         self.assertTrue(self.sessions[0].closed)
 
+    def test_five_mesh_object_page_inspects_only_two_topologies_per_query(self):
+        geometry = self.small_topology()
+        digest = hashlib.sha256(json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        original = FakeController.execute
+        calls = []
+        def fixture(controller, request):
+            calls.append(request.operation)
+            if request.operation == "objects.list":
+                rows = []
+                for i in range(5):
+                    row = {**self.rich_item(),
+                           "object_id": SESSION_ID + f":mesh{i}",
+                           "name": f"ShuviMesh{i}", "type": "MESH",
+                           "revision": "a" * 64,
+                           "data": {"object_type": "MESH", "vertices": 4,
+                                    "polygons": 2, "edges": 5}}
+                    rows.append(row)
+                return FakeResult("succeeded", {
+                    "session_id": SESSION_ID, "revision": "f" * 64,
+                    "offset": 0, "total": 5, "next_offset": None,
+                    "items": rows})
+            if request.operation == "mesh.inspect":
+                obj = request.payload["object_id"]
+                return FakeResult("succeeded", {
+                    **geometry, "geometry_revision": digest,
+                    "object_id": obj,
+                    "name": "ShuviMesh" + obj.split(":mesh")[-1]})
+            return original(controller, request)
+        with patch.object(FakeController, "execute", fixture):
+            code, replies = self.serve(
+                self.frame("objects", query={
+                    "offset": 0, "limit": 5, "name_prefix": "Shuvi",
+                    "object_type": "MESH"}, expected_scene_revision="f" * 64)
+                + self.frame("close"))
+        self.assertEqual(code, 0)
+        self.assertEqual(calls.count("mesh.inspect"), worker.MAX_TOPOLOGY_READS_PER_PAGE)
+        self.assertGreaterEqual(calls.count("scene.inspect"), 2)
+        rows = replies[1]["objects"]
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(item["geometry_available"] for item in rows[:2]))
+        self.assertTrue(all(
+            item["mesh_inspection_skipped"] == "page_work_budget"
+            and item["mesh_counts_available"]
+            and not item["mesh_topology_inspected"]
+            and item["mesh_geometry_summary"] is None
+            for item in rows[2:]))
+        self.assertTrue(self.sessions[0].closed)
+
+    def test_budget_without_upstream_count_metadata_does_not_invent_geometry(self):
+        item = {"object_id": SESSION_ID + ":mesh", "name": "ShuviMesh"}
+        result = worker.budget_skipped_mesh(item)
+        self.assertFalse(result["mesh_counts_available"])
+        self.assertIsNone(result["mesh_counts"])
+        self.assertFalse(result["mesh_topology_inspected"])
+        self.assertIsNone(result["mesh_overview"])
+        self.assertEqual(result["mesh_inspection_skipped"], "page_work_budget")
+
     def test_approved_source_is_hash_checked_and_loaded_in_authenticated_blender(self):
         path = self.root / "source.blend"
         data = b"BLENDER-v430" + b"safe-checkpoint" * 5

@@ -1271,3 +1271,43 @@ rejection before secondary mesh work and commitment sensitivity; native
 Rust tests exercise forged cursors, duplicate objects and tampered
 coordinates/indices independently. This milestone is code and CI
 validation only, not a real Windows Blender host acceptance.
+
+## Shuvi 41 — bounded multi-object inspection fanout and honest time budget
+
+A read-only `blender_session_objects` call previously reused the
+15-second native `PROBE_DEADLINE` of simple ping/scene probes.
+A page of up to five real MESH objects can require up to seven
+authenticated read-only operations: one `objects.list`, five
+`mesh.inspect` probes and one final `scene.inspect`, each with a
+10-second typed upstream timeout. This could retire an otherwise
+healthy owned Blender session before the inspected page completed.
+
+The broker now permits at most **two** resource-intensive
+`mesh.inspect` operations per object-page command
+(`MAX_TOPOLOGY_READS_PER_PAGE=2`). The other eligible MESH entries
+still return their real object transform/material/visibility details
+and authenticated vertex/polygon/edge counts, if available, but
+explicitly report `mesh_inspection_skipped=page_work_budget`,
+`geometry_available=false` and **no** invented topology SHA or
+vertex/face arrays. Objects with counts that already exceed upstream
+4096 limits continue using their pre-existing counts-only fallback
+without spending either mesh-inspection slot.
+
+Native `blender_session_objects` now has its own strict 50-second
+overall deadline; regular ping/inspect keep their original
+15-second deadline. One bounded page therefore performs at most
+one upstream page, two mesh reads, and one scene-revision
+reconfirmation, with 10-second per-operation timeouts. A hang,
+changed scene or invalid return still retires only the exact owned
+session, with no blind retry or approval escalation. This is a
+fixed, read-only observation budget, not an authorization to work
+for 50 seconds without user permissions.
+
+Rust independently accepts the `page_work_budget` truncation
+only when it carries no geometry claims and consistently reported
+authenticated counts (or explicitly unavailable counts). New
+Python source-backed tests cover five mesh objects, exactly two
+mesh.inspect calls, honest skip flags, no invented missing counts,
+and preserved session ownership. Rust tests cover false full-geometry
+claims on skipped objects. This improves practical host
+responsiveness but is not real Windows Blender acceptance evidence.

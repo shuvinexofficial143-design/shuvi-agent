@@ -100,6 +100,8 @@ const MAX_FRAME:usize=131072;
 const SESSION_MAX_AGE:Duration=Duration::from_secs(15*60);
 const STARTUP_DEADLINE:Duration=Duration::from_secs(35);
 const PROBE_DEADLINE:Duration=Duration::from_secs(15);
+// At most two 10-second mesh.inspect operations plus page and scene probes.
+const OBJECTS_DEADLINE:Duration=Duration::from_secs(50);
 const PLAN_DEADLINE:Duration=Duration::from_secs(120);
 
 #[derive(Default)]
@@ -494,7 +496,17 @@ fn verify_mesh_counts(item:&Value,kind:&str)->Result<(),String>{
         return Ok(()); // Existing pre-metadata snapshots.
     }
     if flag==Some(false){
-        if counts.is_some()||skipped.is_some(){return Err("Unavailable mesh metadata has claims.".into());}
+        if counts.is_some(){return Err("Unavailable mesh metadata has claims.".into());}
+        if skipped.and_then(Value::as_str)==Some("page_work_budget")
+            &&item.get("mesh_topology_inspected").and_then(Value::as_bool)==Some(false)
+            &&item.get("geometry_available").and_then(Value::as_bool)==Some(false)
+            &&item.get("geometry_truncated").and_then(Value::as_bool)==Some(true)
+            &&item.get("mesh_overview_available").and_then(Value::as_bool)==Some(false)
+            &&item.get("mesh_geometry_summary").is_some_and(Value::is_null)
+            &&item.get("mesh_overview").is_some_and(Value::is_null){
+            return Ok(());
+        }
+        if skipped.is_some(){return Err("Unavailable mesh metadata has unsupported skipped reason.".into());}
         return Ok(());
     }
     if kind!="MESH"{return Err("Non-mesh claims mesh counts.".into());}
@@ -511,8 +523,13 @@ fn verify_mesh_counts(item:&Value,kind:&str)->Result<(),String>{
         ||record.get("topology_verified_by_counts").and_then(Value::as_bool)!=Some(false){
         return Err("Mesh count-only provenance or bounds invalid.".into());
     }
+    if item.get("mesh_inspection_skipped").is_some_and(|v|!v.is_null()&&!v.is_string()){
+        return Err("Mesh skip reason is malformed.".into());
+    }
     let reason=if vertices>4096||faces>4096{Some("upstream_geometry_limit")}
-        else if vertices<3||faces<1{Some("empty_or_degenerate_mesh")}else{None};
+        else if vertices<3||faces<1{Some("empty_or_degenerate_mesh")}
+        else if skipped.and_then(Value::as_str)==Some("page_work_budget"){Some("page_work_budget")}
+        else{None};
     if reason!=skipped.and_then(Value::as_str){
         return Err("Mesh inspect skip reason is not justified by observed counts.".into());
     }
@@ -819,7 +836,7 @@ pub(crate) fn objects(
         let session=slot.as_mut().ok_or("No Blender session is owned by Shuvi.")?;
         if session.session_id!=id{return Err("Blender object lookup session ID mismatch.".into());}
         let response=request(session,state,"objects",Some(&query),false,
-            Some(scene_revision),PROBE_DEADLINE)?;
+            Some(scene_revision),OBJECTS_DEADLINE)?;
         if response.get("status").and_then(Value::as_str)!=Some("alive")
             ||response.get("operation").and_then(Value::as_str)!=Some("objects")
             ||response.get("read_only").and_then(Value::as_bool)!=Some(true)
@@ -1108,6 +1125,38 @@ mod read_only_object_view_tests {
         no_detail["details_available"]=json!(false);
         no_detail["details"]=Value::Null;
         assert!(verified_object_views(&[no_detail],"session-A").is_err());
+    }
+    #[test]
+    fn read_only_mesh_page_work_budget_cannot_create_false_topology(){
+        let mut mesh=page_object("MESH");
+        mesh["mesh_counts_available"]=json!(true);
+        mesh["mesh_counts"]=json!({
+            "vertex_count":1000,"face_count":900,"edge_count":1800,
+            "source":"authenticated_objects_list","topology_verified_by_counts":false
+        });
+        mesh["mesh_inspection_skipped"]=json!("page_work_budget");
+        mesh["mesh_topology_inspected"]=json!(false);
+        mesh["geometry_available"]=json!(false);
+        mesh["geometry_truncated"]=json!(true);
+        mesh["mesh_geometry_summary"]=Value::Null;
+        mesh["mesh_overview_available"]=json!(false);
+        mesh["mesh_overview"]=Value::Null;
+        verified_object_views(&[mesh.clone()],"session-A").unwrap();
+        mesh["mesh_topology_inspected"]=json!(true);
+        assert!(verified_object_views(&[mesh],"session-A").is_err());
+        let mut no_metadata=page_object("MESH");
+        no_metadata["mesh_counts_available"]=json!(false);
+        no_metadata["mesh_counts"]=Value::Null;
+        no_metadata["mesh_inspection_skipped"]=json!("page_work_budget");
+        no_metadata["mesh_topology_inspected"]=json!(false);
+        no_metadata["geometry_available"]=json!(false);
+        no_metadata["geometry_truncated"]=json!(true);
+        no_metadata["mesh_geometry_summary"]=Value::Null;
+        no_metadata["mesh_overview_available"]=json!(false);
+        no_metadata["mesh_overview"]=Value::Null;
+        verified_object_views(&[no_metadata.clone()],"session-A").unwrap();
+        no_metadata["mesh_overview_available"]=json!(true);
+        assert!(verified_object_views(&[no_metadata],"session-A").is_err());
     }
     #[test]
     fn in_range_mesh_metadata_must_match_full_or_compact_geometry(){

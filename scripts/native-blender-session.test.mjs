@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 42 tests/);
+  assert.match(run.stderr,/Ran 44 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -263,4 +263,22 @@ test("object discovery checks pagination cursors, requested filters, identity an
     "fn native_object_page_requires_unique_filtered_exact_continuation(",
     "fn native_object_page_continuation_tracks_actual_query_window("
   ])assert.ok(native.includes(item),item);
+});
+
+test("resource-budgeted object discovery limits authenticated mesh.inspect fanout without relaxing session permissions",()=>{
+  for(const contract of [
+    "MAX_TOPOLOGY_READS_PER_PAGE = 2",
+    "def budget_skipped_mesh(item: dict) -> dict:",
+    'observed.update(budget_skipped_mesh(item))',
+    '"mesh_inspection_skipped": "page_work_budget"',
+    "inspected_meshes < MAX_TOPOLOGY_READS_PER_PAGE",
+  ])assert.ok(broker.includes(contract),contract);
+  for(const contract of [
+    "const OBJECTS_DEADLINE:Duration=Duration::from_secs(50);",
+    "Some(scene_revision),OBJECTS_DEADLINE)?",
+    'Some("page_work_budget")',
+    "fn read_only_mesh_page_work_budget_cannot_create_false_topology("
+  ])assert.ok(native.includes(contract),contract);
+  assert.match(broker,/MAX_COMMANDS = 48/);
+  assert.match(native,/const PROBE_DEADLINE:Duration=Duration::from_secs\(15\)/);
 });
