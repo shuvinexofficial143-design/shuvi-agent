@@ -946,6 +946,8 @@ mod tests{
             path:path.to_string_lossy().into_owned(),bytes,sha256};
         assert!(check_artifact(&claim,"premiere_create_project").is_err());
         let _=fs::remove_file(path);
+    }
+    #[test]
     fn missing_blender_delivery_artifact_is_filled_from_exact_verified_uuid(){
         let mut steps=vec![claim("model","blender_run_plan",A),
             claim("inspect","read_file",B)];
