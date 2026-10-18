@@ -1186,3 +1186,42 @@ reject forged geometry counts/bounds, mislabeled digest verification,
 claims of transferred arrays and inconsistent legacy statuses.
 These are source/CI checks; actual Blender scene/modeling acceptance
 remains unverified until an owner-approved disposable Windows test.
+
+## Team-41 — authentic large-mesh counts beyond upstream geometry cap
+
+Read-only `blender_session_objects` now recognizes the upstream
+`objects.list` mesh `data` snapshot, which exposes observed vertex,
+polygon and edge **counts**, even for highly detailed meshes. The broker
+validates the integer fields and identifies their provenance separately
+from topology hashes. If the mesh has more than 4096 vertices or 4096
+polygons — the pinned upstream `mesh.inspect` hard limit — Shuvi
+does not dispatch that doomed, resource-intensive request. Instead it
+returns source-observed counts with
+`mesh_counts_available=true`, `mesh_topology_inspected=false`,
+`mesh_inspection_skipped=upstream_geometry_limit`; it **does not**
+invent a geometry digest, bounding box or full topology. Truly empty or
+degenerate mesh shapes use a separate skip reason.
+
+For meshes within 4096 vertices and polygons, the existing authenticated
+typed `mesh.inspect` reads and validates every vertex/face, within
+the upstream 32768-polygon-loop budget. Small meshes still return full
+arrays, and larger inspected meshes return only a compact summary of
+counts, local-space bounds and geometry SHA-256. If upstream count
+metadata is present, its vertex/face counts must match the actual
+inspected arrays. The existing final scene-revision check now also
+covers the counts-only case.
+
+Native Rust independently verifies count provenance, honest
+`topology_verified_by_counts=false`, integer ranges, the precise
+reason to skip `mesh.inspect`, and agreement between metadata and
+the full or compact geometry proof for in-range meshes. Count-only
+fallback must never claim a verified topology hash. The feature
+does not circumvent upstream response-size protections; some dense
+in-range meshes may still fail closed if the pinned upstream refuses
+the read-only request.
+
+New Python and Rust regression tests cover large counts-only meshes
+without a `mesh.inspect` command, empty mesh reasons, invalid counts,
+metadata/geometry mismatches, 1200-vertex compact inspection and
+an end-to-end authenticated object-page query. These are
+source/fixture validations rather than real Blender host acceptance.

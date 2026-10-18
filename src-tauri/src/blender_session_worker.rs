@@ -452,6 +452,70 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     result
 }
 
+/// Bind count-only large-mesh results to the authenticated object-page
+/// metadata. Counts are observed, not a substitute for topology/geometry SHA.
+fn verify_mesh_counts(item:&Value,kind:&str)->Result<(),String>{
+    let flag=item.get("mesh_counts_available").and_then(Value::as_bool);
+    let counts=item.get("mesh_counts").filter(|v|!v.is_null());
+    let skipped=item.get("mesh_inspection_skipped").filter(|v|!v.is_null());
+    if flag.is_none(){
+        if counts.is_some()||skipped.is_some(){return Err("Unflagged mesh metadata claim.".into());}
+        return Ok(()); // Existing pre-metadata snapshots.
+    }
+    if flag==Some(false){
+        if counts.is_some()||skipped.is_some(){return Err("Unavailable mesh metadata has claims.".into());}
+        return Ok(());
+    }
+    if kind!="MESH"{return Err("Non-mesh claims mesh counts.".into());}
+    let record=counts.filter(|v|v.is_object())
+        .ok_or("Authenticated mesh count record missing.")?;
+    let vertices=record.get("vertex_count").and_then(Value::as_u64)
+        .ok_or("Mesh vertex count missing.")?;
+    let faces=record.get("face_count").and_then(Value::as_u64)
+        .ok_or("Mesh face count missing.")?;
+    let edges=record.get("edge_count").and_then(Value::as_u64)
+        .ok_or("Mesh edge count missing.")?;
+    if vertices>100_000_000||faces>100_000_000||edges>100_000_000
+        ||record.get("source").and_then(Value::as_str)!=Some("authenticated_objects_list")
+        ||record.get("topology_verified_by_counts").and_then(Value::as_bool)!=Some(false){
+        return Err("Mesh count-only provenance or bounds invalid.".into());
+    }
+    let reason=if vertices>4096||faces>4096{Some("upstream_geometry_limit")}
+        else if vertices<3||faces<1{Some("empty_or_degenerate_mesh")}else{None};
+    if reason!=skipped.and_then(Value::as_str){
+        return Err("Mesh inspect skip reason is not justified by observed counts.".into());
+    }
+    if reason.is_some(){
+        if item.get("mesh_topology_inspected").and_then(Value::as_bool)!=Some(false)
+            ||item.get("geometry_available").and_then(Value::as_bool)!=Some(false)
+            ||item.get("geometry_truncated").and_then(Value::as_bool)!=Some(true)
+            ||item.get("mesh_overview_available").and_then(Value::as_bool)!=Some(false)
+            ||item.get("mesh_overview").is_some_and(|v|!v.is_null())
+            ||item.get("mesh_geometry_summary").is_some_and(|v|!v.is_null()){
+            return Err("Skipped large mesh cannot claim verified full topology.".into());
+        }
+        return Ok(());
+    }
+    if item.get("geometry_available").and_then(Value::as_bool)==Some(true){
+        let full=item.get("mesh_geometry_summary")
+            .ok_or("Small mesh geometry absent.")?;
+        if full.get("vertex_count").and_then(Value::as_u64)!=Some(vertices)
+            ||full.get("face_count").and_then(Value::as_u64)!=Some(faces){
+            return Err("Mesh metadata differs from full topology.".into());
+        }
+    }else if item.get("mesh_overview_available").and_then(Value::as_bool)==Some(true){
+        let overview=item.get("mesh_overview")
+            .ok_or("Medium mesh overview absent.")?;
+        if overview.get("vertex_count").and_then(Value::as_u64)!=Some(vertices)
+            ||overview.get("face_count").and_then(Value::as_u64)!=Some(faces){
+            return Err("Mesh metadata differs from validated overview.".into());
+        }
+    }else{
+        return Err("In-range mesh metadata must be matched with actual mesh.inspect evidence.".into());
+    }
+    Ok(())
+}
+
 /// Verify a compact 129..1024-element mesh summary without pretending that
 /// its coordinates or faces were transmitted or SHA-recomputed by Rust.
 fn verify_medium_mesh_overview(item:&Value)->Result<bool,String>{
@@ -467,9 +531,9 @@ fn verify_medium_mesh_overview(item:&Value)->Result<bool,String>{
     let vertices=proof.get("vertex_count").and_then(Value::as_u64).unwrap_or(0);
     let faces=proof.get("face_count").and_then(Value::as_u64).unwrap_or(0);
     let loops=proof.get("face_index_count").and_then(Value::as_u64).unwrap_or(0);
-    if !(3..=1024).contains(&vertices)
-        || !(1..=1024).contains(&faces)
-        || loops<3*faces ||loops>4096 ||loops>32*faces
+    if !(3..=4096).contains(&vertices)
+        || !(1..=4096).contains(&faces)
+        || loops<3*faces ||loops>32768 ||loops>32*faces
         ||(vertices<=128 && faces<=128 && loops<=512) {
         return Err("Medium mesh overview counts exceed allowed range.".into());
     }
@@ -501,7 +565,10 @@ fn verify_medium_mesh_overview(item:&Value)->Result<bool,String>{
 /// The broker verifies the source SHA over actual vertices/faces. Rust checks
 /// geometry structure but deliberately does not claim to re-hash float JSON.
 fn verify_read_only_topology(item:&Value,kind:&str)->Result<(),String>{
-    let touched=item.get("geometry_available").is_some()
+    let touched=item.get("mesh_counts_available").is_some()
+        ||item.get("mesh_counts").is_some()
+        ||item.get("mesh_inspection_skipped").is_some()
+        ||item.get("geometry_available").is_some()
         ||item.get("geometry_truncated").is_some()
         ||item.get("mesh_geometry_summary").is_some()
         ||item.get("mesh_overview_available").is_some()
@@ -513,6 +580,7 @@ fn verify_read_only_topology(item:&Value,kind:&str)->Result<(),String>{
         return Ok(()); // Legacy minimal object detail page.
     }
     if kind!="MESH"{return Err("Only mesh objects may carry geometry evidence.".into());}
+    verify_mesh_counts(item,kind)?;
     let available=item.get("geometry_available").and_then(Value::as_bool)
         .ok_or("Mesh geometry availability missing.")?;
     let truncated=item.get("geometry_truncated").and_then(Value::as_bool)
@@ -587,7 +655,10 @@ fn verified_object_views(items:&[Value],session_id:&str)->Result<(),String>{
                 ||item.get("geometry_available").and_then(Value::as_bool)==Some(true)
                 ||item.get("mesh_geometry_summary").is_some_and(|v|!v.is_null())
                 ||item.get("mesh_overview_available").and_then(Value::as_bool)==Some(true)
-                ||item.get("mesh_overview").is_some_and(|v|!v.is_null()){
+                ||item.get("mesh_overview").is_some_and(|v|!v.is_null())
+                ||item.get("mesh_counts_available").and_then(Value::as_bool)==Some(true)
+                ||item.get("mesh_counts").is_some_and(|v|!v.is_null())
+                ||item.get("mesh_inspection_skipped").is_some_and(|v|!v.is_null()){
                 return Err("Unavailable Blender details cannot claim validation.".into());
             }
             continue;
@@ -901,6 +972,69 @@ mod read_only_object_view_tests {
         bad["details_available"]=json!(false);
         bad["details"]=Value::Null;
         assert!(verified_object_views(&[bad],"session-A").is_err());
+    }
+    #[test]
+    fn large_mesh_counts_only_fallback_is_provenance_bounded(){
+        let mut mesh=page_object("MESH");
+        mesh["mesh_counts_available"]=json!(true);
+        mesh["mesh_counts"]=json!({
+            "vertex_count":120_000,"face_count":98_000,"edge_count":210_000,
+            "source":"authenticated_objects_list",
+            "topology_verified_by_counts":false
+        });
+        mesh["mesh_inspection_skipped"]=json!("upstream_geometry_limit");
+        mesh["geometry_available"]=json!(false);
+        mesh["mesh_topology_inspected"]=json!(false);
+        mesh["geometry_truncated"]=json!(true);
+        mesh["mesh_geometry_summary"]=Value::Null;
+        mesh["mesh_overview_available"]=json!(false);
+        mesh["mesh_overview"]=Value::Null;
+        verified_object_views(&[mesh.clone()],"session-A").unwrap();
+        for (pointer,value) in [
+            ("/mesh_counts/vertex_count",json!(100)),
+            ("/mesh_counts/source",json!("unauthenticated")),
+            ("/mesh_counts/topology_verified_by_counts",json!(true)),
+            ("/mesh_counts/edge_count",json!(-1)),
+            ("/mesh_inspection_skipped",json!("empty_or_degenerate_mesh")),
+            ("/mesh_overview_available",json!(true)),
+            ("/mesh_topology_inspected",json!(true)),
+            ("/geometry_truncated",json!(false))
+        ]{
+            let mut forged=mesh.clone();
+            *forged.pointer_mut(pointer).unwrap()=value;
+            assert!(verified_object_views(&[forged],"session-A").is_err(),"{pointer}");
+        }
+        let mut no_detail=mesh;
+        no_detail["details_available"]=json!(false);
+        no_detail["details"]=Value::Null;
+        assert!(verified_object_views(&[no_detail],"session-A").is_err());
+    }
+    #[test]
+    fn in_range_mesh_metadata_must_match_full_or_compact_geometry(){
+        let mut mesh=page_object("MESH");
+        mesh["mesh_counts_available"]=json!(true);
+        mesh["mesh_counts"]=json!({
+            "vertex_count":200,"face_count":198,"edge_count":399,
+            "source":"authenticated_objects_list","topology_verified_by_counts":false
+        });
+        mesh["mesh_inspection_skipped"]=Value::Null;
+        mesh["mesh_topology_inspected"]=json!(false);
+        mesh["geometry_available"]=json!(false);
+        mesh["geometry_truncated"]=json!(true);
+        mesh["mesh_geometry_summary"]=Value::Null;
+        mesh["mesh_overview_available"]=json!(true);
+        mesh["mesh_overview"]=json!({
+            "vertex_count":200,"face_count":198,"face_index_count":594,
+            "bounds_min":[0.0,0.0,0.0],"bounds_max":[199.0,6.0,0.0],
+            "geometry_sha256":"a".repeat(64),
+            "digest_checked_in_authenticated_broker":true,
+            "native_digest_recomputed":false,
+            "complete_source_validated_in_broker":true,
+            "full_vertex_face_arrays_transferred":false
+        });
+        verified_object_views(&[mesh.clone()],"session-A").unwrap();
+        mesh["mesh_counts"]["face_count"]=json!(199);
+        assert!(verified_object_views(&[mesh],"session-A").is_err());
     }
     #[test]
     fn large_mesh_never_fabricates_verified_geometry(){

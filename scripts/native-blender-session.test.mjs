@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 34 tests/);
+  assert.match(run.stderr,/Ran 38 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -196,7 +196,7 @@ test("read-only Blender objects can return fully bounded vertex/face topology fr
 
 test("medium Blender meshes return independently checked compact 3D extents and counts, without transferring 1024 vertices/faces",()=>{
   for(const token of [
-    "len(vertices) > 1024 or len(faces) > 1024 or loops > 4096",
+    "loops > 32768",
     "bounds_min = [min(vertex[axis] for vertex in vertices)",
     "bounds_max = [max(vertex[axis] for vertex in vertices)",
     '"mesh_overview_available": True',
@@ -210,5 +210,23 @@ test("medium Blender meshes return independently checked compact 3D extents and 
     'medium_mesh_summary_is_bounded_and_never_claims_full_transferred_arrays',
     'full_vertex_face_arrays_transferred',
     'face_index_count'
+  ])assert.ok(native.includes(token),token);
+});
+
+test("large Blender meshes skip upstream-limited topology inspection and report authenticated object-list counts only",()=>{
+  for (const token of [
+    "def authenticated_mesh_counts(item: dict) -> dict | None:",
+    '"source": "authenticated_objects_list"',
+    '"topology_verified_by_counts": False',
+    'counts["vertex_count"] > 4096',
+    '"mesh_inspection_skipped": "upstream_geometry_limit"',
+    'Mesh object metadata differs from actual mesh topology',
+    'row.get("mesh_counts_available") is True'
+  ])assert.ok(broker.includes(token),token);
+  for (const token of [
+    "fn verify_mesh_counts(item:&Value,kind:&str)",
+    'verify_mesh_counts(item,kind)?',
+    'large_mesh_counts_only_fallback_is_provenance_bounded',
+    'in_range_mesh_metadata_must_match_full_or_compact_geometry'
   ])assert.ok(native.includes(token),token);
 });

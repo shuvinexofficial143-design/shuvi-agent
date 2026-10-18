@@ -511,20 +511,23 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertFalse(result["mesh_geometry_summary"]["native_digest_recomputed"])
 
     def test_large_mesh_geometry_is_unavailable_without_claiming_digest(self):
-        geometry = {"vertices": [[float(x), 0., 0.] for x in range(1025)],
-                    "faces": [[0, 1, 2]]}
         class Controller:
             def execute(self, request):
-                return FakeResult("succeeded", {
-                    **geometry, "geometry_revision": "0" * 64,
-                    "object_id": SESSION_ID + ":mesh-one", "name": "ShuviMesh"})
+                raise AssertionError("Oversized source must not call mesh.inspect")
         result = worker.read_bounded_mesh_topology(
             Controller(), {"object_id": SESSION_ID + ":mesh-one",
-                           "name": "ShuviMesh"}, SESSION_ID)
+                           "name": "ShuviMesh",
+                           "data": {"object_type": "MESH", "vertices": 250_000,
+                                    "polygons": 200_000, "edges": 400_000}},
+            SESSION_ID)
         self.assertFalse(result["geometry_available"])
         self.assertFalse(result["mesh_topology_inspected"])
         self.assertTrue(result["geometry_truncated"])
+        self.assertFalse(result["mesh_overview_available"])
         self.assertIsNone(result["mesh_geometry_summary"])
+        self.assertEqual(result["mesh_inspection_skipped"], "upstream_geometry_limit")
+        self.assertEqual(result["mesh_counts"]["vertex_count"], 250_000)
+        self.assertFalse(result["mesh_counts"]["topology_verified_by_counts"])
 
     @staticmethod
     def medium_topology():
@@ -620,6 +623,103 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertFalse(result["geometry_available"])
         self.assertEqual(result["mesh_overview"]["vertex_count"], 200)
         self.assertNotIn("vertices", result["mesh_overview"])
+
+    def test_upstream_4096_limit_supports_large_compact_summaries_without_arrays(self):
+        geometry = {"vertices": [[float(i), float(i % 3), 0.0]
+                                 for i in range(1200)],
+                    "faces": [[0, i, i + 1] for i in range(1, 1199)]}
+        digest = hashlib.sha256(json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        identity = SESSION_ID + ":mesh-one"
+        calls = []
+        class Controller:
+            def execute(self, request):
+                calls.append(request.operation)
+                return FakeResult("succeeded", {**geometry,
+                    "geometry_revision": digest, "object_id": identity,
+                    "name": "ShuviMesh"})
+        item = {"object_id": identity, "name": "ShuviMesh",
+                "data": {"object_type": "MESH", "vertices": 1200,
+                         "polygons": 1198, "edges": 2500}}
+        report = worker.read_bounded_mesh_topology(Controller(), item, SESSION_ID)
+        self.assertEqual(calls, ["mesh.inspect"])
+        self.assertTrue(report["mesh_overview_available"])
+        self.assertFalse(report["geometry_available"])
+        self.assertEqual(report["mesh_overview"]["vertex_count"], 1200)
+        self.assertEqual(report["mesh_overview"]["face_count"], 1198)
+        self.assertFalse(report["mesh_overview"]["full_vertex_face_arrays_transferred"])
+        self.assertEqual(report["mesh_counts"]["vertex_count"], 1200)
+
+    def test_authenticated_counts_disagreeing_with_mesh_inspect_fail_closed(self):
+        geometry = self.small_topology()
+        digest = hashlib.sha256(json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        identity = SESSION_ID + ":mesh-one"
+        class Controller:
+            def execute(self, request):
+                return FakeResult("succeeded", {**geometry,
+                    "geometry_revision": digest, "object_id": identity,
+                    "name": "ShuviMesh"})
+        for changed in [5, 6]:
+            with self.subTest(changed=changed):
+                item = {"object_id": identity, "name": "ShuviMesh",
+                        "data": {"object_type": "MESH", "vertices": changed,
+                                 "polygons": 2, "edges": 5}}
+                with self.assertRaisesRegex(ValueError, "metadata differs"):
+                    worker.read_bounded_mesh_topology(
+                        Controller(), item, SESSION_ID)
+
+    def test_invalid_count_metadata_or_empty_mesh_never_claims_topology(self):
+        identity = SESSION_ID + ":mesh-one"
+        class Controller:
+            def execute(self, request):
+                raise AssertionError("Empty or invalid count must not launch mesh inspect")
+        item = {"object_id": identity, "name": "ShuviMesh",
+                "data": {"object_type": "MESH", "vertices": 0,
+                         "polygons": 0, "edges": 0}}
+        report = worker.read_bounded_mesh_topology(Controller(), item, SESSION_ID)
+        self.assertEqual(report["mesh_inspection_skipped"], "empty_or_degenerate_mesh")
+        self.assertTrue(report["mesh_counts_available"])
+        self.assertFalse(report["mesh_topology_inspected"])
+        for invalid in [
+            {"vertices": -1},
+            {"vertices": 100_000_001},
+            {"polygons": True},
+            {"edges": 0.5},
+            {"object_type": "CAMERA"},
+        ]:
+            bad = {"object_id": identity, "name": "ShuviMesh",
+                   "data": {**item["data"], **invalid}}
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                    ValueError, "metadata"):
+                worker.read_bounded_mesh_topology(Controller(), bad, SESSION_ID)
+
+    def test_oversized_object_list_delivers_counts_without_mesh_inspect(self):
+        original = FakeController.execute
+        calls = []
+        def fixture(controller, request):
+            calls.append(request.operation)
+            if request.operation == "mesh.inspect":
+                raise AssertionError("Oversized object may not use mesh.inspect")
+            response = original(controller, request)
+            if request.operation == "objects.list":
+                response.data["items"][0].update(self.rich_item())
+                response.data["items"][0]["name"] = "ShuviMesh"
+                response.data["items"][0]["data"] = {
+                    "object_type": "MESH", "vertices": 123456,
+                    "polygons": 87654, "edges": 234567}
+            return response
+        with patch.object(FakeController, "execute", fixture):
+            code, replies = self.serve(self.frame("objects", query={
+                "offset": 0, "limit": 5, "name_prefix": "Shuvi",
+                "object_type": None}, expected_scene_revision="f" * 64)
+                + self.frame("close"))
+        self.assertEqual(code, 0)
+        self.assertNotIn("mesh.inspect", calls)
+        self.assertEqual(replies[1]["objects"][0]["mesh_counts"]["vertex_count"], 123456)
+        self.assertEqual(replies[1]["objects"][0]["mesh_inspection_skipped"], "upstream_geometry_limit")
 
     def test_mesh_readback_rejects_tampered_faces_wrong_identity_and_sha(self):
         geometry = self.small_topology()
