@@ -11,6 +11,25 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+
+# Use the built-in .NET streaming SHA256 rather than relying on an
+# auto-imported hashing cmdlet absent on some CI images.
+# The read-only handle denies concurrent file writes/deletes while hashing.
+function Get-ShuviFileSha256 {
+  param([Parameter(Mandatory=$true)][string]$LiteralPath)
+  if (-not [IO.Path]::IsPathRooted($LiteralPath)) {
+    throw 'SHA input must be an absolute source file.'
+  }
+  $stream=[IO.File]::Open($LiteralPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+  try {
+    $digest=[Security.Cryptography.SHA256]::Create()
+    try {
+      return [BitConverter]::ToString($digest.ComputeHash($stream)).Replace('-','').ToLowerInvariant()
+    }
+    finally { $digest.Dispose() }
+  }
+  finally { $stream.Dispose() }
+}
 $root=[IO.Path]::GetFullPath($NsiBundleDirectory)
 $manifestFile=[IO.Path]::GetFullPath($ManifestPath)
 $sidecarFile=[IO.Path]::GetFullPath($SidecarPath)
@@ -54,8 +73,8 @@ foreach($p in @($installer,$worker.FullName)){
 if($worker.Name -cne $manifest.workerFilename -or
    $installers[0].Length -ne $manifest.installerBytes -or
    $worker.Length -ne $manifest.workerBytes -or
-   (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.installerSha256 -or
-   (Get-FileHash -LiteralPath $worker.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.workerSha256){
+   (Get-ShuviFileSha256 -LiteralPath $installer) -cne $manifest.installerSha256 -or
+   (Get-ShuviFileSha256 -LiteralPath $worker.FullName) -cne $manifest.workerSha256){
    throw 'Actual NSIS or staged worker differs from M59 immutable content witness.'
 }
 $seven=Get-Command '7z.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -84,7 +103,7 @@ try{
     }
   }
   if($workers[0].Length -ne $manifest.workerBytes -or
-     (Get-FileHash -LiteralPath $workers[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.workerSha256){
+     (Get-ShuviFileSha256 -LiteralPath $workers[0].FullName) -cne $manifest.workerSha256){
     throw 'Actual COMPRESSED NSIS payload SHA worker bytes do not match compiled main app pin.'
   }
   # M61: the only executable run during package test is the fixed,
@@ -124,7 +143,7 @@ try{
     badDigestAndReplayRejected=$true
     singlePackedDesktopExeFound=$true
     packedMainExeBytes=[long]$main[0].Length
-    packedMainExeSha256=(Get-FileHash -LiteralPath $main[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    packedMainExeSha256=(Get-ShuviFileSha256 -LiteralPath $main[0].FullName)
     packedWorkerSha256=$manifest.workerSha256
     installerSha256=$manifest.installerSha256
     signingVerified=$false

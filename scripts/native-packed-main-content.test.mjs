@@ -82,7 +82,7 @@ test("M63 real compressed NSIS main receipt flows into production builder and re
   const ps=read("scripts/check-real-nsis-payload.ps1");
   const builder=read("scripts/build-pinned-sha-installer.mjs");
   const runner=read("scripts/windows-m62-real-nsis-install-acceptance.mjs");
-  assert.match(ps,/packedMainExeSha256=\(Get-FileHash -LiteralPath \$main\[0\]\.FullName -Algorithm SHA256\)/);
+  assert.match(ps,/packedMainExeSha256=\(Get-ShuviFileSha256 -LiteralPath \$main\[0\]\.FullName\)/);
   assert.match(ps,/packedMainExeBytes=\[long\]\$main\[0\]\.Length/);
   assert.match(builder,/m63-packed-main-/);
   assert.match(builder,/proven\.packedMainExeSha256/);

@@ -9,8 +9,8 @@ const manifest=read("scripts/native-pinned-release-manifest.mjs");
 const pkg=JSON.parse(read("package.json"));
 
 test("M60 only a real extracted NSIS payload with exact worker SHA satisfies package acceptance",()=>{
- assert.match(payload,/Get-FileHash -LiteralPath \$workers\[0\]\.FullName -Algorithm SHA256/);
- assert.match(payload,/Get-FileHash -LiteralPath \$installer -Algorithm SHA256/);
+ assert.match(payload,/Get-ShuviFileSha256 -LiteralPath \$workers\[0\]\.FullName/);
+ assert.match(payload,/Get-ShuviFileSha256 -LiteralPath \$installer/);
  assert.match(payload,/\$workers\.Count -ne 1 -or \$main\.Count -ne 1/);
  assert.match(payload,/Get-ChildItem -LiteralPath \$extract -File -Recurse -Force/);
  assert.match(payload,/\$LASTEXITCODE -ne 0/);
@@ -53,4 +53,14 @@ test("M66 actual Tauri 2.11.5 CLI targets the same MSVC output as Cargo sidecar 
  assert.match(builder,/spawnSync\(process\.execPath,\[tauriJs,"build","--target",target,"--config"/);
  assert.match(builder,/resolve\("src-tauri","target",target,"release","bundle","nsis"\)/);
  assert.doesNotMatch(builder,/--target","?undefined|--target",host/);
+});
+
+test("M60 Windows real NSIS SHA uses a locked streaming .NET digest independent of PowerShell module autoload",()=>{
+ assert.match(payload,/function Get-ShuviFileSha256/);
+ assert.match(payload,/\[IO\.File\]::Open\(\$LiteralPath,\[IO\.FileMode\]::Open,\[IO\.FileAccess\]::Read,\[IO\.FileShare\]::Read\)/);
+ assert.match(payload,/\[Security\.Cryptography\.SHA256\]::Create\(\)/);
+ assert.match(payload,/ComputeHash\(\$stream\)/);
+ assert.match(payload,/\$digest\.Dispose\(\)/);
+ assert.match(payload,/\$stream\.Dispose\(\)/);
+ assert.doesNotMatch(payload,/Get-FileHash\b|certutil\.exe|Invoke-WebRequest/);
 });
