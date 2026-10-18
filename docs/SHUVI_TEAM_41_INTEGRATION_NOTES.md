@@ -1691,3 +1691,26 @@ remains reachable while another thread holds the plan mutex;
 Node source-contract tests cover authorization-independent plumbing.
 This is source/CI behavior; **live Windows/Blender session cancellation
 and visual/application-level acceptance still require a real host run**.
+
+
+## Team-41 — opt-in Windows Blender host acceptance harness (source / CI)
+
+Added integrations/blender-worker/shuvi_blender_host_acceptance.py and
+strict no-host tests. The default command emits JSON readiness without
+launching Blender, writing a fixture or invoking a Shuvi action.
+A human must separately pass --run AND set the exact process-local
+SHUVI41_HOST_ACCEPTANCE=disposable-only flag on a Windows fixture host,
+with clean Shuvi feature and SHA-pinned upstream checkouts, explicit Blender
+executable and a safe outside-repo output parent. No remote host launch
+was performed by this source milestone.
+
+When explicitly invoked on a host, the five-stage upstream PlanRunner
+harness checks actual same-session Stage1→Stage2, SHA-pinned fresh
+sessions for Render and Copper look, independently reopened .blend
+proof, source/real shader preflight, post-run SHA for all five
+distinct outputs and a retained per-host JSON report. A failure
+retains partial artifacts and reports outcome-unknown without replay.
+It is an upstream host trial, **not** the Shuvi native audited
+ToolAction/Windows Job Object/scheduler/Adobe workflow; real host
+execution, visual quality and integrated approval acceptance remain
+unverified. See docs/SHUVI41_BLENDER_HOST_ACCEPTANCE.md.

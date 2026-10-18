@@ -1,0 +1,53 @@
+# Shuvi 41 — opt-in real Windows Blender host acceptance
+
+This is a **developer-operated, disposable-host verification harness**, not a Shuvi ToolAction or approval bypass. It never changes the Shuvi scheduler, Desktop UI, approved source checkpoints or existing jobs. Its default is a read-only JSON readiness probe. CI runs **only the no-host unit tests**, not Blender.
+
+## What it proves when a human explicitly runs it on a real Windows host
+
+1. The existing pinned upstream shuvi-blender-agent PlanRunner executes the six typed Stage-1 steps in a real headless Blender child, independently reopens the saved Stage-1 .blend, and verifies actual saved bytes.
+2. The same authenticated Blender session passes the Stage-1 dependency preflight and executes all Stage-2 steps. Stage-1 and Stage-2 cannot silently be split into unrelated sessions.
+3. A different authenticated Blender child loads SHA-pinned Stage-2 source and executes bounded 64×64, one-sample CPU PNG rendering.
+4. A separate Stage-2-sourced Blender child applies the Copper material, saves it and independently reopens the resulting material .blend.
+5. Another new Blender child opens that SHA-pinned material scene, verifies real mesh/camera/light/copper shader properties, then produces the optional material PNG. All five output files are independently hashed again at the end.
+
+The harness uses the exact fixed recipes from shuvi_blender_acceptance.py, the existing checked_plan, actual upstream BlenderController / PlanRunner, the independent reopen helper and material-render read-only source preflight. It never executes arbitrary model Python or shell from a plan.
+
+**This is a direct upstream host trial:** it does **not** exercise the native Shuvi Rust ToolAction permission prompts, audit pipeline, Windows Job Object, 4 GB watchdog, scheduler, Adobe import, desktop UI or visually approve model quality. Those require separate end-to-end native acceptance.
+
+## Strict prerequisites
+
+- A **disposable Windows test host** with Blender installed; preserve any currently open user Blender work. Do not run against customer projects.
+- Python 3.12, Git, Blender and the pinned, clean upstream checkout at SHA 96b88c2513152f772399f247989ef602d5e0a7d7.
+- A clean checkout of shuvinexofficial143-design/shuvi-agent on feature/shuvi41-blender-worker (HEAD recorded in evidence).
+- An explicit, existing, absolute blender.exe, upstream checkout folder, and writable absolute output parent **outside source checkouts**. No selected path may be a symlink or Windows junction. At least 512 MiB free disk space; use adequate available RAM and avoid concurrent renders.
+- Do **not** install dependencies or copy credentials as part of this acceptance. The script imports the pinned upstream source already present.
+
+## Read-only readiness (default)
+
+From the clean Shuvi feature checkout, supply YOUR existing absolute paths:
+
+~~~powershell
+python -B integrations/blender-worker/shuvi_blender_host_acceptance.py --blender-exe "<ABSOLUTE_PATH_TO_blender.exe>" --upstream-root "<ABSOLUTE_PATH_TO_PINNED_UPSTREAM_CHECKOUT>" --output-parent "$env:TEMP"
+~~~
+
+No --run: no Blender launched, no file written, no native job submitted. On an unavailable/ambiguous host, ready=false and reasons are reported.
+
+## Real host trial — distinct manual opt-in only
+
+Only on the dedicated Windows fixture host, after checking the readiness JSON and ensuring no important Blender work is open, deliberately set BOTH controls:
+
+~~~powershell
+$env:SHUVI41_HOST_ACCEPTANCE = "disposable-only"
+python -B integrations/blender-worker/shuvi_blender_host_acceptance.py --blender-exe "<ABSOLUTE_PATH_TO_blender.exe>" --upstream-root "<ABSOLUTE_PATH_TO_PINNED_UPSTREAM_CHECKOUT>" --output-parent "$env:TEMP" --run
+Remove-Item Env:SHUVI41_HOST_ACCEPTANCE
+~~~
+
+The runner creates one new shuvi41-live-acceptance-... directory. It **does not delete or overwrite old evidence**. Every positive result is backed by actual file SHA-256 and real reopened scene/source proof, and acceptance-report.json records the five stages and the source HEAD. On failure, cancellation or partial output it writes failed_or_partial_outcome_unknown, keeps all files for manual inspection and forbids automatic retry.
+
+The final report deliberately keeps:
+- native_shuvi_action_executed=false
+- native_owner_approval_reauthenticated=false
+- adobe_import_performed=false
+- visual_quality_verified=false
+
+Do not interpret a CI green check or even a passing direct host trial as proof of a live Shuvi desktop-to-Blender-to-Adobe accepted workflow.

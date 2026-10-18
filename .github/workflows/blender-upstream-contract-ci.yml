@@ -52,6 +52,8 @@ jobs:
           python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_session.py' -v
           python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_material_render.py' -v
           python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_plan_input.py' -v
+          # Host acceptance tests never launch Blender and require no --run flag.
+          python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_host_acceptance.py' -v
       - name: Confirm no tracked worktree mutations
         shell: bash
         run: |
