@@ -86,10 +86,41 @@ try{
      (Get-FileHash -LiteralPath $workers[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.workerSha256){
     throw 'Actual COMPRESSED NSIS payload SHA worker bytes do not match compiled main app pin.'
   }
+  # M61: the only executable run during package test is the fixed,
+  # SHA-matched, compiled read-only worker from the ACTUAL NSIS payload.
+  # The installer and desktop app are NEVER started or silently installed.
+  $workerDir=$workers[0].Directory.FullName
+  if ($main[0].Directory.FullName -cne $workerDir) {
+    throw 'Packed Shuvi.exe and immutable SHA worker must share one installed app directory.'
+  }
+  $node=Get-Command 'node.exe' -ErrorAction Stop | Select-Object -First 1
+  $smokeScript=Join-Path $PSScriptRoot 'check-installed-shuvi-worker.mjs'
+  if(-not (Test-Path -LiteralPath $smokeScript -PathType Leaf)){
+    throw 'Exact installed SHA worker verifier script unavailable.'
+  }
+  $smokeStdout= & $node.Source $smokeScript --manifest $manifestFile --install-dir $workerDir | Out-String
+  if($LASTEXITCODE -ne 0){
+    throw 'EXTRACTED real compressed SHA worker execution or negative-case check failed.'
+  }
+  $smoke=$smokeStdout | ConvertFrom-Json
+  if($smoke.schemaVersion -ne 1 -or
+     $smoke.installedWorkerSha256 -cne $manifest.workerSha256 -or
+     $smoke.exactReadOnlyShaProtocolVerified -ne $true -or
+     $smoke.shaMismatchRejected -ne $true -or
+     $smoke.uuidEvidenceReplayRejected -ne $true -or
+     $smoke.unknownCommandRejected -ne $true -or
+     $smoke.codeSigningVerified -ne $false -or
+     $smoke.mainApplicationVerified -ne $false -or
+     $smoke.ownerDesktopEndToEndVerified -ne $false -or
+     $smoke.autoRetryAuthorized -ne $false) {
+    throw 'Extracted Windows worker smoke evidence incomplete or falsely claims application acceptance.'
+  }
   [pscustomobject]@{
     schemaVersion=1
     actualNsisPayloadExtracted=$true
     exactPackedWorkerSha256Matched=$true
+    realPackedReadOnlyWorkerExecuted=$true
+    badDigestAndReplayRejected=$true
     singlePackedDesktopExeFound=$true
     packedWorkerSha256=$manifest.workerSha256
     installerSha256=$manifest.installerSha256
