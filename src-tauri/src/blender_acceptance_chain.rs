@@ -262,7 +262,18 @@ mod tests {
             let mut crcdata=name.to_vec();crcdata.extend_from_slice(data);
             out.extend_from_slice(&crc32(&crcdata).to_be_bytes());
         }
-        let raw=vec![0u8;64*(1+64*4)];
+        // Synthetic visible 64x64 RGBA fixture. A completely blank render
+        // must not qualify as a fixed acceptance proof.
+        let mut raw=vec![0u8;64*(1+64*4)];
+        for row in 0..64usize{
+            for col in 0..64usize{
+                let offset=row*(1+64*4)+1+col*4;
+                raw[offset]=(col*3) as u8;
+                raw[offset+1]=(row*2) as u8;
+                raw[offset+2]=90;
+                raw[offset+3]=255;
+            }
+        }
         let len=raw.len() as u16;
         let mut zlib=vec![0x78,0x01,0x01];
         zlib.extend_from_slice(&len.to_le_bytes());

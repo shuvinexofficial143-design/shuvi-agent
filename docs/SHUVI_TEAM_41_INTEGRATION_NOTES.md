@@ -1620,3 +1620,36 @@ Stage-1 file SHA while omitting or substituting the live geometry
 fingerprint. Later plans clear both continuation values atomically
 before dispatch. This remains source and CI verification; no Blender
 GUI runtime or editing is performed by this change.
+
+
+## Team-41 — decoded PNG payload and visible proof-frame gate (source / CI)
+
+The existing native PNG verifier checked the signature, IHDR dimensions,
+chunk CRCs and file SHA-256, but deliberately did not decompress IDAT. A PNG
+with a syntactically correct chunk CRC and corrupted zlib stream could be
+promoted as a verified render. Native `blender_png_integrity::validate` now
+performs a SECOND bounded read-only full-frame decode using the already-locked
+`png 0.17.16` crate after exact CRC/chunk/IEND verification. The decoder
+has a 2 MiB internal limit and exactly 16..512 pixel RGBA8 buffer bounds.
+Broken deflate/adler/filter payloads, wrong actual frame dimensions, or
+unexpected decoded color formats fail before artifact-manifest construction.
+The same decoder runs during later native byte re-verification; no automatic
+render restart, Python execution or new native action is introduced.
+
+For the two *fixed synthetic demonstration* PNG names only
+(`shuvi41-proof-render.png` and `shuvi41-proof-material-render.png`), the
+same decoded frame must have at least 16 visible pixels and at least two
+distinct visible RGB colors. Generic approved Blender output may legitimately
+be transparent or uniformly colored; it remains accepted if decodable and
+correctly hashed. The native acceptance-chain synthetic fixture was updated
+from an all-transparent image to a reproducible nonuniform RGBA test pattern.
+Negative unit tests alter a zlib header while recomputing a correct PNG chunk
+CRC and verify rejection; other tests verify both fixed proof names reject
+transparent frames yet accept decoded nonuniform visible images.
+
+This is only structural and simple content validation, NOT evidence that
+Blender created the pixels, the intended model is in the image, the render
+looks professional, or a Windows host has passed acceptance. Existing
+permissions, Stage-1/Stage-2 source/hash proof, other teams and pinned
+upstream contracts are unchanged. Real host E2E visual verification and
+separately approved Adobe import remain outstanding.

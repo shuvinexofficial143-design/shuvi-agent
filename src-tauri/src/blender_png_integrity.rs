@@ -1,10 +1,57 @@
 //! Bounded PNG chunk + CRC integrity check for Shuvi Blender render receipts.
-//! This is NOT zlib decompression, pixel inspection, or creative acceptance.
+//! Checks actual decoded RGBA pixels as well as structure. Pixel diversity is
+//! required only for fixed demonstration renders; this is not creative QA.
 use std::{fs::File, io::Read, path::Path};
 
 const MAX_BYTES:u64=128*1024*1024;
 const MAX_CHUNK:u64=32*1024*1024;
 const MAX_CHUNKS:usize=256;
+
+// Decode the full frame within a strict allocation limit. A valid chunk CRC
+// does not establish that the compressed pixels can actually be displayed.
+fn verify_decoded_pixels(path:&Path,width:u64,height:u64)->Result<(),String>{
+    let source=std::io::BufReader::new(File::open(path)
+        .map_err(|_|"Blender PNG cannot be reopened for pixel decoding.")?);
+    let mut decoder=png::Decoder::new(source);
+    decoder.set_limits(png::Limits{bytes:2*1024*1024});
+    let mut reader=decoder.read_info()
+        .map_err(|_|"Blender PNG decoder rejected image metadata.")?;
+    let expected=width.checked_mul(height).and_then(|n|n.checked_mul(4))
+        .ok_or("Blender PNG decoded byte count overflow.")? as usize;
+    if expected>512*512*4 || reader.output_buffer_size()!=expected{
+        return Err("Blender PNG decoded RGBA buffer exceeds exact render bounds.".into());
+    }
+    let mut pixels=vec![0u8;expected];
+    let frame=reader.next_frame(&mut pixels)
+        .map_err(|_|"Blender PNG compressed pixel stream is invalid.")?;
+    if frame.width as u64!=width || frame.height as u64!=height
+        ||frame.color_type!=png::ColorType::Rgba
+        ||frame.bit_depth!=png::BitDepth::Eight
+        ||frame.buffer_size()!=expected{
+        return Err("Blender PNG decoded frame differs from exact RGBA8 geometry.".into());
+    }
+    // Fixed proof renders must contain at least a small visible, nonuniform
+    // image. Generic approved PNG plans may legitimately render a blank frame.
+    let reserved=matches!(path.file_name().and_then(|v|v.to_str()),
+        Some("shuvi41-proof-render.png"|"shuvi41-proof-material-render.png"));
+    if reserved{
+        let mut visible=0u64;
+        let mut first=None;
+        let mut varied=false;
+        for pixel in pixels.chunks_exact(4){
+            if pixel[3]==0{continue;}
+            visible+=1;
+            let rgb=[pixel[0],pixel[1],pixel[2]];
+            if let Some(original)=first{
+                if original!=rgb{varied=true;}
+            }else{first=Some(rgb);}
+        }
+        if visible<16 || !varied{
+            return Err("Fixed Blender proof render contains no meaningful visible pixel variation.".into());
+        }
+    }
+    Ok(())
+}
 
 fn crc_step(mut crc:u32,bytes:&[u8])->u32{
     for byte in bytes {
@@ -106,7 +153,7 @@ pub(crate) fn validate(path:&Path,width:u64,height:u64)->Result<(),String>{
             if source.read(&mut trailing).map_err(|_|"PNG EOF verification failed.")?!=0 {
                 return Err("Blender PNG has trailing bytes after IEND.".into());
             }
-            return Ok(());
+            return verify_decoded_pixels(path,width,height);
         }
     }
     Err("Blender PNG missing IEND or exceeds bounded chunk count.".into())
@@ -133,9 +180,9 @@ mod tests{
         let crc=crc_step(crc_step(u32::MAX,kind),payload);
         png.extend_from_slice(&(!crc).to_be_bytes());
     }
-    fn image()->Vec<u8>{
-        // Valid zlib stored-block payload for a transparent 64x64 RGBA still.
-        let raw=vec![0u8;64*(1+64*4)];
+    fn image_from_raw(raw:Vec<u8>)->Vec<u8>{
+        // Deterministic valid zlib stored block; production supports normal
+        // Blender deflate streams through the pinned PNG decoder.
         let count=raw.len() as u16;
         let mut compressed=vec![0x78,0x01,0x01];
         compressed.extend_from_slice(&count.to_le_bytes());
@@ -150,6 +197,49 @@ mod tests{
         add_chunk(&mut png,b"IEND",&[]);
         png
     }
+    fn image()->Vec<u8>{image_from_raw(vec![0u8;64*(1+64*4)])}
+    fn proof_image()->Vec<u8>{
+        let mut raw=vec![0u8;64*(1+64*4)];
+        for row in 0..64usize{
+            for col in 0..64usize{
+                let offset=row*(1+64*4)+1+col*4;
+                raw[offset]=(col*3) as u8;
+                raw[offset+1]=(row*2) as u8;
+                raw[offset+2]=90;
+                raw[offset+3]=255;
+            }
+        }
+        image_from_raw(raw)
+    }
+    #[test]
+    fn rejects_invalid_zlib_even_when_all_png_chunk_crcs_are_valid(){
+        let file=Temp::new();let mut bad=image();
+        let chunk_offset=33usize;
+        let len=u32::from_be_bytes(bad[chunk_offset..chunk_offset+4].try_into().unwrap()) as usize;
+        let content_offset=chunk_offset+8;
+        bad[content_offset]=0; // invalid zlib compression method
+        let crc=crc_step(crc_step(u32::MAX,b"IDAT"),
+            &bad[content_offset..content_offset+len]);
+        bad[content_offset+len..content_offset+len+4]
+            .copy_from_slice(&(!crc).to_be_bytes());
+        file.write(&bad);
+        assert!(validate(&file.0,64,64).is_err());
+    }
+    #[test]
+    fn fixed_demo_render_must_have_visible_nonuniform_decoded_pixels(){
+        let dir=std::env::temp_dir().join(format!("shuvi41-pixels-{}",Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        for name in ["shuvi41-proof-render.png","shuvi41-proof-material-render.png"]{
+            let path=dir.join(name);
+            fs::write(&path,image()).unwrap();
+            assert!(validate(&path,64,64).is_err(),"blank {name}");
+            fs::write(&path,proof_image()).unwrap();
+            assert!(validate(&path,64,64).is_ok(),"visible {name}");
+            fs::remove_file(path).unwrap();
+        }
+        fs::remove_dir(dir).unwrap();
+    }
+
     #[test]
     fn accepts_complete_crc_valid_non_interlaced_blender_png(){
         let file=Temp::new();file.write(&image());
