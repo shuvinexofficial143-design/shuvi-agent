@@ -1,6 +1,7 @@
 # M60 — Verify the ACTUAL NSIS packaged payload, not a synthetic fixture.
 # Read-only EXTRACT to an isolated temporary directory; NEVER execute the
-# installer, installed main app, SHA worker, shell script or arbitrary code.
+# installer or desktop main app. M61 runs ONLY the verified fixed SHA worker
+# on temporary fixtures using the approved immutable read-only protocol.
 # This is UNSIGNED build-package acceptance only, not Windows installation.
 [CmdletBinding()]
 param(
