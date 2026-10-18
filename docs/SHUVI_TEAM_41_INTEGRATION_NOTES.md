@@ -1714,3 +1714,31 @@ It is an upstream host trial, **not** the Shuvi native audited
 ToolAction/Windows Job Object/scheduler/Adobe workflow; real host
 execution, visual quality and integrated approval acceptance remain
 unverified. See docs/SHUVI41_BLENDER_HOST_ACCEPTANCE.md.
+
+
+## Team-41 — native artifact-promotion cancellation fence (source / CI)
+
+In-flight owner close was already able to stop a persistent Blender command
+while the broker response was pending. Its proof-validation tail needed the
+same protection: after a successful broker reply, Rust may spend additional
+time checking input checkpoint stability, the exact final file name,
+independent .blend/PNG bytes, decoded PNG data and the typed handoff manifest.
+A close during that native verification interval must not silently return
+an older `status=verified`.
+
+The native persistent `blender_session_plan` now rechecks its shared
+cancellation bit after manifest construction, and before returning successful
+evidence enters the exact-session UUID/PID cancellation lane. It verifies
+the authenticated registered owner and canceled state while holding that
+lane, then releases the action session mutex **before** releasing the
+cancellation mutex. An earlier owner close thus wins before promotion and
+retires the entire session with outcome unknown/no automatic retry;
+a later close occurs only after proof success has been finalized. Foreign
+UUID/PID, missing authority or poisoned lane fail closed. All existing
+read-only source gates, stage continuity and approval scopes remain in place.
+
+New native Rust regression tests exercise canceled/wrong-owner promotion and
+concurrent close serialization at this final barrier. Node source-contract
+tests require this ordering strictly *after* manifest/reopen verification.
+This is a **source/CI safety fix**, not proof of a real Windows/Blender
+close race, visual quality, production Adobe import or native host E2E.

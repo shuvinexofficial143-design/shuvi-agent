@@ -348,3 +348,23 @@ test("stage two requires private, previously verified Stage-1 receipt within sam
   'if name == "shuvi41-proof-stage1.blend" and source_before is not None:'
  ])assert.ok(broker.includes(token),token);
 });
+
+test("verified native plan cannot report success after close races with artifact attestation",()=>{
+  const plan=native.slice(native.indexOf("pub(crate) fn plan("),
+    native.indexOf("pub(crate) fn close("));
+  for(const contract of [
+    "fn verified_response_eligible(target:&CancellationTarget,id:&str,pid:u32)",
+    "fn native_success_promotion_rejects_cancelled_or_mismatched_owner(",
+    "fn completion_lane_serializes_owner_stop_with_final_native_promotion("
+  ])assert.ok(native.includes(contract),contract);
+  const artifactProof=plan.indexOf("blender_artifact_manifest::build(");
+  const extraCancelCheck=plan.indexOf("session.invalidated.load(Ordering::Acquire)",artifactProof);
+  const finalBarrier=plan.indexOf("let completion=match registry.cancellable.lock()",extraCancelCheck);
+  const lastDecision=plan.indexOf("verified_response_eligible(target,id,session.child.id())",finalBarrier);
+  const slotRelease=plan.indexOf("drop(slot);",lastDecision);
+  const laneRelease=plan.indexOf("drop(completion);",slotRelease);
+  assert.ok(artifactProof>=0 && extraCancelCheck>artifactProof,"must recheck stop after disk proof");
+  assert.ok(finalBarrier>extraCancelCheck && lastDecision>finalBarrier,"must require exact owner before success");
+  assert.ok(slotRelease>lastDecision && laneRelease>slotRelease,"current lock releases before stop lane");
+  assert.match(plan,/if result.is_err\(\)\{[\s\S]*?retire\(registry,state,&mut slot\);[\s\S]*?return result;/);
+});

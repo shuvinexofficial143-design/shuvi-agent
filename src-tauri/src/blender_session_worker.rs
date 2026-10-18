@@ -125,6 +125,16 @@ fn invalidate_exact_session(target:&CancellationTarget,id:&str)->Result<u32,Stri
     Ok(target.pid)
 }
 
+fn verified_response_eligible(target:&CancellationTarget,id:&str,pid:u32)->Result<(),String>{
+    if target.session_id!=id || target.pid!=pid{
+        return Err("Verified Blender response does not match the exact active native session owner.".into());
+    }
+    if target.invalidated.load(Ordering::Acquire){
+        return Err("Blender session was canceled during native proof verification; outcome unknown, never replay.".into());
+    }
+    Ok(())
+}
+
 struct OwnedSession {
     child:Child,
     input:ChildStdin,
@@ -1041,6 +1051,11 @@ pub(crate) fn plan(
             session.verified_first_stage_sha256=None;
             session.verified_first_stage_fingerprint=None;
         }
+        // Native rehash/reopen/manifest verification may outlast the broker
+        // reply. Do not promote a previously received success after close.
+        if session.invalidated.load(Ordering::Acquire){
+            return Err("Blender session canceled before final artifact promotion; outcome unknown, never replay.".into());
+        }
         Ok(json!({"status":"verified","session_id":id,"full_plan_completed":true,
             "source_action_id":execution_action_id,"artifact":response["artifact"],
             "checkpoint_reopen":response["checkpoint_reopen"],"plan_steps":response["executed_steps"],
@@ -1049,9 +1064,45 @@ pub(crate) fn plan(
             "approved_plan_lineage":plan_lineage,
             "input_checkpoint":session.source_checkpoint.as_ref().map(|s|s.json())}))
     })();
-    if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
-        retire(registry,state,&mut slot);
+    if result.is_err(){
+        if slot.as_ref().is_some_and(|s|s.session_id==id){
+            retire(registry,state,&mut slot);
+        }
+        return result;
     }
+    // Final native completion barrier: close() can reach cancellable while
+    // native proof rehashing holds current. Lock its lane, recheck the exact
+    // UUID/PID and invalidation, then release current BEFORE releasing this
+    // lane. A close concurrent with proof checking therefore wins before
+    // promotion, or is ordered after completed verification.
+    let completion=match registry.cancellable.lock(){
+        Ok(guard)=>guard,
+        Err(_)=>{
+            if slot.as_ref().is_some_and(|s|s.session_id==id){
+                retire(registry,state,&mut slot);
+            }
+            return Err("Blender completion cancellation authority was poisoned; outcome unknown.".into());
+        }
+    };
+    let decision=slot.as_ref()
+        .ok_or_else(||"Blender session disappeared before verified response promotion.".to_string())
+        .and_then(|session|{
+            let target=completion.as_ref()
+                .ok_or_else(||"Blender verified response lacks native cancellation authority.".to_string())?;
+            if session.session_id!=id {
+                return Err("Blender session identity changed before verified response promotion.".into());
+            }
+            verified_response_eligible(target,id,session.child.id())
+        });
+    if let Err(error)=decision{
+        drop(completion);
+        if slot.as_ref().is_some_and(|s|s.session_id==id){
+            retire(registry,state,&mut slot);
+        }
+        return Err(error);
+    }
+    drop(slot);
+    drop(completion);
     result
 }
 
@@ -1116,6 +1167,44 @@ pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Resul
 #[cfg(test)]
 mod exact_session_cancellation_tests{
     use super::*;
+    #[test]
+    fn native_success_promotion_rejects_cancelled_or_mismatched_owner(){
+        let signal=Arc::new(AtomicBool::new(false));
+        let target=CancellationTarget{session_id:"owned-A".into(),pid:84,
+            invalidated:signal.clone()};
+        verified_response_eligible(&target,"owned-A",84).unwrap();
+        assert!(verified_response_eligible(&target,"owned-B",84).is_err());
+        assert!(verified_response_eligible(&target,"owned-A",85).is_err());
+        invalidate_exact_session(&target,"owned-A").unwrap();
+        assert!(verified_response_eligible(&target,"owned-A",84).is_err());
+    }
+    #[test]
+    fn completion_lane_serializes_owner_stop_with_final_native_promotion(){
+        let registry=Arc::new(SessionRegistry::default());
+        let signal=Arc::new(AtomicBool::new(false));
+        *registry.cancellable.lock().unwrap()=Some(CancellationTarget{
+            session_id:"owned-A".into(),pid:84,invalidated:signal.clone()});
+        let final_gate=registry.cancellable.lock().unwrap();
+        verified_response_eligible(final_gate.as_ref().unwrap(),"owned-A",84).unwrap();
+        let other=registry.clone();
+        let (tx,rx)=mpsc::sync_channel(1);
+        let (ready_tx,ready_rx)=mpsc::sync_channel(1);
+        let cancel=thread::spawn(move||{
+            ready_tx.send(()).unwrap();
+            let gate=other.cancellable.lock().unwrap();
+            tx.send(invalidate_exact_session(gate.as_ref().unwrap(),"owned-A"))
+                .unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Holding the completion gate blocks an in-flight close's attempt
+        // to mutate the exact cancellation bit after proof acceptance.
+        assert!(matches!(rx.recv_timeout(Duration::from_millis(150)),Err(RecvTimeoutError::Timeout)));
+        assert!(!signal.load(Ordering::Acquire));
+        drop(final_gate);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(),84);
+        assert!(signal.load(Ordering::Acquire));
+        cancel.join().unwrap();
+    }
     #[test]
     fn wrong_session_id_cannot_invalidate_another_owner(){
         let signal=Arc::new(AtomicBool::new(false));
