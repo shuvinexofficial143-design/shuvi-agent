@@ -119,6 +119,7 @@ struct OwnedSession {
     source_checkpoint:Option<SourceCheckpoint>,
     // Private native-only sequencing state. Never sourced from model JSON.
     verified_first_stage_sha256:Option<String>,
+    verified_first_stage_fingerprint:Option<String>,
     created:Instant,
     watchdog_stop:Arc<AtomicBool>,
     invalidated:Arc<AtomicBool>,
@@ -388,6 +389,7 @@ pub(crate) fn start(
         output_dir:output_dir.into(),allow_render,
         source_checkpoint:source_checkpoint.clone(),
         verified_first_stage_sha256:None,
+        verified_first_stage_fingerprint:None,
         created:Instant::now(),watchdog_stop,
         invalidated,
         #[cfg(target_os="windows")]
@@ -875,9 +877,9 @@ pub(crate) fn objects(
     result
 }
 
-fn stage_two_dependency(stage:Option<&str>,verified_first_stage_sha256:Option<&str>)
+fn stage_two_dependency(stage:Option<&str>,sha256:Option<&str>,fingerprint:Option<&str>)
     ->Result<(),String>{
-    if stage==Some("model2")&&verified_first_stage_sha256.is_none(){
+    if stage==Some("model2")&&(sha256.is_none()||fingerprint.is_none()){
         return Err("Fixed Stage 2 requires a previously native-verified Stage 1 in this exact owned Blender session.".into());
     }
     Ok(())
@@ -914,11 +916,13 @@ pub(crate) fn plan(
             allow_render,true
         )?;
         let stage=plan_lineage.get("acceptance_stage").and_then(Value::as_str);
-        stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref())?;
+        stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref(),
+            session.verified_first_stage_fingerprint.as_deref())?;
         // Any other approved mutating plan between stages consumes the
         // continuation. An unverified/failed run retires this session.
         if stage!=Some("model2"){
             session.verified_first_stage_sha256=None;
+            session.verified_first_stage_fingerprint=None;
         }
         if let Some(ref input)=session.source_checkpoint {
             blender_input_checkpoint::still_current(input)?;
@@ -967,6 +971,8 @@ pub(crate) fn plan(
                 ||provenance.get("source_stage").and_then(Value::as_str)!=Some("model1")
                 ||provenance.get("source_sha256").and_then(Value::as_str)
                     !=session.verified_first_stage_sha256.as_deref()
+                ||provenance.get("source_scene_fingerprint").and_then(Value::as_str)
+                    !=session.verified_first_stage_fingerprint.as_deref()
                 ||provenance.get("source_scene_revision").and_then(Value::as_str)
                     !=Some(expected_scene_revision)
                 ||provenance.get("fixed_stage_geometry_verified").and_then(Value::as_bool)!=Some(true)
@@ -983,10 +989,16 @@ pub(crate) fn plan(
             &response,Path::new(&session.output_dir),action_id,Some(id))?;
         // Arm the second stage ONLY after independent native SHA, typed
         // execution and reopened-geometry evidence have all succeeded.
-        session.verified_first_stage_sha256=if stage==Some("model1"){
-            Some(response["artifact"]["sha256"].as_str()
-                .ok_or("Stage 1 saved artifact digest missing.")?.to_owned())
-        }else{None};
+        if stage==Some("model1"){
+            session.verified_first_stage_sha256=Some(response["artifact"]["sha256"].as_str()
+                .ok_or("Stage 1 saved artifact digest missing.")?.to_owned());
+            session.verified_first_stage_fingerprint=Some(
+                response["checkpoint_reopen"]["fingerprint"].as_str()
+                    .ok_or("Stage 1 independently reopened fingerprint missing.")?.to_owned());
+        }else{
+            session.verified_first_stage_sha256=None;
+            session.verified_first_stage_fingerprint=None;
+        }
         Ok(json!({"status":"verified","session_id":id,"full_plan_completed":true,
             "source_action_id":execution_action_id,"artifact":response["artifact"],
             "checkpoint_reopen":response["checkpoint_reopen"],"plan_steps":response["executed_steps"],
@@ -1026,10 +1038,12 @@ mod fixed_stage_native_sequence_tests{
     #[test]
     fn model2_requires_native_owned_prior_stage1_success(){
         for stage in [None,Some("model1"),Some("render"),Some("look")]{
-            stage_two_dependency(stage,None).unwrap();
+            stage_two_dependency(stage,None,None).unwrap();
         }
-        assert!(stage_two_dependency(Some("model2"),None).is_err());
-        stage_two_dependency(Some("model2"),Some(&"a".repeat(64))).unwrap();
+        assert!(stage_two_dependency(Some("model2"),None,None).is_err());
+        assert!(stage_two_dependency(Some("model2"),Some(&"a".repeat(64)),None).is_err());
+        assert!(stage_two_dependency(Some("model2"),None,Some(&"b".repeat(64))).is_err());
+        stage_two_dependency(Some("model2"),Some(&"a".repeat(64)),Some(&"b".repeat(64))).unwrap();
         // No source plan, external-reported stage, or forged action JSON
         // can set verified_first_stage_sha256 on an OwnedSession.
     }

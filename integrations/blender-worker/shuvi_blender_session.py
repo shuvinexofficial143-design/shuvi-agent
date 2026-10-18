@@ -374,6 +374,7 @@ def verify_in_session_stage1(controller, previous: dict, expected_revision: str)
         raise ValueError("Stage 1 saved bytes changed during Stage 2 preflight")
     return {"verified": True, "source_stage": "model1",
             "source_sha256": expected_sha,
+            "source_scene_fingerprint": live["fingerprint"],
             "source_scene_revision": expected_revision,
             "fixed_stage_geometry_verified": True,
             "active_camera_name": "Shuvi41ProofCamera"}

@@ -318,7 +318,9 @@ test("the independently inspected fixed Copper shader must be the one wired to a
 test("stage two requires private, previously verified Stage-1 receipt within same persistent session",()=>{
  for(const token of [
   "verified_first_stage_sha256:Option<String>",
-  "fn stage_two_dependency(stage:Option<&str>,verified_first_stage_sha256:Option<&str>)",
+  "verified_first_stage_fingerprint:Option<String>",
+  'provenance.get("source_scene_fingerprint").and_then(Value::as_str)',
+  "fn stage_two_dependency(stage:Option<&str>,sha256:Option<&str>,fingerprint:Option<&str>)",
   "stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref())?",
   'provenance.get("source_stage").and_then(Value::as_str)!=Some("model1")',
   'provenance.get("source_sha256").and_then(Value::as_str)',

@@ -400,6 +400,7 @@ class ReopenTests(unittest.TestCase):
             self.assertTrue(good["verified"])
             self.assertEqual(good["source_sha256"], digest)
             self.assertEqual(good["source_scene_revision"], "a" * 64)
+            self.assertEqual(good["source_scene_fingerprint"], "f" * 64)
             self.assertEqual(good["source_stage"], "model1")
             for bad in [
                 {**receipt, "checkpoint_reopen": {

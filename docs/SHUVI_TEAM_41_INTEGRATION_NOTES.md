@@ -1605,3 +1605,18 @@ Python fixture tests exercise positive and tampered Stage-1 source
 SHA/camera/geometry/revision. Rust tests cover same-session ordering
 and one-off/file substitution rejection. No live licensed Windows
 Blender host acceptance or visual quality proof is claimed.
+
+## Team-41 — private native Stage-1 scene fingerprint match before Stage-2
+
+The same-session Stage-2 preflight now carries both the Stage-1 saved
+file SHA **and** the read-only live scene fingerprint. Native Shuvi
+stores the independent Stage-1 reopened `fingerprint` privately,
+alongside its SHA-256, only after all Stage-1 artifact/manifest
+verification succeeds. The Stage-2 receipt must exactly match
+both native-private digests and its current expected scene revision
+before its output can become verified. A forged or stale broker
+response cannot gain Stage-2 completion simply by quoting the
+Stage-1 file SHA while omitting or substituting the live geometry
+fingerprint. Later plans clear both continuation values atomically
+before dispatch. This remains source and CI verification; no Blender
+GUI runtime or editing is performed by this change.

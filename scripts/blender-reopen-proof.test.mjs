@@ -186,6 +186,7 @@ test("stage two checks saved Stage-1 SHA and live mesh/camera before any PlanRun
   "live.get(\"fingerprint\") != prior.get(\"fingerprint\")",
   '"fixed_stage_geometry_verified": True',
   "Stage 1 saved bytes changed during Stage 2 preflight",
+  '"source_scene_fingerprint": live["fingerprint"]',
   "stage1_source_proof = verify_in_session_stage1(",
   'result["model_stage_source_preflight"] = stage1_source_proof',
   "test_stage2_live_preflight_correlates_previous_bytes_shape_and_revision",
