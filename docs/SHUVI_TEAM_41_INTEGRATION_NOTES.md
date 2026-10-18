@@ -1400,3 +1400,16 @@ output nodes and linked overrides of fixed input sockets are rejected.
 The same source-bound shader verifier is applied on saved-look writer,
 independent read-only reopen, and just before material rendering.
 No arbitrary shader mutation or Blender UI execution was introduced.
+
+## Pinned upstream material shader contract QA
+
+A new source-only integration test imports the actual pinned
+`shuvi_blender_agent.material_nodes.MaterialNodeOperations` and
+`ShaderInspect` parser, confirms `material.shader_inspect` is
+registered as a `SafetyClass.READ_ONLY` typed tool, and verifies
+that the upstream `inspection.revision` algorithm matches the fixed
+Copper shader validator's canonical snapshot hash. This protects
+against accidentally relying solely on locally mocked shader tools.
+It uses a synthetic readback snapshot for the digest check; a real
+Blender graph still requires the separate, explicitly approved host
+acceptance run. No upstream repo files were changed.

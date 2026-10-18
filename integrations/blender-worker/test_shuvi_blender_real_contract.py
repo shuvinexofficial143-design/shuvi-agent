@@ -265,6 +265,38 @@ class ContractController:
 
 
 class ActualUpstreamPlanRunnerTests(unittest.TestCase):
+    def test_pinned_typed_shader_read_only_contract_matches_persistence_validator(self):
+        # Exercise the *real pinned upstream* parser and typed tool registry;
+        # fake Blender scene data here must not be mistaken for a bpy run.
+        from shuvi_blender_agent.material_nodes import MaterialNodeOperations, ShaderInspect
+        from shuvi_blender_agent.safety import SafetyClass
+        from shuvi_blender_agent.inspection import revision
+        from shuvi_blender_session import verify_shuvi41_copper_shader
+
+        parsed = ShaderInspect.parse({"material_name": "Shuvi41ProofCopper"})
+        self.assertEqual(parsed.material_name, "Shuvi41ProofCopper")
+        tool = next(t for t in MaterialNodeOperations.__new__(MaterialNodeOperations).tools()
+                    if t.name == "material.shader_inspect")
+        self.assertEqual(tool.classification, SafetyClass.READ_ONLY)
+        self.assertEqual(tool.parse({"material_name": "Shuvi41ProofCopper"}), parsed)
+        snapshot = {
+            "material_name": "Shuvi41ProofCopper",
+            "node_count": 2, "link_count": 1,
+            "nodes": [
+                {"name": "Material Output", "type": "OUTPUT_MATERIAL", "image": None},
+                {"name": "Principled BSDF", "type": "BSDF_PRINCIPLED", "image": None},
+            ],
+            "links": [["Principled BSDF", "BSDF", "Material Output", "Surface"]],
+            "principled": {
+                "base_color": [0.8, 0.41, 0.16, 1.0],
+                "metallic": 0.65, "roughness": 0.31,
+            },
+            "auxiliary": {}, "textures": {},
+        }
+        snapshot["shader_revision"] = revision(snapshot)
+        self.assertEqual(verify_shuvi41_copper_shader(snapshot),
+                         snapshot["shader_revision"])
+
     def test_actual_upstream_parser_accepts_three_fixed_production_recipes(self):
         for stage in ("model1", "model2", "render", "look", "look_render"):
             native = build(stage, START_REV)
