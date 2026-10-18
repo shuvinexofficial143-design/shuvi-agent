@@ -1,5 +1,8 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
+const projectLifecycle = require("./project-lifecycle.js");
+const {newExportProbe, assessExportProbe, rememberProbe} = require("./encoder-export-evidence.js");
+const {validatedMediaPaths, assessSequenceMediaEvidence} = require("./media-workflow-evidence.js");
 const transcriptRebuild = require("./transcript-rebuild.js");
 const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
 
@@ -22,6 +25,7 @@ let deliverySession = null;
 const deliveredCommands = new Set();
 
 const mediaEncoderEvents = [];
+const recentShuviExportProbes = [];
 let mediaEncoderListenersBound = false;
 let mediaEncoderEventSequence = 0;
 
@@ -317,7 +321,8 @@ async function inspectMediaEncoderEvents(argumentsValue) {
     count: Math.min(limit, mediaEncoderEvents.length),
     events: mediaEncoderEvents.slice(-limit),
     correlatedToShuviExport: false,
-    note: "Encoder jobID/event evidence is observational until an exact Shuvi request-to-native-job correlation is proven."
+    shuviExportObservations: recentShuviExportProbes.slice(-16).map(probe => assessExportProbe(probe, mediaEncoderEvents)),
+    note: "Output-matched native queue/completion candidates are observational. External Adobe writers, exact request attribution, real output bytes and encoder completion remain unverified."
   };
 }
 
@@ -712,34 +717,38 @@ async function createBin(argumentsValue) {
 }
 
 async function importMedia(argumentsValue) {
-  const paths = Array.isArray(argumentsValue?.paths)
-    ? argumentsValue.paths.filter((value) => typeof value === "string" && value.trim())
-    : [];
-
-  if (!paths.length) throw new Error("No media paths were supplied.");
-  if (paths.length > 100) throw new Error("A maximum of 100 files can be imported per command.");
-
+  const paths = validatedMediaPaths(argumentsValue?.paths, 100);
   const project = await requireProject();
   const root = await project.getRootItem();
-  const success = await project.importFiles(paths, true, root, false);
-
-  if (!success) throw new Error("Premiere reported that media import did not complete.");
-
+  // Inspect first: always importing every requested path duplicates pre-existing
+  // media, while the old readback could incorrectly certify those old clips.
+  const before = await findClipItemsForPaths(project, root, paths);
+  if (!before.scanComplete || before.duplicatePaths.length) {
+    throw new Error("Premiere media inventory is incomplete or ambiguous; no import was attempted.");
+  }
+  const missing = before.missing;
+  if (missing.length) {
+    const success = await project.importFiles(missing, true, root, false);
+    if (!success) throw new Error("Premiere reported that media import did not complete.");
+  }
   const observed = await findClipItemsForPaths(project, root, paths);
   const verified = observed.scanComplete
+    && observed.duplicatePaths.length === 0
     && observed.missing.length === 0
     && observed.clips.length === paths.length;
 
   return {
-    imported: paths.length,
+    imported: missing.length,
+    alreadyPresent: paths.length - missing.length,
     projectName: project.name || null,
     observedCount: observed.clips.length,
     missing: observed.missing,
+    duplicatePaths: observed.duplicatePaths,
     scanComplete: observed.scanComplete,
     scannedItems: observed.scannedItems,
     verificationStatus: verified ? "verified_readback" : "accepted_unverified",
     uncertain: !verified,
-    retrySafe: false
+    retrySafe: !missing.length && verified
   };
 }
 
@@ -833,9 +842,11 @@ async function findClipItemsForPaths(project, root, paths) {
   await collectClipMedia(root, media, budget);
 
   const matches = new Map();
+  const duplicatePaths = new Set();
   for (const item of media) {
-    if (wanted.has(item.normalizedPath) && !matches.has(item.normalizedPath)) {
-      matches.set(item.normalizedPath, item.clip);
+    if (wanted.has(item.normalizedPath)) {
+      if (matches.has(item.normalizedPath)) duplicatePaths.add(item.normalizedPath);
+      else matches.set(item.normalizedPath, item.clip);
     }
   }
 
@@ -844,6 +855,7 @@ async function findClipItemsForPaths(project, root, paths) {
       .map((path) => matches.get(normalizeMediaPath(path)))
       .filter(Boolean),
     missing: paths.filter((path) => !matches.has(normalizeMediaPath(path))),
+    duplicatePaths: paths.filter(path => duplicatePaths.has(normalizeMediaPath(path))),
     scanComplete: budget.complete,
     scannedItems: 1000 - budget.remaining
   };
@@ -854,9 +866,7 @@ async function createSequenceFromMedia(argumentsValue) {
     typeof argumentsValue?.name === "string"
       ? argumentsValue.name.trim()
       : "";
-  const paths = Array.isArray(argumentsValue?.paths)
-    ? argumentsValue.paths.filter((value) => typeof value === "string" && value.trim())
-    : [];
+  const paths = validatedMediaPaths(argumentsValue?.paths, 50);
 
   if (!name) throw new Error("Sequence name is required.");
   if (!paths.length) throw new Error("At least one media path is required.");
@@ -867,7 +877,7 @@ async function createSequenceFromMedia(argumentsValue) {
 
   let resolved = await findClipItemsForPaths(project, root, paths);
 
-  if (resolved.missing.length && !resolved.scanComplete) {
+  if (!resolved.scanComplete || resolved.duplicatePaths.length) {
     throw new Error("Project media scan exceeded the bounded inspection budget; cannot safely import missing media.");
   }
   if (resolved.missing.length) {
@@ -876,7 +886,7 @@ async function createSequenceFromMedia(argumentsValue) {
     resolved = await findClipItemsForPaths(project, root, paths);
   }
 
-  if (resolved.missing.length || !resolved.scanComplete) {
+  if (resolved.missing.length || !resolved.scanComplete || resolved.duplicatePaths.length) {
     throw new Error(
       !resolved.scanComplete
         ? "Project media scan exceeded the bounded inspection budget after import; sequence creation was not attempted."
@@ -884,6 +894,12 @@ async function createSequenceFromMedia(argumentsValue) {
     );
   }
 
+  // Bind the exact native project items before creating a sequence.
+  const expectedMediaIds = await Promise.all(resolved.clips.map(clip => projectItemId(clip)));
+  if (expectedMediaIds.some(id => id == null || String(id).length === 0)
+      || new Set(expectedMediaIds.map(String)).size !== paths.length) {
+    throw new Error("Cannot create an auditable sequence from ambiguous project-item IDs.");
+  }
   const beforeSequences = await project.getSequences();
   const beforeGuids = new Set((Array.isArray(beforeSequences) ? beforeSequences : [])
     .map(value => plainGuid(value.guid)).filter(Boolean));
@@ -907,7 +923,14 @@ async function createSequenceFromMedia(argumentsValue) {
     .filter(value => plainGuid(value.guid) === sequenceGuid);
   const sequenceWasNew = !beforeGuids.has(sequenceGuid) && matching.length === 1;
   const activeSequenceVerified = plainGuid(activeSequence?.guid) === sequenceGuid;
-  const verified = sequenceWasNew && activeSequenceVerified;
+  let timelineEvidence;
+  try {
+    timelineEvidence = await inspectNewSequenceTimeline(activeSequence, expectedMediaIds);
+  } catch {
+    // Creation may already have happened. Never retry blindly after a failed readback.
+    timelineEvidence = {verified: false, reason: "Native timeline readback failed after creation."};
+  }
+  const verified = sequenceWasNew && activeSequenceVerified && timelineEvidence.verified === true;
 
   return {
     created: true,
@@ -916,10 +939,51 @@ async function createSequenceFromMedia(argumentsValue) {
     mediaCount: resolved.clips.length,
     sequenceWasNew,
     activeSequenceVerified,
+    timelineContentVerified: timelineEvidence.verified === true,
+    timelineEvidence,
     verificationStatus: verified ? "verified_readback" : "accepted_unverified",
     uncertain: !verified,
     retrySafe: false
   };
+}
+
+
+// Read only the newly created sequence. An observed GUID without real,
+ // positive-duration project-item clips is not a verified editable timeline.
+async function inspectNewSequenceTimeline(sequence, expectedMediaIds) {
+  if (!sequence) return assessSequenceMediaEvidence(expectedMediaIds, [], false);
+  const videoCount = await sequence.getVideoTrackCount();
+  const audioCount = await sequence.getAudioTrackCount();
+  let scanComplete = Number.isInteger(videoCount) && Number.isInteger(audioCount)
+    && videoCount >= 0 && audioCount >= 0 && videoCount + audioCount <= 24;
+  const observed = [];
+  let budget = 240;
+  if (scanComplete) {
+    for (const kind of ["video", "audio"]) {
+      const count = kind === "video" ? videoCount : audioCount;
+      for (let index = 0; index < count; index += 1) {
+        const track = kind === "video" ? await sequence.getVideoTrack(index)
+          : await sequence.getAudioTrack(index);
+        const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+        if (!Array.isArray(items) || items.length > budget) {
+          scanComplete = false;
+          break;
+        }
+        for (const item of items) {
+          budget -= 1;
+          const [media, start, end] = await Promise.all([
+            item.getProjectItem(), item.getStartTime(), item.getEndTime()
+          ]);
+          observed.push({
+            mediaId: await projectItemId(media),
+            startSeconds: start?.seconds, endSeconds: end?.seconds
+          });
+        }
+      }
+      if (!scanComplete) break;
+    }
+  }
+  return assessSequenceMediaEvidence(expectedMediaIds, observed, scanComplete);
 }
 
 async function saveProject() {
@@ -1847,7 +1911,7 @@ async function exportSequenceFrame(argumentsValue) {
   };
 }
 
-async function exportSequence(argumentsValue) {
+async function exportSequence(argumentsValue, bridgeRequestId) {
   requireDeliveryCapability("sequence");
   const output =
     typeof argumentsValue?.output === "string"
@@ -1870,8 +1934,11 @@ async function exportSequence(argumentsValue) {
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
 
+  // The bridge request ID is distinct from any Adobe native encoder jobID.
+  // Snapshot before export: an event seen earlier is never retroactively ours.
+  const probe = newExportProbe(bridgeRequestId, output, mediaEncoderEventSequence, Date.now());
   const manager = premiere.EncoderManager.getManager();
-  if (queueToAme) bindMediaEncoderListeners();
+  bindMediaEncoderListeners();
 
   if (queueToAme && !manager.isAMEInstalled) {
     throw new Error("Adobe Media Encoder is not installed.");
@@ -1892,9 +1959,15 @@ async function exportSequence(argumentsValue) {
   if (!success) {
     throw new Error("Premiere rejected the export request.");
   }
+  // Retain an observational readback after a successful native dispatch. A
+  // delayed queued event may appear in a later media_encoder_events call.
+  rememberProbe(recentShuviExportProbes, probe);
+  const exportEventEvidence = assessExportProbe(probe, mediaEncoderEvents);
 
   return {
     accepted: true,
+    bridgeRequestId,
+    exportEventEvidence,
     state: queueToAme ? "queued" : "accepted",
     completionVerified: false,
     overwriteRequested: overwrite,
@@ -3828,6 +3901,48 @@ async function moveProjectItem(argumentsValue) {
   };
 }
 
+// Bounded read-only project media inventory. Each row carries an exact Adobe
+// ProjectItem ID and observed path for a separately approved relink. No guessing.
+async function inspectProjectMediaAudit() {
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  let budget = 1000, complete = true, scannedItems = 0;
+  const entries = [], ids = new Set();
+  async function walk(folder, depth) {
+    if (depth > 8) { complete = false; return; }
+    const children = await folder.getItems();
+    if (!Array.isArray(children)) { complete = false; return; }
+    for (const item of children) {
+      if (budget-- <= 0) { complete = false; return; }
+      scannedItems += 1;
+      const clip = asClipProjectItem(item);
+      if (clip) {
+        if (entries.length >= 500) { complete = false; return; }
+        const itemId = await projectItemId(clip);
+        let mediaPath = null, offline = null;
+        try { mediaPath = await clip.getMediaFilePath(); } catch { complete = false; }
+        try { offline = await clip.isOffline(); } catch { complete = false; }
+        if (!itemId || ids.has(String(itemId)) || typeof mediaPath !== "string"
+            || !mediaPath || mediaPath.length > 4096 || typeof offline !== "boolean") {
+          complete = false;
+        } else {
+          ids.add(String(itemId));
+          entries.push({itemId:String(itemId),name:String(item.name || "").slice(0,256),
+            mediaPath,offline});
+        }
+      } else {
+        const child = asFolderItem(item);
+        if (child) await walk(child,depth+1);
+      }
+    }
+  }
+  await walk(root,0);
+  return {projectGuid:plainGuid(project.guid),projectPath:project.path || null,
+    entries,entryCount:entries.length,scannedItems,scanComplete:complete,
+    inspectionOnly:true,editingAuthorized:false,
+    note:"An observed path and item ID are not approval to relink; verify file identity, obtain approval, then recheck host path before mutation."};
+}
+
 async function relinkMedia(argumentsValue) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -3838,8 +3953,11 @@ async function relinkMedia(argumentsValue) {
       ? argumentsValue.newPath.trim()
       : "";
   const overrideCompatibility = Boolean(argumentsValue?.overrideCompatibility);
+  const expectedPreviousPath = typeof argumentsValue?.expectedPreviousPath === "string"
+    ? argumentsValue.expectedPreviousPath : "";
 
-  if (!itemId || !newPath) {
+  if (!itemId || !newPath || !expectedPreviousPath || expectedPreviousPath.length > 4096
+      || expectedPreviousPath !== expectedPreviousPath.trim()) {
     throw new Error("itemId and newPath are required.");
   }
 
@@ -3856,26 +3974,46 @@ async function relinkMedia(argumentsValue) {
   }
 
   const previousPath = await clip.getMediaFilePath();
-  const success = await clip.changeMediaFilePath(newPath, overrideCompatibility);
+  if (normalizeMediaPath(previousPath) !== normalizeMediaPath(expectedPreviousPath)) {
+    throw new Error("Premiere relink source changed since the observed media audit; no edit was sent.");
+  }
+  if (normalizeMediaPath(previousPath) === normalizeMediaPath(newPath)) {
+    throw new Error("Premiere relink is a no-op; source already matches the requested destination.");
+  }
+  const freshItemBefore = await findProjectItemById(root,itemId);
+  const freshClipBefore = freshItemBefore ? asClipProjectItem(freshItemBefore) : null;
+  if (!freshClipBefore || await projectItemId(freshClipBefore) !== itemId ||
+      normalizeMediaPath(await freshClipBefore.getMediaFilePath()) !== normalizeMediaPath(expectedPreviousPath)) {
+    throw new Error("Premiere media identity/path changed during relink preflight; inspect again.");
+  }
+  const success = await freshClipBefore.changeMediaFilePath(newPath, overrideCompatibility);
   if (!success) throw new Error("Premiere could not relink the requested media.");
 
-  let observedPath = null;
+  let observedPath = null, observedOffline = null, observedId = null;
   try {
     const freshItem = await findProjectItemById(root,itemId);
     const freshClip = freshItem ? asClipProjectItem(freshItem) : null;
-    if (freshClip) observedPath = await freshClip.getMediaFilePath();
+    if (freshClip) {
+      observedId = await projectItemId(freshClip);
+      observedPath = await freshClip.getMediaFilePath();
+      observedOffline = await freshClip.isOffline();
+    }
   } catch {
     observedPath = null;
   }
-  const verified = typeof observedPath === "string"
+  const verified = observedId === itemId && observedOffline === false
+    && typeof observedPath === "string"
     && normalizeMediaPath(observedPath) === normalizeMediaPath(newPath);
 
   return {
     relinked: true,
     itemId,
     previousPath,
+    expectedPreviousPath,
     newPath,
     observedPath,
+    observedId,
+    observedOffline,
     overrideCompatibility,
     verificationStatus: verified ? "verified_readback" : "accepted_unverified",
     uncertain: !verified,
@@ -7199,6 +7337,105 @@ async function insertMappedGraphic(args) {
   return result;
 }
 
+// Read-only independent rescan of previously owner-approved mapped caption
+// graphics. Inserting earlier clips changes sorted clip indexes, so match all
+// stable source/sequence/clip attributes and intentionally ignore ONLY index.
+function stableCaptionClipSignature(signature) {
+  if (typeof signature !== "string" || signature.length > 4096) throw Error("Caption receipt has no bounded native clip signature.");
+  let parts;
+  try { parts = JSON.parse(signature); } catch { throw Error("Malformed native caption clip receipt identity."); }
+  if (!Array.isArray(parts) || parts.length !== 12 ||
+      typeof parts[0] !== "string" || !parts[0] ||
+      typeof parts[2] !== "string" || !parts[2] ||
+      parts[3] !== "video" || !Number.isInteger(parts[4]) ||
+      !Number.isInteger(parts[5]) || parts[5] < 0 ||
+      typeof parts[6] !== "string" || !parts[6] ||
+      typeof parts[7] !== "string" ||
+      parts.slice(8).some(t => typeof t !== "string" || !/^-?\d{1,30}$/.test(t))) {
+    throw Error("Native caption clip signature is incomplete or malformed.");
+  }
+  parts[5] = null;
+  return JSON.stringify(parts);
+}
+async function verifyCaptionGraphics(args) {
+  const {mapping, items, receipts, videoTrack, _expected: expected} = args || {};
+  if (!Array.isArray(items) || items.length < 1 || items.length > 32 ||
+      !Array.isArray(receipts) || receipts.length !== items.length ||
+      !Number.isInteger(videoTrack) || videoTrack < 0 || videoTrack > 128 ||
+      typeof expected?.project_guid !== "string" || !expected.project_guid ||
+      typeof expected?.sequence_guid !== "string" || !expected.sequence_guid ||
+      !Array.isArray(expected?.clips) || expected.clips.length !== 0) {
+    throw Error("Caption audit requires one bounded, exact project/sequence and all applied per-clip receipts.");
+  }
+  for (const item of items) validateGraphicItem(mapping, item);
+  const project = await requireProject();
+  const sequence = await assertExpectedProject(project, expected);
+  if (videoTrack >= await sequence.getVideoTrackCount()) throw Error("Native caption destination video track no longer exists.");
+  const nativeRows = await graphicsTrackSnapshot(project, sequence, videoTrack, "video");
+  const indexed = new Map();
+  for (const row of nativeRows) {
+    const key = stableCaptionClipSignature(row.key);
+    if (!indexed.has(key)) indexed.set(key, []);
+    indexed.get(key).push(row);
+  }
+  const used = new Set(), verified = [];
+  for (let i = 0; i < items.length; i++) {
+    const entry = receipts[i], proof = entry?.result, clip = proof?.expected?.clips;
+    if (entry?.index !== i || proof?.status !== "applied" || proof?.populated !== true ||
+        proof?.uncertain !== false || !Array.isArray(clip) || clip.length !== 1 ||
+        clip[0]?.kind !== "video" || clip[0]?.track !== videoTrack ||
+        proof.expected.project_guid !== expected.project_guid ||
+        proof.expected.sequence_guid !== expected.sequence_guid ||
+        proof.expected.project_path !== (expected.project_path ?? null)) {
+      throw Error("Caption audit refuses missing, partial, stale or unverified original native insertion receipt.");
+    }
+    const key = stableCaptionClipSignature(clip[0].signature);
+    const found = indexed.get(key) || [];
+    if (found.length !== 1 || used.has(key)) {
+      throw Error("Previously inserted caption clip is missing or ambiguously identifiable after timeline changes.");
+    }
+    used.add(key);
+    const row = found[0], item = items[i];
+    const start = item.seconds, end = start + item.duration_seconds;
+    if (!Number.isFinite(start) || !Number.isFinite(end) ||
+        !Number.isFinite(proof.start_seconds) || !Number.isFinite(proof.end_seconds) ||
+        Math.abs(proof.start_seconds - start) > 0.001 ||
+        Math.abs(proof.end_seconds - end) > 0.001 ||
+        Math.abs(row.start.seconds - start) > 0.001 ||
+        Math.abs(row.end.seconds - end) > 0.001) {
+      throw Error("Caption clip timing differs from the original selected SRT or native insertion receipt.");
+    }
+    const inspected = await inspectProperties(row.item);
+    const plan = mappedPlan(mapping, item, inspected);
+    if (!Array.isArray(plan.settings) || plan.skipped.length ||
+        plan.settings.length !== mapping.fields.length || inspected.truncated) {
+      throw Error("Caption MOGRT parameters are incomplete or no longer statically inspectable.");
+    }
+    for (const setting of plan.settings) {
+      const components = inspected.components.filter(c =>
+        c.matchName === setting.component_match_name &&
+        c.displayName === setting.component_display_name);
+      if (components.length !== 1) throw Error("Caption property component became ambiguous.");
+      const parameters = components[0].params.filter(p => p.displayName === setting.param_display_name);
+      if (parameters.length !== 1 || !equivalentStaticEffectValue(setting.value, parameters[0].value)) {
+        throw Error("Native caption graphic field readback differs from the selected text/style mapping.");
+      }
+    }
+    verified.push({source_index:i, original_clip_index:clip[0].clip_index,
+      independently_matched_by_stable_identity:true,
+      matched_start_seconds:row.start.seconds, matched_end_seconds:row.end.seconds,
+      verified_field_count:plan.settings.length});
+  }
+  // A second identity inspection catches project switches during the audit.
+  await assertExpectedProject(await requireProject(), expected);
+  return {schemaVersion:1, readOnly:true, native_current_session_caption_values_verified:true,
+    verified_count:verified.length, requested_count:items.length, items:verified,
+    original_receipt_rechecked:true, native_clip_identity_rechecked:true,
+    timeline_clip_index_may_change:true, project_file_saved_verified:false,
+    cross_session_reopen_verified:false, visual_quality_verified:false,
+    exported_video_verified:false, retrySafe:false};
+}
+
 async function planAudioAutomation(args) {
   if (args.kind !== "audio") throw new Error("Audio automation requires an audio target.");
   const target = await resolveNamedAudioParam(args);
@@ -7386,6 +7623,8 @@ async function dispatchNativeCommand(command) {
       return await moveProjectItem(command.arguments || {});
     case "relink_media":
       return await relinkMedia(command.arguments || {});
+    case "inspect_project_media_audit":
+      return await inspectProjectMediaAudit();
     case "inspect_media_interpretation":
       return await inspectMediaInterpretation(command.arguments || {});
     case "prepare_media_item":
@@ -7446,10 +7685,16 @@ async function dispatchNativeCommand(command) {
       return await insertMulticamItem(command.arguments || {});
     case "save_project":
       return await saveProject();
+    case "create_project":
+      return await projectLifecycle.createProject(premiere.Project, command.arguments || {}, plainGuid);
+    case "open_project":
+      return await projectLifecycle.openProject(premiere.Project, command.arguments || {}, plainGuid);
     case "project_diagnostics":
       return await projectDiagnostics(command.arguments || {});
     case "inspect_mogrt_properties":
       return await inspectMogrtProperties(command.arguments);
+    case "verify_caption_graphics":
+      return await verifyCaptionGraphics(command.arguments || {});
     case "plan_mogrt_recipe":
       return await planMogrtRecipe(command.arguments);
     case "insert_mapped_graphic":
@@ -7565,7 +7810,7 @@ async function dispatchNativeCommand(command) {
     case "export_sequence_frame":
       return await exportSequenceFrame(command.arguments || {});
     case "export_sequence":
-      return await exportSequence(command.arguments || {});
+      return await exportSequence(command.arguments || {}, command.id);
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }

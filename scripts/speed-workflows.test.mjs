@@ -84,7 +84,7 @@ test("native route reads the inspected clip and never starts an edit transaction
     Constants: { TrackItemType: { CLIP: 1 } }
   };
   const panel = { require: name => {
-    if (name === "./project-diagnostics.js" || name === "./transcript-rebuild.js") return {};
+    if (name === "./project-diagnostics.js" || name === "./transcript-rebuild.js" || name === "./project-lifecycle.js" || name === "./media-workflow-evidence.js" || name === "./encoder-export-evidence.js") return {};
     if (name === "./caption-workflows.js" || name === "./mogrt-workflows.js" || name === "./graphics-batch.js") return {};
     if (name === "./audio-plans.js") return {};
     if (name === "./recipe-plans.js") return {};

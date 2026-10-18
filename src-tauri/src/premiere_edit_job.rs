@@ -1,8 +1,10 @@
 use serde::{Deserialize,Serialize};
 use serde_json::Value;
+use sha2::{Digest,Sha256};
 use std::{fs,io::{Read,Write},path::Path};
 
 use crate::premiere_assembly::Assembly;
+use crate::premiere_caption_graphics::Request as CaptionGraphicsRequest;
 use crate::premiere_delivery::{FrameBatch, InterchangeRequest};
 use crate::premiere_finishing::Request as FinishingRequest;
 use crate::premiere_layering::{LayerBatch, TrackOrganization};
@@ -48,6 +50,7 @@ pub struct Request {
     #[serde(default)] pub track_organization:Option<TrackOrganization>,
     #[serde(default)] pub layering:Option<LayerBatch>,
     #[serde(default)] pub finishing:Option<FinishingRequest>,
+    #[serde(default)] pub caption_graphics:Option<CaptionGraphicsRequest>,
     #[serde(default)] pub work_area:Option<WorkArea>,
     #[serde(default)] pub review:Option<ReviewSpec>,
     #[serde(default)] pub frame_delivery:Option<FrameBatch>,
@@ -64,6 +67,8 @@ pub struct Phase {
     #[serde(default)] pub action_id:Option<String>,
     #[serde(default)] pub review_session_id:Option<String>,
     #[serde(default)] pub error:Option<String>,
+    #[serde(default)] pub proposal_issued_at_ms:Option<u64>,
+    #[serde(default)] pub proposal_arguments_sha256:Option<String>,
 }
 
 #[derive(Debug,Clone,Deserialize,Serialize)]
@@ -91,6 +96,13 @@ fn bounded<T:Serialize>(value:&T)->Result<Vec<u8>,String>{
     let bytes=serde_json::to_vec(value).map_err(|e|e.to_string())?;
     if bytes.len()>MAX_STATE_BYTES{return Err("Premiere edit job exceeds the 128 KiB state limit.".into());}
     Ok(bytes)
+}
+
+/// Digest the exact JSON arguments displayed for separate owner approval.
+/// The same serde_json encoding is used when the typed action is staged.
+pub fn proposal_arguments_sha256(args:&Value)->Result<String,String>{
+    let bytes=serde_json::to_vec(args).map_err(|e|e.to_string())?;
+    Ok(format!("{:x}",Sha256::digest(bytes)))
 }
 
 impl ReviewSpec {
@@ -132,7 +144,7 @@ impl Request {
         }
         if self.media_prep.is_none()&&self.scene_detection.is_none()&&self.transcript_cuts.is_none()
             &&self.transcript_rebuild.is_none()&&self.assembly.is_none()&&self.track_organization.is_none()
-            &&self.layering.is_none()&&self.finishing.is_none()&&self.work_area.is_none()
+            &&self.layering.is_none()&&self.finishing.is_none()&&self.caption_graphics.is_none()&&self.work_area.is_none()
             &&self.review.is_none()&&self.frame_delivery.is_none()&&self.interchange_export.is_none()&&self.export.is_none(){
             return Err("Edit job contains no executable phase.".into());
         }
@@ -164,6 +176,7 @@ impl Request {
         if let Some(value)=&self.track_organization{value.validate()?;}
         if let Some(value)=&self.layering{value.validate()?;}
         if let Some(value)=&self.finishing{value.validate()?;}
+        if let Some(value)=&self.caption_graphics{value.validate()?;}
         if let Some(value)=&self.work_area{value.validate()?;}
         if let Some(value)=&self.review{value.validate()?;}
         if let Some(value)=&self.frame_delivery{value.validate()?;}
@@ -184,12 +197,15 @@ impl Job {
         now_ms:u64,
     )->Result<Self,String>{
         request.validate()?;
+        if request.caption_graphics.is_some() && project_path.is_none_or(str::is_empty) {
+            return Err("Caption graphics edit job needs a previously saved exact .prproj path before approved native insertion/save.".into());
+        }
         if project_guid.is_empty()||project_guid.len()>240||sequence_guid.is_empty()||sequence_guid.len()>240 {
             return Err("Edit job requires live project and sequence identity.".into());
         }
         let mut phases=Vec::new();
         let mut push=|id:&str,tool:&str|phases.push(Phase{
-            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,review_session_id:None,error:None
+            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,review_session_id:None,error:None,proposal_issued_at_ms:None,proposal_arguments_sha256:None
         });
         if request.media_prep.is_some(){push("media_prep","premiere_prepare_media_batch");}
         if request.scene_detection.is_some(){
@@ -205,6 +221,11 @@ impl Job {
         if request.layering.is_some(){push("layering","premiere_layer_clips");}
         if request.finishing.is_some(){push("finishing","premiere_finish_media_batch");}
         if request.work_area.is_some(){push("work_area","premiere_set_work_area");}
+        if request.caption_graphics.is_some(){
+            push("caption_graphics_plan","premiere_plan_caption_graphics");
+            push("caption_graphics_apply","premiere_apply_caption_graphics");
+            push("caption_project_save","premiere_save_project");
+        }
         if let Some(review)=&request.review{
             push("review",if review.iterative{"premiere_review_session_start"}else{"premiere_review_frames"});
         }
@@ -250,12 +271,86 @@ impl Job {
     }
     pub fn phase(&self,id:&str)->Option<&Phase>{self.phases.iter().find(|phase|phase.id==id)}
 
+    /// Persist the first proposal time for the current phase. A repeated read-only
+    /// proposal must not reset the receipt boundary and invalidate a legitimate
+    /// separately approved action that is awaiting recording.
+    pub fn issue_proposal(&mut self,phase_id:&str,now_ms:u64)->Result<(),String>{
+        if self.status!="running"||now_ms<self.created_at_ms {
+            return Err("Edit-job proposal requires a running job and valid timestamp.".into());
+        }
+        let phase=self.pending_mut().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id {return Err("Cannot issue a proposal for a later phase.".into());}
+        if phase.proposal_issued_at_ms.is_none() {
+            phase.proposal_issued_at_ms=Some(now_ms);
+        }
+        self.updated_at_ms=now_ms;
+        bounded(self)?;
+        Ok(())
+    }
+
+    /// Bind the exact phase arguments before issuing a separate approved tool.
+    /// Repeated Next calls may recheck the plan but may not replace a staged
+    /// first proposal with different arguments or silently reapprove it.
+    pub fn bind_proposal_arguments(&mut self,phase_id:&str,args:&Value)->Result<(),String>{
+        let hash=proposal_arguments_sha256(args)?;
+        let phase=self.pending_mut().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id || phase.proposal_issued_at_ms.is_none(){
+            return Err("Edit-job arguments require the current issued phase.".into());
+        }
+        match phase.proposal_arguments_sha256.as_deref(){
+            Some(previous) if previous!=hash=>return Err(
+                "Edit-job proposed arguments changed after approval boundary; start a fresh bounded job.".into()),
+            Some(_)=>{},
+            None=>phase.proposal_arguments_sha256=Some(hash),
+        }
+        bounded(self)?;
+        Ok(())
+    }
+
+    /// Compare the exact approved argument digest with the durable executed
+    /// audit receipt. A missing/legacy token never grants completion.
+    pub fn require_bound_action_arguments(&self,phase_id:&str,audit_detail:&str)->Result<(),String>{
+        let phase=self.pending().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id{return Err("Edit-job receipt phase changed.".into());}
+        let expected=phase.proposal_arguments_sha256.as_deref()
+            .ok_or("Edit-job phase has no bound approval arguments; rerun premiere_edit_job_next.")?;
+        let candidate=audit_detail.split(" | ").find_map(|part|
+            part.strip_prefix("premiere_args_sha256="));
+        if candidate!=Some(expected) || !expected.bytes().all(|b|b.is_ascii_hexdigit()) || expected.len()!=64 {
+            return Err("Executed Premiere action arguments do not match the exact issued edit-job phase.".into());
+        }
+        Ok(())
+    }
+
+    /// Audit receipt gate: tool identity and live project/sequence are verified
+    /// by the caller; this also forbids pre-proposal receipts and same-job replay.
+    /// This does not cryptographically attest full action arguments or cross-job use.
+    pub fn require_issued_action_receipt(
+        &self,phase_id:&str,action_id:&str,receipt_timestamp_ms:u64
+    )->Result<(),String>{
+        if self.status!="running" {return Err("Edit job is not running.".into());}
+        let phase=self.pending().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id {return Err("Audit receipt belongs to another edit-job phase.".into());}
+        let issued=phase.proposal_issued_at_ms
+            .ok_or("Run premiere_edit_job_next and inspect the proposal before recording its approved action.")?;
+        if receipt_timestamp_ms<issued || receipt_timestamp_ms<self.created_at_ms {
+            return Err("Action receipt predates this edit-job phase proposal.".into());
+        }
+        if action_id.is_empty() || self.phases.iter().any(|p|p.action_id.as_deref()==Some(action_id)) {
+            return Err("Action ID is absent or already consumed by another phase of this edit job.".into());
+        }
+        Ok(())
+    }
+
     pub fn record(&mut self,phase_id:&str,tool:&str,action_id:&str,success:bool,now_ms:u64)->Result<(),String>{
         if self.status!="running"{return Err("Edit job is not running.".into());}
         let expected=self.pending().ok_or("Edit job has no pending phase.")?;
         if expected.id!=phase_id||expected.tool!=tool{return Err("Audit receipt does not match the next edit-job phase.".into());}
         if expected.id=="review" && expected.tool=="premiere_review_session_start" {
             return Err("Iterative review phase completes only from bounded completed review-session evidence.".into());
+        }
+        if action_id.is_empty() || self.phases.iter().any(|p|p.action_id.as_deref()==Some(action_id)) {
+            return Err("An action ID must not be absent or reused in this edit job.".into());
         }
         let phase=self.pending_mut().ok_or("Edit job phase disappeared.")?;
         phase.action_id=Some(action_id.into());
@@ -274,11 +369,32 @@ impl Job {
         Ok(())
     }
 
+    /// A completed iterative review may only come from a session created
+    /// after the specific review-phase proposal, not merely after Job::new.
+    pub fn require_issued_review_session(&self,phase_id:&str,review_created_at_ms:u64)->Result<(),String>{
+        if self.status!="running" {return Err("Edit job is not running.".into());}
+        let phase=self.pending().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id || phase.tool!="premiere_review_session_start" {
+            return Err("Review session is not for the pending iterative phase.".into());
+        }
+        let issued=phase.proposal_issued_at_ms
+            .ok_or("Run premiere_edit_job_next before creating a review session.")?;
+        if phase.proposal_arguments_sha256.is_none() || review_created_at_ms<issued
+            || review_created_at_ms<self.created_at_ms || review_created_at_ms==0 {
+            return Err("Completed review session predates the exact bound editing phase proposal.".into());
+        }
+        Ok(())
+    }
+
     pub fn record_review(&mut self,phase_id:&str,review_session_id:&str,now_ms:u64)->Result<(),String>{
         if self.status!="running"{return Err("Edit job is not running.".into());}
         let expected=self.pending().ok_or("Edit job has no pending phase.")?;
         if expected.id!=phase_id || expected.tool!="premiere_review_session_start" {
             return Err("Completed review evidence does not match the next iterative review phase.".into());
+        }
+        // Even typed internal recording cannot bypass the phase proposal gate.
+        if expected.proposal_issued_at_ms.is_none() || expected.proposal_arguments_sha256.is_none(){
+            return Err("Iterative review requires an issued bound phase before completion.".into());
         }
         if review_session_id.is_empty()||review_session_id.len()>80 {
             return Err("Invalid bounded review session ID.".into());
@@ -317,6 +433,93 @@ impl Job {
         self.transcript_expected=Some(expected);
         self.updated_at_ms=now_ms;
         bounded(self)?;
+        Ok(())
+    }
+
+    /// Cross-check the persisted phase ledger against a plan freshly derived
+    /// from the immutable, validated request. This is corruption/recovery
+    /// detection, not authentication of who authored the JSON on disk.
+    pub fn validate_state(&self)->Result<(),String>{
+        if self.created_at_ms>self.updated_at_ms || self.job_id.is_empty()
+            ||self.job_id.len()>80 {
+            return Err("Edit-job state has invalid identity or timestamps.".into());
+        }
+        let fresh=Self::new(self.job_id.clone(),self.request.clone(),&self.project_guid,
+            self.project_path.as_deref(),&self.sequence_guid,self.created_at_ms)?;
+        if self.phases.len()!=fresh.phases.len() {
+            return Err("Edit-job persisted phase count differs from the typed request.".into());
+        }
+        let mut seen_incomplete=false;
+        let mut pending_count=0usize;
+        let mut failed_count=0usize;
+        let mut cancelled_count=0usize;
+        let mut action_ids=std::collections::HashSet::new();
+        for (phase,canonical) in self.phases.iter().zip(fresh.phases.iter()) {
+            if phase.id!=canonical.id || phase.tool!=canonical.tool {
+                return Err("Edit-job phase order or tool differs from the typed request.".into());
+            }
+            let completed=phase.state=="completed";
+            if completed && seen_incomplete {
+                return Err("Edit-job has an approved phase after an incomplete phase.".into());
+            }
+            if !completed {seen_incomplete=true;}
+            match phase.state.as_str(){
+                "completed"=>{},
+                "pending"=>pending_count+=1,
+                "failed"=>failed_count+=1,
+                "cancelled"=>cancelled_count+=1,
+                _=>return Err("Edit-job phase has an unknown persisted state.".into()),
+            }
+            if let Some(hash)=phase.proposal_arguments_sha256.as_deref(){
+                if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit())
+                    ||phase.proposal_issued_at_ms.is_none(){
+                    return Err("Edit-job stored proposed argument hash is malformed or not issued.".into());
+                }
+            }
+            if let Some(at)=phase.proposal_issued_at_ms {
+                if at<self.created_at_ms || at>self.updated_at_ms {
+                    return Err("Edit-job proposal timestamp falls outside its recorded lifetime.".into());
+                }
+                if phase.state=="pending" && pending_count>1 {
+                    return Err("A later pending edit-job phase cannot have a proposal.".into());
+                }
+            }
+            if let Some(id)=phase.action_id.as_deref() {
+                if id.is_empty() || !action_ids.insert(id) ||
+                    !matches!(phase.state.as_str(),"completed"|"failed") {
+                    return Err("Edit-job action receipt is duplicated or placed on an unexecuted phase.".into());
+                }
+            }
+            if phase.tool=="premiere_review_session_start" {
+                if phase.action_id.is_some()
+                    || (completed && phase.review_session_id.as_deref().is_none_or(str::is_empty))
+                    || (!completed && phase.review_session_id.is_some()) {
+                    return Err("Iterative review requires a completed session instead of a single action receipt.".into());
+                }
+            } else if phase.review_session_id.is_some() ||
+                (matches!(phase.state.as_str(),"completed"|"failed") && phase.action_id.is_none()) {
+                return Err("Edit-job completed/failed phase lacks its typed action receipt.".into());
+            }
+            if (phase.state=="failed") != phase.error.is_some() {
+                return Err("Edit-job failure reason does not match the recorded phase state.".into());
+            }
+        }
+        if failed_count>1 || (failed_count>0 && cancelled_count>0) ||
+            (cancelled_count>0 && pending_count>0) {
+            return Err("Edit-job has inconsistent failed/cancelled/pending phase markers.".into());
+        }
+        let complete=!seen_incomplete;
+        let expected_terminal=if self.request.export.is_some(){"export_dispatched"}
+            else if self.request.interchange_export.is_some(){"interchange_delivered"}
+            else if self.request.frame_delivery.is_some(){"frames_delivered"}
+            else{"complete"};
+        let status_matches=if failed_count==1 {self.status=="failed"}
+            else if cancelled_count>0 {self.status=="cancelled"}
+            else if complete {self.status==expected_terminal}
+            else {matches!(self.status.as_str(),"running"|"paused") && pending_count>0};
+        if !status_matches {
+            return Err("Edit-job status does not match the ordered phase ledger.".into());
+        }
         Ok(())
     }
 
@@ -398,7 +601,68 @@ pub fn expectation_for_scene(job:&Job,timeline:&Value,request:&SceneDetectionReq
     expected.validate()?;Ok(expected)
 }
 
+/// Detect an action receipt already recorded by a different Shuvi 40 edit job.
+/// Restrict the scan to this application's edit-job store; a damaged or
+/// interrupted sibling record blocks receipt advancement for owner recovery.
+/// The caller owns the existing native execution lease during this scan/save.
+/// Fail-closed sibling scan shared by typed action and completed review evidence.
+/// The caller owns Shuvi's existing native execution lease while checking
+/// and persisting the job, so no second local phase can claim the same receipt.
+fn require_unclaimed_evidence_in_store<F>(
+    current_path:&Path,job_id:&str,evidence_id:&str,already_used:F
+)->Result<(),String>
+where F:Fn(&Job,&str)->bool {
+    if evidence_id.is_empty(){return Err("Missing edit-job evidence identity.".into());}
+    let folder=current_path.parent().ok_or("Edit-job state has no parent folder.")?;
+    let mut visited=0usize;
+    for entry in fs::read_dir(folder).map_err(|e|e.to_string())? {
+        let entry=entry.map_err(|e|e.to_string())?;
+        let name=entry.file_name();
+        let name=name.to_str().ok_or("Edit-job folder has an unrecognized file name.")?;
+        if name.ends_with(".json.tmp") || name.ends_with(".json.bak") {
+            return Err("Edit-job store has unresolved sibling update files; inspect recovery before recording receipts.".into());
+        }
+        if !name.ends_with(".json") {continue;}
+        visited+=1;
+        if visited>2048 {return Err("Edit-job receipt scan exceeds bounded store size.".into());}
+        let id=name.strip_suffix(".json").ok_or("Invalid edit-job store entry.")?;
+        uuid::Uuid::parse_str(id).map_err(|_|"Edit-job store has an invalid UUID filename.")?;
+        let path=entry.path();
+        let meta=fs::symlink_metadata(&path).map_err(|e|e.to_string())?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return Err("Edit-job store contains an unsafe JSON state file.".into());
+        }
+        if path==current_path {continue;}
+        let other=load(&path)?;
+        if other.job_id!=id {
+            return Err("Edit-job state ID differs from its durable filename.".into());
+        }
+        if other.job_id==job_id {
+            return Err("Edit-job store has a duplicate canonical job identity.".into());
+        }
+        if already_used(&other,evidence_id) {
+            return Err("Approved edit-job action or completed review session was already consumed by another job.".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn require_unclaimed_action_in_store(
+    current_path:&Path,job_id:&str,action_id:&str
+)->Result<(),String>{
+    require_unclaimed_evidence_in_store(current_path,job_id,action_id,|other,action_id|
+        other.phases.iter().any(|phase|phase.action_id.as_deref()==Some(action_id)))
+}
+
+pub fn require_unclaimed_review_session_in_store(
+    current_path:&Path,job_id:&str,review_session_id:&str
+)->Result<(),String>{
+    require_unclaimed_evidence_in_store(current_path,job_id,review_session_id,|other,review_session_id|
+        other.phases.iter().any(|phase|phase.review_session_id.as_deref()==Some(review_session_id)))
+}
+
 pub fn save(path:&Path,job:&Job)->Result<(),String>{
+    job.validate_state()?;
     let bytes=bounded(job)?;
     if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|e|e.to_string())?;}
     let temp=path.with_extension("json.tmp");
@@ -425,7 +689,7 @@ pub fn load(path:&Path)->Result<Job,String>{
         .read_to_end(&mut bytes).map_err(|e|e.to_string())?;
     if bytes.len()>MAX_STATE_BYTES{return Err("Edit-job state exceeds 128 KiB.".into());}
     let job:Job=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
-    job.request.validate()?;
+    job.validate_state()?;
     bounded(&job)?;
     Ok(job)
 }
@@ -462,7 +726,7 @@ mod tests{
             schema_version:1,job_type:"custom".into(),talking_head_strategy:None,
             media_prep:None,scene_detection:None,transcript_cuts:None,transcript_rebuild:None,
             assembly:None,track_organization:None,layering:None,finishing:Some(request.clone()),
-            work_area:None,review:None,frame_delivery:None,interchange_export:None,export:None
+            caption_graphics:None,work_area:None,review:None,frame_delivery:None,interchange_export:None,export:None
         },"p",None,"s",1).unwrap();
         let timeline=json!({"truncated":false,"videoTracks":[{"index":0,"items":[{"targetSignature":"sig"}]}],"audioTracks":[]});
         assert_eq!(expectation_for_finishing(&job,&timeline,&request).unwrap().clips[0].signature,"sig");
@@ -489,7 +753,9 @@ mod tests{
         let mut job=Job::new("job".into(),request,"p",Some("C:/test.prproj"),"s",1).unwrap();
         assert_eq!(job.phases[0].tool,"premiere_review_session_start");
         assert!(job.record("review","premiere_review_session_start","action",true,2).is_err());
-        job.record_review("review","review-session",2).unwrap();
+        job.issue_proposal("review",2).unwrap();
+        job.bind_proposal_arguments("review",&json!({"objective":"Check framing","sample_times":[1,5]})).unwrap();
+        job.record_review("review","review-session",3).unwrap();
         assert_eq!(job.status,"complete");
         assert_eq!(job.phases[0].review_session_id.as_deref(),Some("review-session"));
     }
@@ -500,6 +766,236 @@ mod tests{
         });
         let request:Request=serde_json::from_value(value).unwrap();
         assert!(request.validate().is_err());
+    }
+    #[test]fn selective_caption_graphics_join_audited_job_before_review_and_export(){
+        let value=json!({
+            "schema_version":1,"job_type":"social_reel",
+            "caption_graphics":{"schema_version":1,
+                "captions":{"schema_version":1,"output":"C:/captions.srt","duration_seconds":30.0,
+                    "cues":[{"start_seconds":1.0,"end_seconds":2.0,"text":"नमस्ते","selected":true}]},
+                "expected_srt_sha256":"a".repeat(64),"mapping":"Captions","revision":1,
+                "video_track":2,"audio_track":0,"static_fields":{}},
+            "review":{"seconds":[1.5],"prompt":"Check caption appearance"},
+            "export":{"output":"C:/out.mp4","overwrite":false}
+        });
+        let request:Request=serde_json::from_value(value).unwrap();
+        assert!(Job::new("no-project".into(),request.clone(),"P",None,"S",1).is_err());
+        let mut job=Job::new("captions".into(),request,"P",Some("C:/edit.prproj"),"S",1).unwrap();
+        assert_eq!(job.phases.iter().map(|p|p.tool.as_str()).collect::<Vec<_>>(),vec![
+            "premiere_plan_caption_graphics","premiere_apply_caption_graphics",
+            "premiere_save_project","premiere_review_frames",
+            "premiere_plan_export","premiere_export_sequence"]);
+        assert!(job.record("caption_graphics_apply","premiere_apply_caption_graphics","bad",true,2).is_err());
+        for (index,id,tool) in [
+            (0,"caption_graphics_plan","premiere_plan_caption_graphics"),
+            (1,"caption_graphics_apply","premiere_apply_caption_graphics"),
+            (2,"caption_project_save","premiere_save_project"),
+        ] {
+            assert_eq!(job.phases[index].id,id);
+            job.record(id,tool,&format!("action{index}"),true,index as u64+2).unwrap();
+        }
+        assert_eq!(job.pending().unwrap().id,"review");
+    }
+    #[test]fn caption_request_rejects_missing_source_selection_without_any_job(){
+        let request:Request=serde_json::from_value(json!({
+            "schema_version":1,"job_type":"social_reel",
+            "caption_graphics":{"schema_version":1,
+                "captions":{"schema_version":1,"output":"C:/captions.srt","duration_seconds":30.0,
+                    "cues":[{"start_seconds":1.0,"end_seconds":2.0,"text":"text","selected":false}]},
+                "expected_srt_sha256":"a".repeat(64),"mapping":"Captions","revision":1,
+                "video_track":2,"audio_track":0,"static_fields":{}}
+        })).unwrap();
+        assert!(request.validate().is_err());
+    }
+    #[test]fn edit_job_phase_proposal_and_receipt_are_temporally_bound(){
+        let mut job=Job::new("job".into(),request(),"P",Some("C:/job.prproj"),"S",100).unwrap();
+        assert!(job.require_issued_action_receipt("review","first",101).is_err());
+        assert!(job.issue_proposal("export_preflight",101).is_err());
+        job.issue_proposal("review",110).unwrap();
+        assert!(job.require_issued_action_receipt("review","first",109).is_err());
+        assert!(job.require_issued_action_receipt("review","first",110).is_ok());
+        job.issue_proposal("review",120).unwrap();
+        assert_eq!(job.pending().unwrap().proposal_issued_at_ms,Some(110));
+        job.record("review","premiere_review_frames","first",true,121).unwrap();
+        job.issue_proposal("export_preflight",130).unwrap();
+        assert!(job.require_issued_action_receipt("export_preflight","first",131).is_err());
+        assert!(job.require_issued_action_receipt("export_preflight","second",129).is_err());
+        assert!(job.require_issued_action_receipt("export_preflight","second",131).is_ok());
+        assert!(job.record("export_preflight","premiere_plan_export","first",true,132).is_err());
+        job.record("export_preflight","premiere_plan_export","second",true,132).unwrap();
+        assert_eq!(job.pending().unwrap().id,"export_dispatch");
+    }
+    #[test]fn legacy_edit_job_phase_is_compatible_but_requires_new_proposal(){
+        let job=Job::new("old".into(),request(),"P",None,"S",100).unwrap();
+        let mut old=serde_json::to_value(&job).unwrap();
+        for phase in old["phases"].as_array_mut().unwrap() {
+            phase.as_object_mut().unwrap().remove("proposal_issued_at_ms");
+        }
+        let mut restored:Job=serde_json::from_value(old).unwrap();
+        assert_eq!(restored.pending().unwrap().proposal_issued_at_ms,None);
+        assert!(restored.require_issued_action_receipt("review","older",101).is_err());
+        restored.issue_proposal("review",105).unwrap();
+        assert!(restored.require_issued_action_receipt("review","new",105).is_ok());
+    }
+    #[test]fn persisted_edit_job_ledger_rejects_skipped_or_reordered_phases(){
+        let good=Job::new("ledger".into(),request(),"P",None,"S",100).unwrap();
+        assert!(good.validate_state().is_ok());
+        let mut missing=good.clone();missing.phases.remove(0);
+        assert!(missing.validate_state().is_err());
+        let mut swapped=good.clone();swapped.phases.swap(0,1);
+        assert!(swapped.validate_state().is_err());
+        let mut forged=good.clone();forged.phases[0].tool="premiere_save_project".into();
+        assert!(forged.validate_state().is_err());
+    }
+    #[test]fn persisted_edit_job_ledger_rejects_fabricated_progress(){
+        let good=Job::new("ledger".into(),request(),"P",None,"S",100).unwrap();
+        let mut fabricated=good.clone();
+        fabricated.phases[0].state="completed".into();
+        assert!(fabricated.validate_state().is_err());
+        let mut premature=good.clone();premature.status="export_dispatched".into();
+        assert!(premature.validate_state().is_err());
+        let mut shifted=good.clone();
+        shifted.phases[1].state="completed".into();
+        shifted.phases[1].action_id=Some("invalid".into());
+        assert!(shifted.validate_state().is_err());
+        let mut invalid_time=good.clone();
+        invalid_time.phases[1].proposal_issued_at_ms=Some(9999);
+        assert!(invalid_time.validate_state().is_err());
+    }
+    #[test]fn persisted_edit_job_receipts_do_not_alias_or_replay(){
+        let mut good=Job::new("ledger".into(),request(),"P",None,"S",100).unwrap();
+        good.issue_proposal("review",101).unwrap();
+        good.record("review","premiere_review_frames","same-id",true,102).unwrap();
+        good.issue_proposal("export_preflight",103).unwrap();
+        good.record("export_preflight","premiere_plan_export","new-id",true,104).unwrap();
+        assert!(good.validate_state().is_ok());
+        let mut repeat=good.clone();
+        repeat.phases[1].action_id=Some("same-id".into());
+        assert!(repeat.validate_state().is_err());
+        let mut following=Job::new("future-proposal".into(),request(),"P",None,"S",100).unwrap();
+        following.phases[2].proposal_issued_at_ms=Some(105);
+        following.updated_at_ms=105;
+        assert!(following.validate_state().is_err());
+        let mut premature_review=Job::new("review-session".into(),request(),"P",None,"S",100).unwrap();
+        premature_review.phases[0].review_session_id=Some("not-an-iterative-review".into());
+        assert!(premature_review.validate_state().is_err());
+        good.issue_proposal("export_dispatch",106).unwrap();
+        good.record("export_dispatch","premiere_export_sequence","final-id",true,107).unwrap();
+        assert_eq!(good.status,"export_dispatched");
+        assert!(good.validate_state().is_ok());
+    }
+    #[test]fn persisted_edit_job_fail_and_cancel_have_single_consistent_frontier(){
+        let mut failed=Job::new("failed".into(),request(),"P",None,"S",100).unwrap();
+        failed.record("review","premiere_review_frames","failed-action",false,101).unwrap();
+        assert!(failed.validate_state().is_ok());
+        let mut cancelled=Job::new("cancelled".into(),request(),"P",None,"S",100).unwrap();
+        cancelled.issue_proposal("review",101).unwrap();
+        cancelled.cancel(102);
+        assert!(cancelled.validate_state().is_ok());
+        failed.phases[2].state="completed".into();
+        failed.phases[2].action_id=Some("bypass".into());
+        assert!(failed.validate_state().is_err());
+    }
+    #[test]fn edit_job_store_rejects_cross_job_action_receipt_replay(){
+        let folder=std::env::temp_dir().join(format!("shuvi40-receipts-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let id_a=uuid::Uuid::new_v4().to_string();
+        let id_b=uuid::Uuid::new_v4().to_string();
+        let path_a=folder.join(format!("{id_a}.json"));
+        let path_b=folder.join(format!("{id_b}.json"));
+        let mut a=Job::new(id_a.clone(),request(),"P",None,"S",100).unwrap();
+        a.issue_proposal("review",101).unwrap();
+        a.record("review","premiere_review_frames","used-approved-action",true,102).unwrap();
+        save(&path_a,&a).unwrap();
+        let b=Job::new(id_b.clone(),request(),"P",None,"S",100).unwrap();
+        save(&path_b,&b).unwrap();
+        assert!(require_unclaimed_action_in_store(&path_b,&id_b,"used-approved-action").is_err());
+        assert!(require_unclaimed_action_in_store(&path_b,&id_b,"fresh-approved-action").is_ok());
+        // A broken sibling must fail closed instead of being silently ignored.
+        fs::write(&path_a,b"{broken").unwrap();
+        assert!(require_unclaimed_action_in_store(&path_b,&id_b,"fresh-approved-action").is_err());
+        fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]fn edit_job_store_rejects_interrupted_sibling_updates(){
+        let folder=std::env::temp_dir().join(format!("shuvi40-inflight-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let id=uuid::Uuid::new_v4().to_string();
+        let path=folder.join(format!("{id}.json"));
+        save(&path,&Job::new(id.clone(),request(),"P",None,"S",100).unwrap()).unwrap();
+        fs::write(folder.join("sibling.json.bak"),b"interrupted").unwrap();
+        assert!(require_unclaimed_action_in_store(&path,&id,"fresh-action").is_err());
+        fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]fn exact_phase_arguments_digest_rejects_altered_action_receipt(){
+        let mut job=Job::new("phase-hash".into(),request(),"P",None,"S",100).unwrap();
+        let args=serde_json::json!({"seconds":[1,5],"prompt":"Inspect"});
+        let changed=serde_json::json!({"seconds":[1,5],"prompt":"Inspect changed"});
+        job.issue_proposal("review",101).unwrap();
+        job.bind_proposal_arguments("review",&args).unwrap();
+        let hash=proposal_arguments_sha256(&args).unwrap();
+        let altered=proposal_arguments_sha256(&changed).unwrap();
+        assert_ne!(hash,altered);
+        assert!(job.require_bound_action_arguments("review",&format!("premiere_args_sha256={hash} | vision omitted")).is_ok());
+        assert!(job.require_bound_action_arguments("review",&format!("premiere_args_sha256={altered}")).is_err());
+        assert!(job.require_bound_action_arguments("review","Vision prompt omitted").is_err());
+        assert!(job.bind_proposal_arguments("review",&changed).is_err());
+        // Idempotent read-only replan preserves first digest.
+        job.issue_proposal("review",102).unwrap();
+        job.bind_proposal_arguments("review",&args).unwrap();
+        assert_eq!(job.pending().unwrap().proposal_arguments_sha256.as_deref(),Some(hash.as_str()));
+        assert!(job.validate_state().is_ok());
+    }
+    #[test]fn legacy_phase_without_arguments_hash_requires_new_exact_proposal(){
+        let mut job=Job::new("old-args".into(),request(),"P",None,"S",100).unwrap();
+        job.issue_proposal("review",101).unwrap();
+        assert!(job.require_bound_action_arguments("review","premiere_args_sha256=missing").is_err());
+        job.bind_proposal_arguments("review",&serde_json::json!({})).unwrap();
+        let mut bad=job.clone();
+        bad.phases[0].proposal_issued_at_ms=None;
+        assert!(bad.validate_state().is_err());
+        bad=job.clone();bad.phases[0].proposal_arguments_sha256=Some("not-a-sha".into());
+        assert!(bad.validate_state().is_err());
+    }
+    #[test]fn iterative_review_only_accepts_new_sessions_after_issued_phase(){
+        let request:Request=serde_json::from_value(json!({
+            "schema_version":1,"job_type":"corporate",
+            "review":{"seconds":[1.0],"prompt":"Final grounded review","iterative":true}
+        })).unwrap();
+        let mut job=Job::new("review-timing".into(),request,"P",None,"S",100).unwrap();
+        assert!(job.require_issued_review_session("review",105).is_err());
+        job.issue_proposal("review",110).unwrap();
+        assert!(job.require_issued_review_session("review",111).is_err());
+        job.bind_proposal_arguments("review",&json!({"objective":"Final grounded review","sample_times":[1.0]})).unwrap();
+        assert!(job.require_issued_review_session("review",109).is_err());
+        assert!(job.require_issued_review_session("review",110).is_ok());
+        assert!(job.require_issued_review_session("review",115).is_ok());
+        assert!(job.require_issued_review_session("other",115).is_err());
+        job.record_review("review","new-session",116).unwrap();
+        assert_eq!(job.status,"complete");
+        assert!(job.validate_state().is_ok());
+    }
+    #[test]fn completed_iterative_review_session_cannot_be_reused_by_another_job(){
+        let folder=std::env::temp_dir().join(format!("shuvi40-review-reuse-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let req:Request=serde_json::from_value(json!({
+            "schema_version":1,"job_type":"corporate",
+            "review":{"seconds":[1.0],"prompt":"Review","iterative":true}
+        })).unwrap();
+        let id_a=uuid::Uuid::new_v4().to_string();
+        let id_b=uuid::Uuid::new_v4().to_string();
+        let path_a=folder.join(format!("{id_a}.json"));
+        let path_b=folder.join(format!("{id_b}.json"));
+        let mut a=Job::new(id_a.clone(),req.clone(),"P",None,"S",100).unwrap();
+        a.issue_proposal("review",101).unwrap();
+        a.bind_proposal_arguments("review",&json!({})).unwrap();
+        a.record_review("review","review-session-a",102).unwrap();
+        save(&path_a,&a).unwrap();
+        save(&path_b,&Job::new(id_b.clone(),req,"P",None,"S",100).unwrap()).unwrap();
+        assert!(require_unclaimed_review_session_in_store(&path_b,&id_b,"review-session-a").is_err());
+        assert!(require_unclaimed_review_session_in_store(&path_b,&id_b,"review-session-new").is_ok());
+        fs::write(&path_a,b"{corrupt").unwrap();
+        assert!(require_unclaimed_review_session_in_store(&path_b,&id_b,"review-session-new").is_err());
+        fs::remove_dir_all(folder).unwrap();
     }
     #[test]fn one_primary_delivery_only(){
         let value=json!({

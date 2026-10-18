@@ -428,6 +428,15 @@ pub async fn execute(
                         receipt.result.as_ref().map(mogrt_output_evidence)
                     }else{None};
                     let mogrt_verified=mogrt_evidence.as_ref().and_then(|v|v.get("desktop_mogrt_verified")).and_then(Value::as_bool)==Some(true);
+                    // The native receipt, its exact AE request ID and current MOGRT SHA256
+                    // are bound only after successful observed AE export readback.
+                    // Failure here cannot erase or undo the already completed AE export.
+                    let mogrt_provenance=if request.action=="export_mogrt"
+                        &&receipt.ok&&!cancel_verified&&verification=="verified_mogrt_file_readback"
+                        &&mogrt_verified {
+                        Some(crate::after_effects_mogrt_provenance::publish(workspace,request,&receipt,
+                            mogrt_evidence.as_ref().ok_or("AE export proof missing.")?,crate::now_ms()))
+                    }else{None};
                     let post_verified=if request.action=="save_project"{save_persistence_verified}
                         else if request.action=="render_queue"{!cancel_verified&&verification=="verified_render_completion"&&render_verified}
                         else if request.action=="export_mogrt"{verification=="verified_mogrt_file_readback"&&mogrt_verified}
@@ -454,6 +463,9 @@ pub async fn execute(
                         "project_persistence_evidence":persistence_evidence,
                         "render_output_evidence":render_evidence,
                         "mogrt_output_evidence":mogrt_evidence,
+                        "mogrt_provenance":mogrt_provenance.as_ref().and_then(|v|v.as_ref().ok()),
+                        "mogrt_provenance_error":mogrt_provenance.as_ref().and_then(|v|v.as_ref().err()),
+                        "ae_export_receipt_binding_verified":mogrt_provenance.as_ref().is_some_and(|v|v.is_ok()),
                         "host_retry_safe":host_retry_safe,
                         "checkpoint":checkpoint,
                         "preset_file_evidence":preset_evidence,

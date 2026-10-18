@@ -165,3 +165,70 @@ for (const [kind,original,next] of [
   const result=await f.run();assert.equal(result.status,'applied',result.reason);assert.equal(result.populated,true);
   assert.deepEqual(JSON.parse(JSON.stringify(f.inserted[0].read())),kind==='point'?{x:next.x,y:next.y}:{red:next.red,green:next.green,blue:next.blue,alpha:next.alpha});
 });
+
+
+// Milestone 14: native read-only independent caption receipt reinspection.
+// These tests execute the actual Premiere UXP dispatcher and graphics helpers
+// on an isolated native API fixture; they are not a live Adobe host certificate.
+function verifiedCaptionArgs(f, items, results) {
+  return {mapping:f.args.mapping, items,
+    receipts:results.map((result,index)=>({index,result})),
+    videoTrack:0,_expected:f.args._expected};
+}
+test('independent native caption audit verifies each actual clip and static MOGRT parameter',async()=>{
+  const f=fixture();f.args.item.duration_seconds=2;
+  const item=structuredClone(f.args.item),receipt=await f.run();
+  assert.equal(receipt.status,'applied',receipt.reason);
+  const before=f.stats();
+  const result=await f.panel.executeCommand({action:'verify_caption_graphics',
+    arguments:verifiedCaptionArgs(f,[item],[receipt])});
+  assert.equal(result.native_current_session_caption_values_verified,true);
+  assert.equal(result.original_receipt_rechecked,true);
+  assert.equal(result.verified_count,1);
+  assert.equal(result.items[0].verified_field_count,1);
+  assert.equal(result.project_file_saved_verified,false);
+  assert.equal(result.cross_session_reopen_verified,false);
+  assert.equal(result.exported_video_verified,false);
+  assert.deepEqual(f.stats(),before,'read-only verification must never execute a native write');
+});
+test('caption readback survives changes in sorted clip indexes after earlier insertion',async()=>{
+  const f=fixture();f.args.item.duration_seconds=2;
+  f.args.item.seconds=10;
+  const first=structuredClone(f.args.item), firstReceipt=await f.run();
+  f.args.item.seconds=0;f.args.item.fields.name='Earlier';
+  const second=structuredClone(f.args.item), secondReceipt=await f.run();
+  assert.equal(firstReceipt.status,'applied',firstReceipt.reason);
+  assert.equal(secondReceipt.status,'applied',secondReceipt.reason);
+  const report=await f.panel.executeCommand({action:'verify_caption_graphics',
+    arguments:verifiedCaptionArgs(f,[first,second],[firstReceipt,secondReceipt])});
+  assert.equal(report.verified_count,2);
+  assert.equal(report.native_current_session_caption_values_verified,true);
+  assert.equal(report.items[0].original_clip_index,0);
+  assert.equal(report.items[0].independently_matched_by_stable_identity,true);
+  assert.equal(f.stats().insertCalls,2,'audit must not insert any new graphics');
+});
+test('caption audit rejects forged, partial, missing and duplicate native receipts',async()=>{
+  const f=fixture();f.args.item.duration_seconds=2;
+  const item=structuredClone(f.args.item),receipt=await f.run();
+  const execute=async(rec)=>f.panel.executeCommand({action:'verify_caption_graphics',
+    arguments:verifiedCaptionArgs(f,[item],[rec])});
+  await assert.rejects(execute({...receipt,status:'uncertain'}),/receipt/);
+  await assert.rejects(execute({...receipt,populated:false}),/receipt/);
+  await assert.rejects(execute({...receipt,expected:null}),/receipt/);
+  await assert.rejects(execute({...receipt,expected:{
+    ...receipt.expected,project_guid:'other'}}),/receipt/);
+  await assert.rejects(execute({...receipt,expected:{
+    ...receipt.expected,clips:[{...receipt.expected.clips[0],signature:'[]'}]}}),/signature/);
+  await assert.rejects(f.panel.executeCommand({action:'verify_caption_graphics',
+    arguments:verifiedCaptionArgs(f,[item,item],[receipt,receipt])}),/ambiguous|already|receipt/i);
+});
+test('caption audit refuses changed native text or timing even after original accepted insertion',async()=>{
+  const f=fixture();f.args.item.duration_seconds=2;
+  const item=structuredClone(f.args.item),receipt=await f.run();
+  f.inserted[0].param.getStartValue=async()=>({value:'Changed after insertion'});
+  await assert.rejects(f.panel.executeCommand({action:'verify_caption_graphics',
+    arguments:verifiedCaptionArgs(f,[item],[receipt])}),/readback|match|template/i);
+  f.inserted[0].param.getStartValue=async()=>({value:'Dr. A'});
+  await assert.rejects(f.panel.executeCommand({action:'verify_caption_graphics',
+    arguments:verifiedCaptionArgs(f,[{...item,seconds:6}],[receipt])}),/timing|native insertion receipt/i);
+});

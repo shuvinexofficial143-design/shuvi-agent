@@ -67,6 +67,18 @@ mod premiere_acceptance_execution;
 mod premiere_calibration;
 mod premiere_export_jobs;
 mod premiere_project_persistence;
+mod premiere_project_lifecycle;
+mod premiere_media_relink;
+mod premiere_batch_relink;
+mod premiere_mogrt_handoff;
+mod after_effects_mogrt_provenance;
+mod premiere_final_delivery;
+mod premiere_full_decode;
+mod premiere_delivery_spec;
+mod premiere_selective_captions;
+mod premiere_caption_graphics;
+mod premiere_caption_save_binding;
+mod premiere_caption_reopen;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -319,7 +331,7 @@ Available tools:
 - premiere_create_bin: {"name":"bin name"}
 - premiere_rename_project_item: {"item_id":"project item id","name":"new name"}
 - premiere_move_project_item: {"item_id":"project item id","target_bin_id":"destination bin id"}
-- premiere_relink_media: {"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}
+- premiere_relink_media: {"item_id":"exact ID from premiere_media_audit or premiere_inspect_media_interpretation","expected_previous_path":"exact previously inspected old absolute media path","new_path":"absolute replacement media path","override_compatibility":false} — High-risk approved, SHA256-bound, checkpointed, native readback + save-to-.prproj verification; never auto-retry.
 - premiere_inspect_media_interpretation: {"item_id":"exact clip project item id"}
 - premiere_prepare_media_item: {"request":{"item_id":"exact clip project item id","expected_media_path":"copy inspected path or null","override_frame_rate":23.976,"pixel_aspect":{"numerator":1,"denominator":1},"scale_to_frame_size":false,"input_lut_id":"exact native LUT ID or null"},"expected":{"project_guid":"...","sequence_guid":"optional active sequence","clips":[]}}
 - premiere_prepare_media_batch: {"batch":{"schema_version":1,"items":[{"item_id":"exact clip project item id","expected_media_path":"copy inspected path","override_frame_rate":25,"pixel_aspect":null,"scale_to_frame_size":true,"input_lut_id":null}]},"expected":{"project_guid":"...","sequence_guid":"optional","clips":[]}}
@@ -350,9 +362,18 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
 - premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
 - premiere_insert_mogrt_path: {"path":"absolute .mogrt path","seconds":0,"video_track":0,"audio_track":0}
+- premiere_inspect_mogrt_artifact: {"path":"absolute existing .mogrt path"}
+- premiere_inspect_ae_mogrt_provenance: {"proof_file":"exact native AE export .mogrt-provenance.json","output_file":"exact .mogrt file","expected_sha256":"64 hex"} — read-only check of AE export request-ID, persisted receipt SHA256 and unchanged MOGRT bytes. Unsigned local workspace evidence; no claim of tamper-proof origin. — read-only SHA256 of exact bounded MOGRT file; does not establish AE origin.
+- premiere_insert_verified_mogrt: {"request":{"path":"absolute existing .mogrt path","expected_sha256":"64 hex from premiere_inspect_mogrt_artifact or separately verified AE output","seconds":0,"video_track":0,"audio_track":0}} — approved high-risk insertion with exact project/sequence expectation, checkpoint, SHA256 pre/post proof, native inserted-clip readback and independently persisted .prproj; no auto retry.
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
-- premiere_import_caption_source: {"path":"absolute .srt or .vtt path"}
+- premiere_verify_reopened_caption_graphics: {"request":"original selected SRT/MOGRT request","receipt":"approved native insert receipt","save_receipt":"separate approved save receipt","open_receipt":"separate approved premiere_open_project receipt"} — READ ONLY independently inspect exact opened saved .prproj SHA, current native caption fields/timings + unchanged source; explicitly DOES NOT open project, prove new process, or export
+- premiere_verify_saved_caption_graphics: {"request":"same original SRT + saved MOGRT manifest","receipt":"exact earlier approved premiere_apply_caption_graphics response","save_receipt":"exact earlier approved premiere_save_project response"} — READ ONLY correlate native caption reinspection with independently observed exact .prproj save, FNV change receipt and stable current SHA256 file bytes; fresh-session reopen/render still NOT verified
+- premiere_verify_caption_graphics: {"request":"exact original selected SRT+MOGRT source-bound manifest","receipt":"exact response JSON from earlier separately-approved premiere_apply_caption_graphics"} — READ ONLY independent re-scan of every actual native clip/field/timing including shifted timeline indexes, source SHA256 recheck; does NOT claim project saved/reopened or exported
+- premiere_apply_caption_graphics: {"request":"same exact typed request as premiere_plan_caption_graphics"} — separately approved HIGH risk native MOGRT graphics run, recheck SRT hash + mapping before every insertion, partial results, checkpoint and no automatic retries; no simulated Adobe runtime
+- premiere_plan_caption_graphics: {"request":{"schema_version":1,"captions":{"schema_version":1,"output":"existing exact .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"Hello","selected":true}]},"expected_srt_sha256":"64-hex saved file SHA256","mapping":"existing inspected MOGRT mapping","revision":1,"video_track":2,"audio_track":0,"static_fields":{}}} — READ-ONLY exact selected SRT -> existing premiere_batch_graphics parameters; requires separate High-risk batch approval; no caption-track claims
+- premiere_create_selective_srt: {"request":{"schema_version":1,"output":"new absolute .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"selected words","selected":true}],"source_transcript_sha256":null}} — owner-approved create-new only, SHA256-verified local subtitle interchange; DOES NOT add Premiere caption-track text
+- premiere_import_caption_source: {"path":"absolute .srt or .vtt path","expected_sha256":"optional exact 64-hex SHA256 from inspected/selective SRT"} — checkpoint + stable source-hash readback; native import does NOT automatically create a caption track or save .prproj
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files, required for verified worker sources
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
 - premiere_replace_with_subsequence: {"source":{"kind":"video","track":0,"clip_index":0,"signature":"exact inspected targetSignature"},"expected":"exact one-source expectation"}
@@ -420,6 +441,9 @@ Cross-track clone computes native vertical offsets from inspected source/destina
 - premiere_cancel_review_frame_export: {}
 Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) APIs. Native frame export uses Exporter.exportSequenceFrame (25.6+) and Adobe-supported bmp/dpx/gif/jpg/exr/png/tga/tif formats. Output collision blocks by default; host acceptance and observed file metadata are reported separately.
 - premiere_plan_export: {"output":"absolute output media path","preset":"optional absolute .epr preset","queue_to_ame":false,"overwrite":false}
+- premiere_inspect_final_delivery: {"job_id":"exact Premiere export job UUID","expected_project_guid":"observed Premiere project GUID","expected_sequence_guid":"observed Premiere sequence GUID"}
+- premiere_inspect_delivery_spec: {"job_id":"exact Premiere export job UUID","expected_project_guid":"original project GUID","expected_sequence_guid":"original sequence GUID","spec":{"schema_version":1,"expected_duration_seconds":30,"duration_tolerance_seconds":1,"width":1920,"height":1080,"require_audio":true}} — read-only format, dimensions, audio presence and duration QC; distinct from decode/encoder completion and visual approval.
+- premiere_verify_mp4_decode: {"job_id":"exact recorded Premiere export UUID","expected_project_guid":"exact project GUID","expected_sequence_guid":"exact sequence GUID","budget_secs":90} — optional read-only full video/audio stream decode using installed trusted ProgramFiles FFmpeg, bounded 15–180s; reports decoded frames/duration and separately refuses to claim encoder completion, visual quality or production delivery. — read-only SHA256, MP4 structure and trusted ffprobe stream metadata tied to this specific recorded job; never claims encoder completion, full decode or final playback.
 - premiere_acceptance_report: {}
 - premiere_acceptance_probe: {"group":1}
 - premiere_acceptance_register_disposable: {"project_guid":"exact current project GUID","project_path":"existing absolute disposable .prproj","sequence_guid":"optional exact current sequence GUID","explicitly_disposable":true}
@@ -428,6 +452,10 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_acceptance_execute: {"action_id":"exact prepared acceptance action UUID"}
 - premiere_acceptance_cancel: {"action_id":"exact prepared acceptance action UUID"}
 - premiere_acceptance_verify_recovery: {"action_id":"completed trim/move/clone/delete_ripple acceptance action UUID"} — read-only verification after manually opening the Shuvi checkpoint; never opens or overwrites a project automatically
+- premiere_create_project: {"path":"new absolute Windows .prproj destination (must not already exist)"} — high risk; initial save and independent host/disk verification; never overwrites.
+- premiere_open_project: {"path":"existing absolute Windows .prproj"} — high risk; host project identity plus independently unchanged disk fingerprint, no automatic save/close.
+- premiere_media_audit: {} — Read-only capped live Premiere project-media inventory; retrieve exact IDs and old paths before proposing a separate approved relink.
+- premiere_verify_saved_media: {"project_path":"saved .prproj","expected_project_guid":"from prior audited context","expected_project_fnv1a64":"16 hex from prior saved project fingerprint","item_id":"native clip ID","expected_media_path":"previously approved replacement file","expected_media_sha256":"64 hex from approved media proof"} — read-only live/disk item match after a separately approved project open; does not itself reopen or edit.
 - premiere_save_project: {}
 - after_effects_capability_report: {}
 - after_effects_readiness_report: {}
@@ -809,6 +837,8 @@ enum ToolAction {
     FrameIoAcceptanceSummary,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
+    PremiereCreateProject { path:String },
+    PremiereOpenProject { path:String },
     PremiereBridgeStart,
     PremiereBridgeStatus,
     PremiereContext,
@@ -893,7 +923,9 @@ enum ToolAction {
     PremiereCreateBin { name: String },
     PremiereRenameProjectItem { item_id: String, name: String },
     PremiereMoveProjectItem { item_id: String, target_bin_id: String },
-    PremiereRelinkMedia { item_id: String, new_path: String, override_compatibility: bool },
+    PremiereRelinkMedia { item_id: String, new_path: String, expected_previous_path: String, override_compatibility: bool },
+    PremiereMediaAudit,
+    PremiereVerifySavedMedia { project_path:String, expected_project_guid:String, expected_project_fnv1a64:String, item_id:String, expected_media_path:String, expected_media_sha256:String },
     PremiereSetSourceInOut { item_id: String, in_seconds: f64, out_seconds: f64 },
     PremiereClearSourceInOut { item_id: String },
     PremiereCreateSubclip { item_id: String, name: String, start_seconds: f64, end_seconds: f64, hard_boundaries: bool, take_video: bool, take_audio: bool },
@@ -932,9 +964,12 @@ enum ToolAction {
     PremiereSetWorkArea { request: premiere_media_prep::WorkArea },
     PremiereBatchAttachProxy { items: Vec<Value> },
     PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
+    PremiereInspectMogrtArtifact { path:String },
+    PremiereInspectAeMogrtProvenance { proof_file:String,output_file:String,expected_sha256:String },
+    PremiereInsertVerifiedMogrt { request:premiere_mogrt_handoff::InsertRequest },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String>, expected_sha256: Option<Vec<String>> },
-    PremiereImportCaptionSource { path: String },
+    PremiereImportCaptionSource { path: String, expected_sha256:Option<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String>, expected_sha256: Option<Vec<String>> },
     PremiereCreateSubsequence { targets: Vec<Value> },
     PremiereReplaceWithSubsequence { source: premiere_layering::SourceTarget },
@@ -982,6 +1017,15 @@ enum ToolAction {
     PremiereExportReviewFrames { batch: premiere_delivery::FrameBatch },
     PremiereCancelReviewFrameExport { generation: u64 },
     PremiereExportStatus { job_id: String },
+    PremiereInspectFinalDelivery { job_id:String,expected_project_guid:String,expected_sequence_guid:String },
+    PremiereVerifyMp4Decode {job_id:String,expected_project_guid:String,expected_sequence_guid:String,budget_secs:u64},
+    PremiereInspectDeliverySpec {job_id:String,expected_project_guid:String,expected_sequence_guid:String,spec:premiere_delivery_spec::Spec},
+    PremiereCreateSelectiveSrt {request:premiere_selective_captions::Request},
+    PremierePlanCaptionGraphics {request:premiere_caption_graphics::Request},
+    PremiereApplyCaptionGraphics {request:premiere_caption_graphics::Request},
+    PremiereVerifyCaptionGraphics {request:premiere_caption_graphics::Request,receipt:Value},
+    PremiereVerifySavedCaptionGraphics {request:premiere_caption_graphics::Request,receipt:Value,save_receipt:Value},
+    PremiereVerifyReopenedCaptionGraphics {request:premiere_caption_graphics::Request,receipt:Value,save_receipt:Value,open_receipt:Value},
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
@@ -1743,6 +1787,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_invoke_command"
         | "premiere_detect"
         | "premiere_launch"
+        | "premiere_create_project"
+        | "premiere_open_project"
         | "premiere_bridge_start"
         | "premiere_bridge_status"
         | "premiere_context"
@@ -1846,6 +1892,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_rename_project_item"
         | "premiere_move_project_item"
         | "premiere_relink_media"
+        | "premiere_media_audit"
+        | "premiere_verify_saved_media"
         | "premiere_inspect_media_interpretation"
         | "premiere_prepare_media_item"
         | "premiere_prepare_media_batch"
@@ -1873,9 +1921,18 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_batch_relink"
         | "premiere_batch_attach_proxy"
         | "premiere_insert_mogrt_path"
+        | "premiere_inspect_mogrt_artifact"
+        | "premiere_inspect_ae_mogrt_provenance"
+        | "premiere_insert_verified_mogrt"
         | "premiere_insert_mogrt_library"
         | "premiere_import_media"
         | "premiere_import_caption_source"
+        | "premiere_create_selective_srt"
+        | "premiere_plan_caption_graphics"
+        | "premiere_apply_caption_graphics"
+        | "premiere_verify_caption_graphics"
+        | "premiere_verify_saved_caption_graphics"
+        | "premiere_verify_reopened_caption_graphics"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
         | "premiere_replace_with_subsequence"
@@ -1914,6 +1971,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_cancel_review_frame_export"
         | "premiere_plan_export"
         | "premiere_export_status"
+        | "premiere_inspect_final_delivery"
+        | "premiere_verify_mp4_decode"
+        | "premiere_inspect_delivery_spec"
         | "premiere_readiness_report"
         | "premiere_acceptance_report"
         | "premiere_acceptance_probe"
@@ -4933,6 +4993,22 @@ fn stage_tool(
                 RiskLevel::Medium,
             )
         }
+        "premiere_create_project" => {
+            let path=arg_string(&proposal.arguments,"path")?;
+            premiere_project_lifecycle::preflight_create(&path)?;
+            (ToolAction::PremiereCreateProject{path:path.clone()},
+                "Create new Premiere project".into(),
+                format!("Create a NEW Adobe Premiere project and save the .prproj at {path}. Existing targets may never be overwritten. Verify active host identity and independent disk bytes. No auto retry."),
+                RiskLevel::High)
+        }
+        "premiere_open_project" => {
+            let path=arg_string(&proposal.arguments,"path")?;
+            premiere_project_lifecycle::preflight_open(&path)?;
+            (ToolAction::PremiereOpenProject{path:path.clone()},
+                "Open existing Premiere project".into(),
+                format!("Open the existing .prproj at {path} in Adobe Premiere without saving or closing an existing project. Verify active host identity and unchanged disk bytes. No auto retry."),
+                RiskLevel::High)
+        }
         "premiere_bridge_start" => (
             ToolAction::PremiereBridgeStart,
             "Start Premiere bridge".to_string(),
@@ -6594,9 +6670,41 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_media_audit" => (ToolAction::PremiereMediaAudit,
+            "Audit Premiere media inventory".into(),
+            "Read-only bounded native clip IDs, recorded paths and offline flags. Does not authorize editing.".into(),RiskLevel::Low),
+        "premiere_verify_saved_media" => {
+            let project_path=absolute_path(arg_string(&proposal.arguments,"project_path")?)?;
+            premiere_project_lifecycle::preflight_open(&project_path)?;
+            let expected_project_guid=arg_string(&proposal.arguments,"expected_project_guid")?;
+            let expected_project_fnv1a64=arg_string(&proposal.arguments,"expected_project_fnv1a64")?;
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            let expected_media_path=absolute_path(arg_string(&proposal.arguments,"expected_media_path")?)?;
+            let expected_media_sha256=arg_string(&proposal.arguments,"expected_media_sha256")?;
+            if expected_project_guid.is_empty()||expected_project_guid.len()>240
+                ||item_id.is_empty()||item_id.len()>240
+                ||expected_project_fnv1a64.len()!=16||!expected_project_fnv1a64.bytes().all(|b|b.is_ascii_hexdigit())
+                ||expected_media_sha256.len()!=64||!expected_media_sha256.bytes().all(|b|b.is_ascii_hexdigit()){
+                return Err("Saved Premiere media verification requires exact project/item identities and 16/64-hex fingerprints.".into());
+            }
+            (ToolAction::PremiereVerifySavedMedia{project_path,expected_project_guid,expected_project_fnv1a64,
+                item_id,expected_media_path,expected_media_sha256},
+                "Verify saved Premiere project media".into(),
+                "Read-only: check current active project GUID/path, saved .prproj fingerprint, source SHA256, and exact online native clip path. This does not reopen or save anything.".into(),
+                RiskLevel::Low)
+        }
         "premiere_relink_media" => {
             let item_id = arg_string(&proposal.arguments, "item_id")?;
             let new_path = absolute_path(arg_string(&proposal.arguments, "new_path")?)?;
+            let expected_previous_path=arg_string(&proposal.arguments,"expected_previous_path")?;
+            if expected_previous_path.is_empty()||expected_previous_path.len()>4096||
+               !Path::new(&expected_previous_path).is_absolute()||
+               expected_previous_path.chars().any(|ch|ch.is_control()){
+                return Err("Relink requires an exact previously inspected absolute media path.".into());
+            }
+            if expected_previous_path.eq_ignore_ascii_case(&new_path){
+                return Err("Relink destination already equals the approved original media path.".into());
+            }
             if item_id.chars().count() > 240 {
                 return Err("Premiere project item id is too long.".into());
             }
@@ -6611,10 +6719,11 @@ fn stage_tool(
                 ToolAction::PremiereRelinkMedia {
                     item_id: item_id.clone(),
                     new_path: new_path.clone(),
+                    expected_previous_path: expected_previous_path.clone(),
                     override_compatibility,
                 },
                 "Relink Premiere media".to_string(),
-                format!("Relink clip project item {item_id} to {new_path}; override_compatibility={override_compatibility}."),
+                format!("Relink clip {item_id} from EXACT observed source {expected_previous_path} to {new_path}; preserve backup and save updated project after native readback. override_compatibility={override_compatibility}. No automatic retry."),
                 RiskLevel::High,
             )
         }
@@ -6895,6 +7004,43 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_inspect_ae_mogrt_provenance" => {
+            let proof_file=absolute_path(arg_string(&proposal.arguments,"proof_file")?)?;
+            let output_file=absolute_path(arg_string(&proposal.arguments,"output_file")?)?;
+            let expected_sha256=arg_string(&proposal.arguments,"expected_sha256")?;
+            if expected_sha256.len()!=64||!expected_sha256.bytes().all(|b|b.is_ascii_hexdigit()){
+                return Err("AE provenance inspection requires exact 64-hex expected_sha256.".into());
+            }
+            (ToolAction::PremiereInspectAeMogrtProvenance{proof_file,output_file,expected_sha256},
+                "Inspect native AE MOGRT export receipt".into(),
+                "Read-only exact persisted AE request/receipt/hash correlation before owner-approved Premiere editing.".into(),
+                RiskLevel::Low)
+        }
+        "premiere_inspect_mogrt_artifact" => {
+            let path=absolute_path(arg_string(&proposal.arguments,"path")?)?;
+            premiere_mogrt_handoff::inspect(&path)?;
+            (ToolAction::PremiereInspectMogrtArtifact{path:path.clone()},
+                "Inspect local MOGRT artifact".into(),
+                format!("Read only local file identity and SHA-256 for {path}; no Adobe request or project modification."),
+                RiskLevel::Low)
+        }
+        "premiere_insert_verified_mogrt" => {
+            let request:premiere_mogrt_handoff::InsertRequest=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null))
+                .map_err(|e|format!("Invalid SHA256-bound MOGRT request: {e}"))?;
+            request.validate()?;
+            let expected=premiere_expectation.as_ref()
+                .ok_or("Verified MOGRT insert requires an exact freshly inspected Premiere project/sequence expectation.")?;
+            expected.validate()?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Verified MOGRT insert requires exact project and active sequence GUID without clip targets.".into());
+            }
+            (ToolAction::PremiereInsertVerifiedMogrt{request:request.clone()},
+                "Insert SHA256-verified MOGRT into Premiere".into(),
+                format!("Approved path={} at {} sec on V{}/A{}; independently verify exact SHA256 bytes, checkpoint original .prproj, insert native editable MOGRT clip, save and verify disk. No auto retry.",
+                    request.path,request.seconds,request.video_track,request.audio_track),
+                RiskLevel::High)
+        }
         "premiere_insert_mogrt_path" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             if !Path::new(&path).is_file() {
@@ -6962,65 +7108,23 @@ fn stage_tool(
             )
         }
         "premiere_batch_relink" => {
-            let items = proposal.arguments
-                .get("items")
-                .and_then(Value::as_array)
-                .cloned()
-                .ok_or_else(|| "premiere_batch_relink requires an items array.".to_string())?;
-
-            if items.is_empty() || items.len() > 100 {
-                return Err("Premiere batch relink requires between 1 and 100 items.".into());
+            let raw=proposal.arguments.get("items").and_then(Value::as_array)
+                .ok_or("Premiere batch relink requires an items array.")?;
+            let mut entries=Vec::with_capacity(raw.len());
+            for item in raw {
+                let entry:premiere_batch_relink::Entry=serde_json::from_value(item.clone())
+                    .map_err(|e|format!("Invalid exact Premiere batch relink item: {e}"))?;
+                entries.push(entry);
             }
-
-            let mut validated = Vec::with_capacity(items.len());
-            for item in items {
-                let object = item
-                    .as_object()
-                    .ok_or_else(|| "Each batch relink item must be an object.".to_string())?;
-
-                let item_id = object
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "Each batch relink item requires item_id.".to_string())?
-                    .to_string();
-
-                if item_id.chars().count() > 240 {
-                    return Err("Premiere batch relink item id is too long.".into());
-                }
-
-                let new_path_raw = object
-                    .get("new_path")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "Each batch relink item requires new_path.".to_string())?
-                    .to_string();
-                let new_path = absolute_path(new_path_raw)?;
-
-                if !Path::new(&new_path).is_file() {
-                    return Err(format!("Premiere batch relink media file does not exist: {new_path}"));
-                }
-
-                let override_compatibility = object
-                    .get("override_compatibility")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-
-                validated.push(json!({
-                    "itemId": item_id,
-                    "newPath": new_path,
-                    "overrideCompatibility": override_compatibility
-                }));
-            }
-
-            (
-                ToolAction::PremiereBatchRelink { items: validated.clone() },
-                "Batch relink Premiere media".to_string(),
-                format!("Relink {} Premiere project item(s).", validated.len()),
-                RiskLevel::High,
-            )
+            // No source content is mutated here. Reject duplicates, dirty source
+            // paths and unsafe aggregate byte budgets before owner approval.
+            premiere_batch_relink::validate_entries(&entries)?;
+            let items=entries.iter().map(|entry|serde_json::to_value(entry)
+                .map_err(|e|e.to_string())).collect::<Result<Vec<_>,_>>()?;
+            (ToolAction::PremiereBatchRelink{items},
+                "Batch relink exact Premiere media".into(),
+                format!("Relink {} exact native clip IDs from individually inspected source paths. All source SHA256s verified before Adobe mutation, one checkpoint and one final project save. Partial edits are retained and not retried automatically.",entries.len()),
+                RiskLevel::High)
         }
         "premiere_batch_attach_proxy" => {
             let items = proposal.arguments
@@ -7274,15 +7378,109 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_verify_reopened_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Original selective caption manifest required.")?
+            ).map_err(|e|format!("Invalid post-open caption audit request: {e}"))?;
+            request.validate()?;
+            let receipt=proposal.arguments.get("receipt").cloned()
+                .ok_or("Original approved graphics insertion receipt is required.")?;
+            let save_receipt=proposal.arguments.get("save_receipt").cloned()
+                .ok_or("Separately approved saved-project receipt is required.")?;
+            let open_receipt=proposal.arguments.get("open_receipt").cloned()
+                .ok_or("Separately approved native Premiere open-project receipt is required.")?;
+            for (name,value,limit) in [
+                ("insert",&receipt,128*1024),("save",&save_receipt,32*1024),
+                ("open",&open_receipt,32*1024)
+            ] {
+                if serde_json::to_vec(value).map_err(|e|e.to_string())?.len()>limit {
+                    return Err(format!("Post-open caption audit {name} receipt is oversized."));
+                }
+            }
+            (ToolAction::PremiereVerifyReopenedCaptionGraphics{request,receipt,save_receipt,open_receipt},
+                "Audit captions after separately approved Premiere open".into(),
+                "READ ONLY: compare approved insert/save/open receipts, exact saved-project SHA256, source SRT and real current Premiere caption fields; does not invoke open/save/export or falsely attest fresh process/session.".into(),
+                RiskLevel::Low)
+        }
+        "premiere_verify_saved_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Exact selected caption SRT manifest is required.")?
+            ).map_err(|e|format!("Invalid caption project-save verification manifest: {e}"))?;
+            request.validate()?;
+            let receipt=proposal.arguments.get("receipt").cloned()
+                .ok_or("Previous approved caption graphics insertion receipt is required.")?;
+            let save_receipt=proposal.arguments.get("save_receipt").cloned()
+                .ok_or("Separate approved premiere_save_project proof is required; no implicit project save.")?;
+            if serde_json::to_vec(&receipt).map_err(|e|e.to_string())?.len()>128*1024
+                ||serde_json::to_vec(&save_receipt).map_err(|e|e.to_string())?.len()>32*1024 {
+                return Err("Caption/project save receipts exceed bounded inspection limits.".into());
+            }
+            (ToolAction::PremiereVerifySavedCaptionGraphics{request,receipt,save_receipt},
+                "Verify saved Premiere caption project evidence".into(),
+                "READ ONLY: reconcile separately approved caption insertion and .prproj save receipts, independently fingerprint persisted project with SHA256 both sides of exact native MOGRT readback; no save/reopen/deploy/render and NO claim of persisted caption semantics.".into(),
+                RiskLevel::Low)
+        }
+        "premiere_verify_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Original selected caption SRT+graphics manifest is required.")?
+            ).map_err(|e|format!("Invalid exact caption graphics audit manifest: {e}"))?;
+            request.validate()?;
+            let receipt=proposal.arguments.get("receipt").cloned()
+                .ok_or("Previously returned native caption graphics execution receipt is required.")?;
+            if serde_json::to_vec(&receipt).map_err(|e|e.to_string())?.len()>128*1024 {
+                return Err("Caption audit receipt exceeds bounded source evidence.".into());
+            }
+            (ToolAction::PremiereVerifyCaptionGraphics{request,receipt},
+                "Verify native caption graphics independently".into(),
+                "Read-only: require a complete earlier approved native caption graphics receipt, exact saved mapping and SRT SHA, re-inspect each native clip and Essential Graphics parameter, without assuming old clip indexes or claiming saved project/MP4.".into(),
+                RiskLevel::Low)
+        }
+        "premiere_apply_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Exact caption graphics source and mapping are required.")?
+            ).map_err(|e|format!("Invalid approved caption graphics request: {e}"))?;
+            request.validate()?;
+            // This uses the existing native Premiere graphics lease/checkpoint
+            // and approval path. Planning alone must never authorize this edit.
+            (ToolAction::PremiereApplyCaptionGraphics{request},
+                "Insert native editable MOGRT caption graphics".into(),
+                "HIGH RISK: insert mapped MOGRT clips onto a real Premiere sequence for a validated exact selected SRT. Project checkpoint, per-item host readback, source SHA recheck and no retry/rollback guarantee.".into(),
+                RiskLevel::High)
+        }
+        "premiere_plan_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Selected SRT + mapped MOGRT planning request is required.")?
+            ).map_err(|e|format!("Invalid caption graphics request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PremierePlanCaptionGraphics{request},
+                "Plan selected captions as native MOGRT graphics".into(),
+                "Read-only verify an exact SRT SHA256 and saved MOGRT field-mapping revision. Return a bounded editable native premiere_batch_graphics payload for separate High-risk approval; never insert or encode in this stage.".into(),
+                RiskLevel::Low)
+        }
+        "premiere_create_selective_srt" => {
+            let request:premiere_selective_captions::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Selective SRT request is required.")?
+            ).map_err(|e|format!("Invalid selective caption SRT request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PremiereCreateSelectiveSrt {request:request.clone()},
+                "Create a selected-caption SRT source".into(),
+                format!("Create NEW SRT source at {} from {} bounded cues; selected text is owner-supplied, no Adobe timeline operation or automatic import.",request.output,request.cues.len()),
+                RiskLevel::High)
+        }
         "premiere_import_caption_source" => {
             let path=absolute_path(arg_string(&proposal.arguments,"path")?)?;
             if !Path::new(&path).is_file() || !matches!(Path::new(&path).extension().and_then(|v|v.to_str()).map(|v|v.to_ascii_lowercase()).as_deref(),Some("srt")|Some("vtt")) {
                 return Err("Caption source must be an existing absolute .srt or .vtt file.".into());
             }
+            let expected_sha256=arg_optional_string(&proposal.arguments,"expected_sha256");
+            if expected_sha256.as_ref().is_some_and(|v|
+                v.len()!=64||!v.bytes().all(|b|b.is_ascii_hexdigit())) {
+                return Err("Caption source expected SHA256 must contain 64 hexadecimal digits.".into());
+            }
             (
-                ToolAction::PremiereImportCaptionSource{path:path.clone()},
+                ToolAction::PremiereImportCaptionSource{path:path.clone(),expected_sha256},
                 "Import Premiere caption source".into(),
-                format!("Import caption source as a native Premiere project item and verify its path: {path}"),
+                format!("Import exact caption source with independent before/after SHA256 and Premiere native item readback: {path}; creates no caption-track text or implicit project save."),
                 RiskLevel::High,
             )
         }
@@ -7797,6 +7995,56 @@ fn stage_tool(
                 "Preflight Premiere export".to_string(),format!("Inspect output={output}; preset={preset:?}; queue_to_ame={queue_to_ame}; overwrite={overwrite}"),
                 RiskLevel::Low)
         }
+        "premiere_verify_mp4_decode" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid Premiere MP4 decode job UUID.")?;
+            let expected_project_guid=arg_string(&proposal.arguments,"expected_project_guid")?;
+            let expected_sequence_guid=arg_string(&proposal.arguments,"expected_sequence_guid")?;
+            if expected_project_guid.is_empty()||expected_project_guid.len()>240
+                ||expected_sequence_guid.is_empty()||expected_sequence_guid.len()>240{
+                return Err("Full MP4 decode requires exact bounded Premiere project/sequence IDs.".into());
+            }
+            let budget_secs=proposal.arguments.get("budget_secs").and_then(Value::as_u64).unwrap_or(90);
+            if !(15..=180).contains(&budget_secs) {
+                return Err("Full MP4 decode needs an explicit 15..180 second bounded compute budget.".into());
+            }
+            (ToolAction::PremiereVerifyMp4Decode{job_id,expected_project_guid,expected_sequence_guid,budget_secs},
+                "Decode and validate existing Premiere export".into(),
+                format!("Read-only optional FFmpeg full decode of exact Premiere export job; budget={budget_secs}s. No Premiere/AME mutation or encoder-completion claim."),
+                RiskLevel::Low)
+        }
+        "premiere_inspect_delivery_spec" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid Premiere delivery spec job UUID.")?;
+            let expected_project_guid=arg_string(&proposal.arguments,"expected_project_guid")?;
+            let expected_sequence_guid=arg_string(&proposal.arguments,"expected_sequence_guid")?;
+            if expected_project_guid.is_empty()||expected_project_guid.len()>240
+                ||expected_sequence_guid.is_empty()||expected_sequence_guid.len()>240{
+                return Err("Premiere delivery spec requires bounded exact project and sequence GUIDs.".into());
+            }
+            let spec:premiere_delivery_spec::Spec=serde_json::from_value(
+                proposal.arguments.get("spec").cloned().ok_or("Technical delivery specification is required.")?)
+                .map_err(|e|format!("Invalid delivery spec: {e}"))?;
+            spec.validate()?;
+            (ToolAction::PremiereInspectDeliverySpec{job_id,expected_project_guid,expected_sequence_guid,spec},
+                "Check Premiere export technical specifications".into(),
+                "Read-only, exact-job MP4 metadata+SHA256 inspection against user-declared duration, video dimensions and required audio. Does not attest Adobe encoder completion or creative quality.".into(),
+                RiskLevel::Low)
+        }
+        "premiere_inspect_final_delivery" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid Premiere delivery job UUID.")?;
+            let expected_project_guid=arg_string(&proposal.arguments,"expected_project_guid")?;
+            let expected_sequence_guid=arg_string(&proposal.arguments,"expected_sequence_guid")?;
+            if expected_project_guid.is_empty()||expected_project_guid.len()>240
+                ||expected_sequence_guid.is_empty()||expected_sequence_guid.len()>240{
+                return Err("Delivery validation requires exact bounded project and sequence GUIDs.".into());
+            }
+            (ToolAction::PremiereInspectFinalDelivery{job_id,expected_project_guid,expected_sequence_guid},
+                "Inspect exported Premiere MP4 integrity".into(),
+                "Read only the exact recorded native export job output; hash bytes and inspect MP4 structure/stream metadata. No encoder completion, decode or playback claim.".into(),
+                RiskLevel::Low)
+        }
         "premiere_export_status" => {
             let job_id=arg_string(&proposal.arguments,"job_id")?;
             Uuid::parse_str(&job_id).map_err(|_|"Invalid export job ID.")?;
@@ -8301,6 +8549,12 @@ fn stage_tool(
         _ => return Err("Unsupported tool.".into()),
     };
 
+    // Preserve a digest of the exact approved Premiere arguments in the
+    // existing action-detail audit channel, without logging large payloads.
+    let detail=if tool.starts_with("premiere_") {
+        let hash=premiere_edit_job::proposal_arguments_sha256(&proposal.arguments)?;
+        format!("premiere_args_sha256={hash} | {detail}")
+    } else {detail};
     // Only native-validated LOW-risk typed reads can participate in an
     // optional, short-lived owner's task grant. Mutations remain Allow once.
     let grant_signature=if matches!(&risk,RiskLevel::Low){
@@ -8388,8 +8642,15 @@ fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
         "launch_app" => "Application command-line arguments omitted from persistent audit.".into(),
         "open_url" | "browser_start" | "browser_navigate" =>
             "Browser URL omitted from persistent audit.".into(),
-        "inspect_screen" | "premiere_inspect_frame" | "premiere_review_frames" =>
-            "Vision prompt omitted from persistent audit.".into(),
+        "premiere_inspect_frame" | "premiere_review_frames" => {
+            // Omit the private prompt but retain the exact SHA-only phase key.
+            let prefix=detail.split(" | ").next().unwrap_or("");
+            if prefix.strip_prefix("premiere_args_sha256=").is_some_and(|hash|
+                hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())) {
+                format!("{prefix} | Vision prompt omitted from persistent audit.")
+            } else {"Vision prompt omitted from persistent audit.".into()}
+        },
+        "inspect_screen" => "Vision prompt omitted from persistent audit.".into(),
         _ => detail.chars().take(4_000).collect(),
     }
 }
@@ -13581,6 +13842,34 @@ try {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereCreateProject{path} => {
+            premiere_project_lifecycle::preflight_create(&path)?;
+            // New-project creation has no existing project/sequence expectation.
+            // Approval, exclusive native lease and authenticated action allowlist still apply.
+            let host=state.premiere_bridge.request("create_project",json!({"path":path}),Duration::from_secs(75)).await?;
+            let proof=premiere_project_lifecycle::assess_create(&path,&host);
+            let verified=proof.get("project_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"host":host,"project_evidence":proof,
+                    "post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "Premiere project creation/persistence uncertain. Inspect the exact host and destination before retry.".into()
+                },exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereOpenProject{path} => {
+            let before=premiere_project_lifecycle::preflight_open(&path)?;
+            // Switching projects is not a mutation of the previously active sequence;
+            // bind to the exact requested path and independent host/disk readback.
+            let host=state.premiere_bridge.request("open_project",json!({"path":path}),Duration::from_secs(75)).await?;
+            let proof=premiere_project_lifecycle::assess_open(&path,&before,&host);
+            let verified=proof.get("project_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"host":host,"project_evidence":proof,
+                    "post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "Premiere project open identity/disk status uncertain. Inspect before retry.".into()
+                },exit_code:Some(if verified{0}else{1})})
+        }
         ToolAction::PremiereBridgeStart => {
             let status = state.premiere_bridge.start()?;
             Ok(ActionResult {
@@ -15072,6 +15361,41 @@ try {{
                     (json!({"request":request,"expected":job.project_expectation()}),
                         "Set the explicit active-sequence work area through AD after current project/sequence identity validation.".to_string())
                 }
+                "caption_graphics_plan" | "caption_graphics_apply" => {
+                    let request=job.request.caption_graphics.clone()
+                        .ok_or("Edit job has no selected caption SRT/MOGRT binding.")?;
+                    // No native edits occur here. The proposal is only emitted
+                    // after matching the selected SRT's exact saved bytes,
+                    // selected cue timings and current MOGRT mapping revision.
+                    let mappings=premiere_graphics::list(&graphics_library_path(app)?)?;
+                    let saved=mappings.iter().find(|m|m.mapping.name==request.mapping)
+                        .ok_or("Edit job caption MOGRT mapping is unavailable.")?;
+                    let planned=premiere_caption_graphics::plan(&request,saved)?;
+                    if phase.id=="caption_graphics_apply" {
+                        // Repeat host identity and target-track occupancy ahead
+                        // of the separately approved High-risk insert tool.
+                        let timeline=premiere_bridge.request(
+                            "inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                        let batch:premiere_graphics::Batch=serde_json::from_value(
+                            planned["generated_batch"].clone()
+                        ).map_err(|e|format!("Invalid source-bound caption edit-job batch: {e}"))?;
+                        premiere_caption_graphics::preflight_timeline(
+                            &batch,&timeline,&job.project_guid,
+                            job.project_path.as_deref(),&job.sequence_guid)?;
+                    }
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        if phase.id=="caption_graphics_apply" {
+                            "Separately approve the exact hash-bound caption MOGRT insertion on currently unoccupied native tracks. Previous read-only planning is NOT an insert approval; no automatic retry/rollback. Save the edited project in the next separate phase.".to_string()
+                        } else {
+                            "Inspect the existing selected-caption SRT, exact saved MOGRT fields and generated native graphics batch without mutating Premiere.".to_string()
+                        })
+                }
+                "caption_project_save" => {
+                    // Only the existing project-save tool owns the checkpoint
+                    // and independent disk persistence receipt.
+                    (json!({}),
+                        "Save the completed caption graphics on disk using the existing separately approved Premiere project-save action; do not infer cross-session project/reopen or MP4 export success.".to_string())
+                }
                 "review" => {
                     let review=job.request.review.clone().ok_or("Edit job review payload is missing.")?;
                     if review.iterative {
@@ -15117,6 +15441,11 @@ try {{
                 _=>return Err("Unknown edit-job phase.".into()),
             };
 
+            // Persist the phase proposal before returning it; no Adobe mutation occurs.
+            // Only post-proposal receipts may advance this exact edit-job phase.
+            job.issue_proposal(&phase.id,now_ms())?;
+            job.bind_proposal_arguments(&phase.id,&arguments)?;
+            premiere_edit_job::save(&path,&job)?;
             let iterative_review=phase.id=="review" && phase.tool=="premiere_review_session_start";
             let after_execution=if iterative_review {
                 json!({
@@ -15169,6 +15498,9 @@ try {{
                     &&matches!(entry.event.as_str(),"executed"|"failed")
                 )
                 .ok_or("No matching typed action audit receipt for this edit-job phase.")?;
+            job.require_issued_action_receipt(&phase_id,&action_id,receipt.timestamp_ms)?;
+            job.require_bound_action_arguments(&phase_id,&receipt.detail)?;
+            premiere_edit_job::require_unclaimed_action_in_store(&path,&job_id,&action_id)?;
             let success=receipt.event=="executed"&&receipt.success;
             job.record(&phase_id,&receipt.tool,&action_id,success,now_ms())?;
             premiere_edit_job::save(&path,&job)?;
@@ -15184,7 +15516,7 @@ try {{
                     "job_status":job.status,
                     "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
                     "export_completion_verified":false,
-                    "audit_payload_binding":"tool/action receipt plus live project/sequence and downstream stale guards; audit entry does not cryptographically hash the full phase arguments"
+                    "audit_payload_binding":"SHA-256 digest of the full proposed JSON argument payload is compared with the staged/executed Premiere action audit, in addition to tool/phase/time/project and sibling-job replay checks. Local audit is not tamper-proof and Adobe runtime is unverified."
                 }).to_string(),
                 stderr:String::new(),
                 exit_code:Some(if success{0}else{1})
@@ -15256,6 +15588,8 @@ try {{
             let spec=job.request.review.as_ref().filter(|review|review.iterative)
                 .ok_or("Edit job has no iterative review specification.")?;
             let review=premiere_review::load(&premiere_review_path(app,&review_session_id)?)?;
+            job.require_issued_review_session(&phase_id,review.created_at_ms)?;
+            premiere_edit_job::require_unclaimed_review_session_in_store(&path,&job_id,&review_session_id)?;
             if review.created_at_ms<job.created_at_ms || review.project_guid!=job.project_guid
                 || review.sequence_guid!=job.sequence_guid || review.objective!=spec.prompt
                 || review.reference!=spec.reference.clone().unwrap_or_default()
@@ -16385,25 +16719,116 @@ try {{
                 exit_code: Some(if verified {0}else{1}),
             })
         }
-        ToolAction::PremiereRelinkMedia { item_id, new_path, override_compatibility } => {
-            let backup = backup_premiere_project(&premiere_bridge).await?;
-            let value = premiere_bridge.request(
-                "relink_media",
-                json!({
-                    "itemId": item_id,
-                    "newPath": new_path,
-                    "overrideCompatibility": override_compatibility
-                }),
-                Duration::from_secs(30),
-            ).await?;
-            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
-            Ok(ActionResult {
-                success: verified,
-                tool,
-                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
-                stderr: String::new(),
-                exit_code: Some(if verified {0}else{1}),
-            })
+        ToolAction::PremiereMediaAudit => {
+            let value=premiere_bridge.request("inspect_project_media_audit",json!({}),Duration::from_secs(25)).await?;
+            let complete=value.get("scanComplete").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {success:true,tool,
+                stdout:json!({"inventory":value,"scan_complete":complete,"inspection_only":true,
+                    "relink_authorized":false,"runtime_verified":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereVerifySavedMedia{project_path,expected_project_guid,expected_project_fnv1a64,
+            item_id,expected_media_path,expected_media_sha256} => {
+            let project_before=premiere_project_lifecycle::preflight_open(&project_path)?;
+            let media_before=premiere_media_relink::fingerprint(&expected_media_path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let item=premiere_bridge.request("inspect_media_interpretation",
+                json!({"itemId":item_id}),Duration::from_secs(12)).await?;
+            // Repeat exact file fingerprints after the host reads so an
+            // external writer cannot silently replace proof mid-inspection.
+            let project_after=premiere_project_lifecycle::preflight_open(&project_path)?;
+            let media_after=premiere_media_relink::fingerprint(&expected_media_path)?;
+            let files_unchanged=project_before.fnv1a64==project_after.fnv1a64
+                &&project_before.size_bytes==project_after.size_bytes
+                &&premiere_media_relink::same_file(&media_before,&media_after);
+            let report=premiere_media_relink::assess_saved_media(
+                &project_path,&expected_project_guid,&expected_project_fnv1a64,
+                &item_id,&expected_media_path,&expected_media_sha256,
+                &context,&project_after,&media_after,&item);
+            let verified=files_unchanged && report.get("saved_media_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"saved_media_verified":verified,"files_unchanged_during_audit":files_unchanged,
+                    "evidence":report,"read_only":true,"project_opened_by_this_action":false,
+                    "fresh_session_proven":false,"video_decode_verified":false,"retry_safe":true}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "Current opened project/media did not match the exact previously recorded saved fingerprints.".into()},
+                exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereRelinkMedia { item_id, new_path, expected_previous_path, override_compatibility } => {
+            // Verify the replacement's real bytes BEFORE any Adobe project mutation.
+            let media_before=premiere_media_relink::fingerprint(&new_path)?;
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project_path=context.get("projectPath").and_then(Value::as_str)
+                .filter(|p|!p.is_empty()).ok_or("Premiere relink needs a saved active .prproj.")?.to_string();
+            let project_guid=context.get("projectGuid").and_then(Value::as_str)
+                .filter(|p|!p.is_empty()).ok_or("Premiere relink needs exact project GUID.")?.to_string();
+            let sequence_guid=context.pointer("/activeSequence/guid").and_then(Value::as_str).map(str::to_owned);
+            let project_before=premiere_project_persistence::fingerprint(&project_path)?;
+            let value=premiere_bridge.request("relink_media",json!({
+                "itemId":item_id,"newPath":new_path,"expectedPreviousPath":expected_previous_path,
+                "overrideCompatibility":override_compatibility
+            }),Duration::from_secs(30)).await?;
+            let native_verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback")
+                &&value.get("observedId").and_then(Value::as_str)==Some(item_id.as_str())
+                &&value.get("observedOffline").and_then(Value::as_bool)==Some(false);
+            if !native_verified {
+                return Ok(ActionResult{success:false,tool,
+                    stdout:json!({"backup":backup,"relink":value,"native_relink_verified":false,
+                        "project_saved_after_relink":false,"retry_safe":false,
+                        "reason":"Adobe relink returned ambiguous native item/path/offline readback. The host might be changed; do not retry or save blindly."}).to_string(),
+                    stderr:"Premiere relink outcome requires owner inspection.".into(),exit_code:Some(1)});
+            }
+            let source_after=premiere_media_relink::fingerprint(&new_path);
+            let source_unchanged=source_after.as_ref().is_ok_and(|f|premiere_media_relink::same_file(&media_before,f));
+            if !source_unchanged {
+                return Ok(ActionResult{success:false,tool,
+                    stdout:json!({"backup":backup,"relink":value,"native_relink_verified":true,
+                        "replacement_sha256":media_before.sha256,"source_unchanged":false,
+                        "project_saved_after_relink":false,"retry_safe":false,
+                        "reason":"Replacement media bytes changed during Adobe relink; project not saved automatically."}).to_string(),
+                    stderr:"Replacement source changed; inspect the active Premiere project.".into(),exit_code:Some(1)});
+            }
+            // The first backup is of the PRE-EDIT project. Save once after the
+            // verified relink, without making the editor auto-retry on errors.
+            let save=premiere_bridge.request("save_project",json!({}),Duration::from_secs(20)).await;
+            let saved=save.as_ref().is_ok_and(|v|
+                v.get("saved").and_then(Value::as_bool)==Some(true)
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str()));
+            let after_context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok();
+            let same_project=after_context.as_ref().is_some_and(|v|
+                v.get("projectGuid").and_then(Value::as_str)==Some(project_guid.as_str())
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())
+                &&v.pointer("/activeSequence/guid").and_then(Value::as_str)==sequence_guid.as_deref());
+            let after_item=premiere_bridge.request("inspect_media_interpretation",
+                json!({"itemId":item_id}),Duration::from_secs(12)).await.ok();
+            let item_still_relinked=after_item.as_ref().is_some_and(|v|
+                v.get("itemId").and_then(Value::as_str)==Some(item_id.as_str())
+                &&v.get("offline").and_then(Value::as_bool)==Some(false)
+                &&v.get("mediaPath").and_then(Value::as_str)
+                    .is_some_and(|p|p.replace('/',"\\").eq_ignore_ascii_case(&new_path.replace('/',"\\"))));
+            let project_after=premiere_project_persistence::fingerprint(&project_path);
+            let persistence=match &project_after {
+                Ok(after)=>premiere_project_persistence::assess(&project_before,after,saved&&same_project,&project_path),
+                Err(error)=>json!({"persistence_verified":false,"error":error})
+            };
+            let media_final=premiere_media_relink::fingerprint(&new_path);
+            let media_unchanged=media_final.as_ref().is_ok_and(|f|premiere_media_relink::same_file(&media_before,f));
+            let durable=media_unchanged&&item_still_relinked&&saved&&same_project
+                &&persistence.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:durable,tool,
+                stdout:json!({"backup":backup,"relink":value,"save":save.as_ref().ok(),
+                    "save_error":save.as_ref().err(),"project_persistence":persistence,
+                    "replacement_sha256":media_before.sha256,
+                    "media_source_unchanged":media_unchanged,
+                    "host_project_unchanged":same_project,"media_item_recheck":after_item,
+                    "item_still_relinked":item_still_relinked,
+                    "durable_relink_verified":durable,
+                    "live_windows_acceptance_verified":false,"retry_safe":false,
+                    "note":"Host readback, exact replacement SHA256, and disk persistence are distinct checks. Opening the project in a new session remains a separate acceptance."}).to_string(),
+                stderr:if durable{String::new()}else{
+                    "Relink/save/persistence was not fully verified; inspect project and backup before retrying.".into()},
+                exit_code:Some(if durable{0}else{1})})
         }
         ToolAction::PremiereInspectMediaInterpretation {item_id} => {
             let value=premiere_bridge.request(
@@ -16723,6 +17148,118 @@ try {{
                 exit_code: Some(if verified {0}else{1}),
             })
         }
+        ToolAction::PremiereInspectAeMogrtProvenance{proof_file,output_file,expected_sha256} => {
+            let evidence=after_effects_mogrt_provenance::verify(&proof_file,&output_file,&expected_sha256)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"read_only":true,"evidence":evidence,
+                    "local_ae_export_receipt_bound":true,
+                    "attestation_cryptographically_signed":false,
+                    "premiere_graphics_appearance_verified":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereInspectMogrtArtifact{path} => {
+            let artifact=premiere_mogrt_handoff::inspect(&path)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"artifact":artifact,"read_only":true,"after_effects_origin_verified":false,
+                    "template_semantics_verified":false,"editable_in_premiere_verified":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereInsertVerifiedMogrt{request} => {
+            let expected=premiere_bridge.expected.ok_or(
+                "Verified MOGRT insertion requires an exact freshly inspected project/sequence expectation.")?;
+            expected.validate()?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Verified MOGRT insertion requires an exact sequence expectation without clip targets.".into());
+            }
+            let source_before=request.verify_source()?;
+            // Optional AE request provenance is independently verified before
+            // any Premiere mutation, in addition to the existing SHA-256 gate.
+            let ae_pre=if let Some(path)=request.ae_provenance_file.as_deref(){
+                Some(after_effects_mogrt_provenance::verify(path,&request.path,&request.expected_sha256)?)
+            }else{None};
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project_path=context.get("projectPath").and_then(Value::as_str)
+                .filter(|v|!v.is_empty()).ok_or("Active Premiere project path unavailable.")?.to_string();
+            let project_guid=context.get("projectGuid").and_then(Value::as_str)
+                .filter(|v|!v.is_empty()).ok_or("Active Premiere project GUID unavailable.")?.to_string();
+            let sequence_guid=context.pointer("/activeSequence/guid").and_then(Value::as_str)
+                .filter(|v|!v.is_empty()).ok_or("Active Premiere sequence GUID unavailable.")?.to_string();
+            if project_guid!=expected.project_guid
+                || expected.project_path.as_deref()!=Some(project_path.as_str())
+                || expected.sequence_guid.as_deref()!=Some(sequence_guid.as_str()){
+                return Err("Premiere project or sequence changed after approval; MOGRT insertion not dispatched.".into());
+            }
+            let project_before=premiere_project_persistence::fingerprint(&project_path)?;
+            let rechecked=request.verify_source()?;
+            if !premiere_media_relink::same_file(&source_before,&rechecked){
+                return Err("MOGRT artifact changed during checkpoint; native insertion not dispatched.".into());
+            }
+            let value=premiere_bridge.request("insert_mogrt_path",json!({
+                "path":request.path,"seconds":request.seconds,
+                "videoTrack":request.video_track,"audioTrack":request.audio_track
+            }),Duration::from_secs(45)).await?;
+            let inserted=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity")
+                &&value.get("insertedClipIdentityVerified").and_then(Value::as_bool)==Some(true);
+            let source_after=premiere_mogrt_handoff::inspect(&request.path);
+            let still_exact=source_after.as_ref().is_ok_and(|a|
+                premiere_media_relink::same_file(&source_before,a));
+            if !inserted||!still_exact{
+                return Ok(ActionResult{success:false,tool,
+                    stdout:json!({"backup":backup,"insertion":value,"native_insert_verified":inserted,
+                        "source_unchanged":still_exact,"post_insert_save_started":false,
+                        "retry_safe":false,"note":"The MOGRT clip may have changed the Premiere timeline. Inspect host before retry."}).to_string(),
+                    stderr:"MOGRT source or native insertion identity uncertain. No automatic save/retry.".into(),exit_code:Some(1)});
+            }
+            // Only after independent insertion+source readback do we save the edited project.
+            let saved_request=premiere_bridge.request("save_project",json!({}),Duration::from_secs(20)).await;
+            let saved=saved_request.as_ref().is_ok_and(|v|
+                v.get("saved").and_then(Value::as_bool)==Some(true)
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str()));
+            let current=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok();
+            let same_project=current.as_ref().is_some_and(|v|
+                v.get("projectGuid").and_then(Value::as_str)==Some(project_guid.as_str())
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())
+                &&v.pointer("/activeSequence/guid").and_then(Value::as_str)==Some(sequence_guid.as_str()));
+            let after_project=premiere_project_persistence::fingerprint(&project_path);
+            let persistence=match &after_project {
+                Ok(after)=>premiere_project_persistence::assess(
+                    &project_before,after,saved&&same_project,&project_path),
+                Err(e)=>json!({"persistence_verified":false,"error":e})
+            };
+            let source_final=premiere_mogrt_handoff::inspect(&request.path);
+            let proof=match source_final {
+                Ok(after)=>premiere_mogrt_handoff::assess_receipt(
+                    &request,&source_before,&after,&value,saved,same_project,&persistence),
+                Err(e)=>json!({"handoff_verified":false,"source_error":e,
+                    "project_saved":saved,"active_project_identity_preserved":same_project,
+                    "on_disk_project_persistence_verified":persistence.get("persistence_verified"),
+                    "after_effects_producer_verified":false,"retry_safe":false})
+            };
+            let ae_post=if let Some(path)=request.ae_provenance_file.as_deref(){
+                after_effects_mogrt_provenance::verify(path,&request.path,&request.expected_sha256).ok()
+            }else{None};
+            let ae_receipt_bound=ae_pre.as_ref().is_some_and(|before|
+                ae_post.as_ref().is_some_and(|after|
+                    before.get("request_id")==after.get("request_id")
+                    &&before.get("receipt_sha256")==after.get("receipt_sha256")
+                    &&before.get("output_sha256")==after.get("output_sha256")));
+            let verified=proof.get("handoff_verified").and_then(Value::as_bool)==Some(true)
+                &&(ae_pre.is_none()||ae_receipt_bound);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"backup":backup,"insertion":value,"save":saved_request.as_ref().ok(),
+                    "save_error":saved_request.as_ref().err(),
+                    "project_persistence":persistence,"handoff":proof,
+                    "ae_local_receipt_provenance_required":ae_pre.is_some(),
+                    "ae_local_receipt_provenance_verified":ae_receipt_bound,
+                    "ae_local_receipt_provenance_after":ae_post,
+                    "ae_origin_cryptographically_attested":false,
+                    "post_state_verified":verified,"retry_safe":false,
+                    "live_windows_verified":false}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "MOGRT insertion/save incomplete or uncertain. Inspect current Premiere timeline and backup.".into()},
+                exit_code:Some(if verified{0}else{1})})
+        }
         ToolAction::PremiereInsertMogrtPath { path, seconds, video_track, audio_track } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge.request(
@@ -16769,62 +17306,115 @@ try {{
             })
         }
         ToolAction::PremiereBatchRelink { items } => {
-            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
-            let backup = backup_premiere_project(&premiere_bridge).await?;
-            let total = items.len();
-            let mut results = Vec::with_capacity(total);
-            let mut failures = 0_usize;
-
-            for item in items {
-                if state.media_prep_cancelled.load(Ordering::Acquire) { break; }
-                let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
-                match premiere_bridge.request(
-                    "relink_media",
-                    item.clone(),
-                    Duration::from_secs(30),
-                ).await {
-                    Ok(result) => {
-                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
-                        results.push(json!({
-                            "itemId":item_id,"success":verified,"uncertain":!verified,"result":result
-                        }));
-                        if !verified {
-                            failures += 1;
+            let _guard=state.media_prep_running.begin(&state.media_prep_cancelled)?;
+            let entries=items.iter().cloned().map(serde_json::from_value::<premiere_batch_relink::Entry>)
+                .collect::<Result<Vec<_>,_>>()
+                .map_err(|e|format!("Corrupt approved Premiere batch relink item: {e}"))?;
+            let proofs=premiere_batch_relink::fingerprint_sources(&entries)?;
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let ctx=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project_path=ctx.get("projectPath").and_then(Value::as_str)
+                .filter(|s|!s.is_empty()).ok_or("Batch relink requires a saved .prproj.")?.to_string();
+            let project_guid=ctx.get("projectGuid").and_then(Value::as_str)
+                .filter(|s|!s.is_empty()).ok_or("Batch relink requires project GUID.")?.to_string();
+            let sequence_guid=ctx.pointer("/activeSequence/guid").and_then(Value::as_str).map(str::to_owned);
+            let project_before=premiere_project_persistence::fingerprint(&project_path)?;
+            let total=entries.len();
+            let mut results=Vec::with_capacity(total);
+            let mut changed_indices=Vec::with_capacity(total);
+            let mut failures=0usize;
+            let mut cancelled=false;
+            for (index,entry) in entries.iter().enumerate() {
+                if state.media_prep_cancelled.load(Ordering::Acquire) {
+                    cancelled=true;break;
+                }
+                if !premiere_batch_relink::same_source(entry,&proofs[index]) {
+                    failures+=1;
+                    results.push(json!({"itemId":entry.item_id,"success":false,
+                        "uncertain":false,"error":"Approved replacement media changed before native relink."}));
+                    break;
+                }
+                let response=premiere_bridge.request("relink_media",entry.uxp_args(),
+                    Duration::from_secs(30)).await;
+                match response {
+                    Ok(result)=>{
+                        let verified=entry.host_verified(&result)
+                            &&premiere_batch_relink::same_source(entry,&proofs[index]);
+                        results.push(json!({"itemId":entry.item_id,
+                            "success":false,"native_relink_verified":verified,
+                            "uncertain":!verified,"result":result,
+                            "source_sha256":proofs[index].sha256}));
+                        if !verified{
+                            failures+=1;
                             break;
                         }
-                    },
-                    Err(error) => {
-                        failures += 1;
-                        results.push(json!({
-                            "itemId": item_id,
-                            "success": false,
-                            "error": error
-                        }));
+                        changed_indices.push(index);
+                    }
+                    Err(error)=>{
+                        failures+=1;
+                        results.push(json!({"itemId":entry.item_id,"success":false,
+                            "uncertain":true,"error":error,"retry_safe":false}));
                         break;
                     }
                 }
             }
-
-            Ok(ActionResult {
-                success: failures == 0 && results.len() == total,
-                tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "total": total,
-                    "succeeded": results.len().saturating_sub(failures),
-                    "processed": results.len(),
-                    "unattempted": total.saturating_sub(results.len()),
-                    "uncertain": failures > 0,
-                    "failed": failures,
-                    "items": results
-                })).unwrap_or_default(),
-                stderr: if failures == 0 && results.len() == total {
-                    String::new()
-                } else {
-                    format!("{failures} of {total} Premiere relink operations failed or remained unverified; successful earlier items were not rolled back.")
-                },
-                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
-            })
+            // Partial mutations remain in the open Adobe project. A verified
+            // subset is saved once, while overall batch success stays false.
+            let save=if changed_indices.is_empty(){None}else{
+                Some(premiere_bridge.request("save_project",json!({}),Duration::from_secs(20)).await)
+            };
+            let saved=save.as_ref().is_some_and(|s|s.as_ref().is_ok_and(|v|
+                v.get("saved").and_then(Value::as_bool)==Some(true)
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())));
+            let after_context=if !changed_indices.is_empty(){
+                premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok()
+            }else{None};
+            let identity_retained=after_context.as_ref().is_some_and(|v|
+                v.get("projectGuid").and_then(Value::as_str)==Some(project_guid.as_str())
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())
+                &&v.pointer("/activeSequence/guid").and_then(Value::as_str)==sequence_guid.as_deref());
+            let persisted=if !changed_indices.is_empty(){
+                match premiere_project_persistence::fingerprint(&project_path){
+                    Ok(after)=>premiere_project_persistence::assess(
+                        &project_before,&after,saved&&identity_retained,&project_path),
+                    Err(error)=>json!({"persistence_verified":false,"error":error})
+                }
+            }else{json!({"persistence_verified":false,"reason":"No native relinks verified."})};
+            let mut after_save_verified=true;
+            for index in &changed_indices {
+                let entry=&entries[*index];
+                let current=premiere_bridge.request("inspect_media_interpretation",
+                    json!({"itemId":entry.item_id}),Duration::from_secs(12)).await;
+                let verified=current.as_ref().is_ok_and(|value|entry.post_save_verified(value))
+                    &&premiere_batch_relink::same_source(entry,&proofs[*index]);
+                if !verified{after_save_verified=false;}
+                results[*index]["post_save_item_verified"]=json!(verified);
+                let item_durable=verified&&saved&&identity_retained
+                    &&persisted.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+                results[*index]["success"]=json!(item_durable);
+                results[*index]["saved_project_persistence_verified"]=json!(
+                    persisted.get("persistence_verified").and_then(Value::as_bool)==Some(true));
+                if let Ok(value)=current {results[*index]["post_save_readback"]=value;}
+            }
+            let completed=failures==0&&!cancelled&&changed_indices.len()==total;
+            let durable=completed&&saved&&identity_retained&&after_save_verified
+                &&persisted.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:durable,tool,
+                stdout:json!({"backup":backup,"total":total,"processed":results.len(),
+                    "verified_before_save":changed_indices.len(),
+                    "unattempted":total.saturating_sub(results.len()),
+                    "failed":failures,"cancelled":cancelled,
+                    "partial_host_mutations_possible":!completed,
+                    "project_save_attempted":save.is_some(),
+                    "project_saved":saved,"identity_retained":identity_retained,
+                    "project_persistence":persisted,
+                    "post_save_item_checks_pass":after_save_verified,
+                    "batch_durable_verified":durable,
+                    "items":results,"retry_safe":false,
+                    "note":"A partial batch is never automatically rolled back or retried. Successful earlier relinks may have been persisted once; inspect exact items and backup before resuming."}).to_string(),
+                stderr:if durable{String::new()}else{
+                    "Batch relink incomplete, cancelled or not durably verified; inspect host items and backup before a new approved action.".into()},
+                exit_code:Some(if durable{0}else{1})})
         }
         ToolAction::PremiereBatchAttachProxy { items } => {
             let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
@@ -16884,14 +17474,289 @@ try {{
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
         }
-        ToolAction::PremiereImportCaptionSource {path} => {
+        ToolAction::PremiereVerifyReopenedCaptionGraphics {request,receipt,save_receipt,open_receipt} => {
+            let expected=premiere_bridge.expected
+                .ok_or("Post-open caption audit needs freshly inspected project and sequence expectation.")?;
+            let sequence_guid=expected.sequence_guid.as_deref()
+                .ok_or("Post-open caption audit requires an exact saved sequence GUID.")?;
+            if !expected.clips.is_empty() {
+                return Err("Post-open caption audit cannot use stale sequence clip indexes.".into());
+            }
+            let path=expected.project_path.as_deref()
+                .ok_or("Post-open caption audit needs an existing project file path.")?;
+            let saved_file=premiere_caption_save_binding::saved_after(
+                &save_receipt,&expected.project_guid,path)?;
+            let before_disk=premiere_caption_save_binding::snapshot(path)?;
+            if before_disk.fingerprint!=saved_file {
+                return Err("Project bytes changed after saved-project approval, before post-open audit.".into());
+            }
+            premiere_caption_reopen::validate_open_receipt(
+                &open_receipt,&expected.project_guid,path,&saved_file,&before_disk)?;
+            let saved_mapping=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("Original inspected MOGRT mapping no longer exists.")?;
+            let original=premiere_caption_graphics::plan(&request,&saved_mapping)?;
+            let batch:premiere_graphics::Batch=serde_json::from_value(
+                original.get("generated_batch").cloned()
+                    .ok_or("Exact previously selected caption manifest not available.")?
+            ).map_err(|e|format!("Invalid post-open caption batch: {e}"))?;
+            premiere_caption_graphics::validate_audit_receipt(&batch,&receipt,
+                original["source_srt_sha256"].as_str().ok_or("Missing original SRT SHA256.")?)?;
+            let context_before=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let audit=premiere_bridge.request("verify_caption_graphics",json!({
+                "mapping":saved_mapping.mapping,"items":batch.items,
+                "receipts":receipt["batch"]["items"],
+                "videoTrack":batch.video_track,
+                "_expected":expected
+            }),Duration::from_secs(90)).await?;
+            let context_after=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let latest=premiere_caption_graphics::plan(&request,&saved_mapping);
+            let unchanged=latest.as_ref().is_ok_and(|v|
+                v.get("source_srt_sha256")==original.get("source_srt_sha256")
+                    &&v.get("generated_batch")==original.get("generated_batch"));
+            let after_disk=premiere_caption_save_binding::snapshot(path)?;
+            let assessment=premiere_caption_reopen::assess(
+                &before_disk,&after_disk,unchanged,&audit,batch.items.len(),
+                &context_before,&context_after,&expected.project_guid,sequence_guid,path);
+            let success=assessment["post_approved_open_saved_caption_evidence_consistent"]==true;
+            Ok(ActionResult{success,tool,
+                stdout:json!({
+                    "verification":assessment,
+                    "source_srt_sha256":original["source_srt_sha256"],
+                    "native_post_open_caption_audit":audit,
+                    "original_open_receipt_source_authenticated":false,
+                    "fresh_session_reopen_verified":false,
+                    "automatically_opened_or_saved":false,
+                    "mp4_export_verified":false,
+                    "retry_automatically":false
+                }).to_string(),
+                stderr:if success{String::new()}else{
+                    "Exact approved-open and persisted caption readback evidence mismatch; manual inspection required.".into()
+                },exit_code:Some(if success{0}else{1})})
+        }
+        ToolAction::PremiereVerifySavedCaptionGraphics {request,receipt,save_receipt} => {
+            let expected=premiere_bridge.expected
+                .ok_or("Caption project-save audit needs inspected exact Premiere project/sequence expectation.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty() {
+                return Err("Caption project-save audit requires exact project/sequence without old clip indexes.".into());
+            }
+            let path=expected.project_path.as_deref()
+                .ok_or("Caption project-save verification needs an existing absolute .prproj path.")?;
+            let claimed=premiere_caption_save_binding::saved_after(
+                &save_receipt,&expected.project_guid,path)?;
+            let before_disk=premiere_caption_save_binding::snapshot(path)?;
+            if before_disk.fingerprint!=claimed {
+                return Err("Saved .prproj no longer matches the approved save receipt before native caption readback.".into());
+            }
+            let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("Saved caption graphics mapping changed or disappeared.")?;
+            let source=premiere_caption_graphics::plan(&request,&saved)?;
+            let batch:premiere_graphics::Batch=serde_json::from_value(
+                source.get("generated_batch").cloned().ok_or("Missing source-verified selected caption batch.")?
+            ).map_err(|e|format!("Invalid saved caption audit batch: {e}"))?;
+            premiere_caption_graphics::validate_audit_receipt(&batch,&receipt,
+                source["source_srt_sha256"].as_str().ok_or("Selected caption SHA unavailable.")?)?;
+            let audit=premiere_bridge.request("verify_caption_graphics",json!({
+                "mapping":saved.mapping,"items":batch.items,
+                "receipts":receipt["batch"]["items"],
+                "videoTrack":batch.video_track,
+                "_expected":expected
+            }),Duration::from_secs(90)).await?;
+            // Both the SRT source and exact project file are re-read after
+            // inspecting native host values. No second edit or save occurs.
+            let second_source=premiere_caption_graphics::plan(&request,&saved);
+            let unchanged=second_source.as_ref().is_ok_and(|later|
+                later.get("source_srt_sha256")==source.get("source_srt_sha256")
+                &&later.get("generated_batch")==source.get("generated_batch"));
+            let after_disk=premiere_caption_save_binding::snapshot(path)?;
+            let report=premiere_caption_save_binding::assess(
+                &claimed,&before_disk,&after_disk,unchanged,&audit,batch.items.len());
+            let consistent=report["current_host_and_project_save_evidence_consistent"]==true;
+            Ok(ActionResult{success:consistent,tool,
+                stdout:json!({"verification":report,
+                    "save_receipt_fingerprint":claimed,
+                    "native_caption_audit":audit,
+                    "caption_source_sha256":source["source_srt_sha256"],
+                    "saved_project_caption_semantics_verified":false,
+                    "fresh_session_reopen_verified":false,
+                    "live_windows_acceptance_verified":false,
+                    "retry_automatically":false}).to_string(),
+                stderr:if consistent{String::new()}else{
+                    "Saved project/source and current native caption evidence disagree; inspect before any new action.".into()},
+                exit_code:Some(if consistent{0}else{1})})
+        }
+        ToolAction::PremiereVerifyCaptionGraphics {request,receipt} => {
+            let expected=premiere_bridge.expected
+                .ok_or("Caption graphics verification requires an exact inspected project/sequence expectation.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Caption graphics verification requires one exact project+sequence, no stale clip indexes.".into());
+            }
+            let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("Caption MOGRT mapping is no longer available for exact readback.")?;
+            let source=premiere_caption_graphics::plan(&request,&saved)?;
+            let batch:premiere_graphics::Batch=serde_json::from_value(
+                source.get("generated_batch").cloned().ok_or("Missing bounded source-verified caption batch.")?
+            ).map_err(|e|format!("Cannot decode source-bound caption audit batch: {e}"))?;
+            premiere_caption_graphics::validate_audit_receipt(&batch,&receipt,
+                source["source_srt_sha256"].as_str().ok_or("Missing selected SRT SHA256.")?)?;
+            // The new host route is read-only: it scans the video destination
+            // and matches native stable clip identity while allowing INDEX
+            // shifts caused by inserting earlier captions.
+            let audit=premiere_bridge.request("verify_caption_graphics",json!({
+                "mapping":saved.mapping,"items":batch.items,
+                "receipts":receipt["batch"]["items"],
+                "videoTrack":batch.video_track,
+                "_expected":expected
+            }),Duration::from_secs(90)).await?;
+            // Re-read the exact selected SRT after host inspection. Any change
+            // means even a successful host scan cannot bind to this source.
+            let after=premiere_caption_graphics::plan(&request,&saved);
+            let unchanged=after.as_ref().is_ok_and(|next|
+                next.get("source_srt_sha256")==source.get("source_srt_sha256")
+                &&next.get("generated_batch")==source.get("generated_batch"));
+            let checked=audit["native_current_session_caption_values_verified"]==true
+                &&audit["verified_count"].as_u64()==Some(batch.items.len() as u64)
+                &&audit["requested_count"].as_u64()==Some(batch.items.len() as u64)
+                &&audit["readOnly"]==true
+                &&unchanged;
+            let project_disk=expected.project_path.as_deref()
+                .and_then(|path|premiere_project_persistence::fingerprint(path).ok());
+            Ok(ActionResult{success:checked,tool,
+                stdout:json!({
+                    "current_host_caption_graphics_readback_verified":checked,
+                    "source_srt_unchanged_during_readback":unchanged,
+                    "source_srt_sha256":source["source_srt_sha256"],
+                    "mapping_revision":request.revision,
+                    "native_audit":audit,
+                    "project_disk_fingerprint_observed":project_disk,
+                    "project_save_acceptance_verified":false,
+                    "saved_project_caption_semantics_verified":false,
+                    "fresh_session_reopen_verified":false,
+                    "visual_caption_animation_verified":false,
+                    "mp4_export_verified":false,
+                    "read_only":true,
+                    "retry_automatically":false
+                }).to_string(),
+                stderr:if checked{String::new()}else{"Independent caption source/native host readback remains unverified.".into()},
+                exit_code:Some(if checked{0}else{1})})
+        }
+        ToolAction::PremiereApplyCaptionGraphics {request} => {
+            // Reuse the same single-live graphics lease, native checkpoint,
+            // reviewable per-item receipts and cancellation behavior.
+            let _guard=state.graphics_running.begin(&state.graphics_cancelled)?;
+            let expected=premiere_bridge.expected
+                .ok_or("Caption graphics requires inspected Premiere project/sequence expectation.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Caption graphics requires exact project+sequence without stale clip selectors.".into());
+            }
+            let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("The inspected caption MOGRT mapping is no longer available.")?;
+            let generated=premiere_caption_graphics::plan(&request,&saved)?;
+            let batch:premiere_graphics::Batch=serde_json::from_value(
+                generated.get("generated_batch").cloned().ok_or("Missing source-bound caption batch.")?
+            ).map_err(|e|format!("Bad source-bound caption batch: {e}"))?;
+            stage_graphics_batch(&serde_json::to_value(&batch).map_err(|e|e.to_string())?,Some(expected))?;
+            saved.mapping.validate_local_template()?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(30)).await?;
+            if timeline["truncated"]!=false
+                ||!timeline["videoTracks"].as_array().is_some_and(|rows|rows.iter().any(|t|t["index"]==batch.video_track))
+                ||!timeline["audioTracks"].as_array().is_some_and(|rows|rows.iter().any(|t|t["index"]==batch.audio_track)){
+                return Err("Caption MOGRT insertion needs a complete active timeline and existing tracks.".into());
+            }
+            // The native host also checks each placement immediately before
+            // insertion. This independent complete snapshot prevents known
+            // video/audio occupancy collisions before ANY batch checkpoint.
+            let occupancy=premiere_caption_graphics::preflight_timeline(
+                &batch,&timeline,&expected.project_guid,
+                expected.project_path.as_deref(),
+                expected.sequence_guid.as_deref().ok_or("Missing expected caption sequence GUID.")?
+            )?;
+            let expected_batch=serde_json::to_value(&batch).map_err(|e|e.to_string())?;
+            let result=premiere_graphics::run_batch(&batch,&saved,&state.graphics_cancelled,|step|{
+                let client=&premiere_bridge;
+                let source=&request;
+                let mapping=&saved;
+                let expected_batch=&expected_batch;
+                async move {
+                    match step {
+                        premiere_graphics::BatchStep::Checkpoint=>
+                            Ok(json!(backup_premiere_project(client).await?)),
+                        premiere_graphics::BatchStep::Insert(arguments)=>{
+                            // A cached preflight is insufficient: check exact SRT
+                            // bytes and the originally selected fields again
+                            // before EACH native graphics insertion.
+                            let check=premiere_caption_graphics::plan(source,mapping)?;
+                            if check.get("generated_batch")!=Some(expected_batch) {
+                                return Err("Selected caption manifest changed after approval; native insertion blocked.".into());
+                            }
+                            client.request("insert_mapped_graphic",arguments,Duration::from_secs(90)).await
+                        }
+                    }
+                }
+            }).await?;
+            let complete=result["complete"]==true;
+            Ok(ActionResult{success:complete,tool,
+                stdout:json!({"source_srt_sha256":generated["source_srt_sha256"],
+                    "mapped_caption_role":"caption_text",
+                    "preflight_occupancy":occupancy,
+                    "batch":result,
+                    "native_caption_graphics_complete_receipts":complete,
+                    "premiere_project_save_verified":false,
+                    "export_completion_verified":false,
+                    "review_required":true,"retry_automatically":false}).to_string(),
+                stderr:String::new(),exit_code:Some(if complete{0}else{1})})
+        }
+        ToolAction::PremierePlanCaptionGraphics {request} => {
+            let expected=premiere_bridge.expected.ok_or("Caption graphics plan requires current inspected Premiere project and sequence expectation.")?;
+            if expected.sequence_guid.is_none() || !expected.clips.is_empty() {
+                return Err("Caption graphics plan requires exact project+sequence expectation without old clip targets.".into());
+            }
+            let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("Caption MOGRT mapping unavailable; inspect and save exact template selectors first.")?;
+            let result=premiere_caption_graphics::plan(&request,&saved)?;
+            Ok(ActionResult{success:true,tool,stdout:result.to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCreateSelectiveSrt {request} => {
+            // This is a separately approved real new-file write with independent
+            // SHA256 readback. Never claim native Adobe caption-track creation.
+            let evidence=premiere_selective_captions::publish(&request)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"source":evidence,"source_tested":false,
+                    "premiere_caption_track_created":false,
+                    "adobe_live_tested":false,"requires_separate_import_approval":true,
+                    "retry_automatically":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereImportCaptionSource {path,expected_sha256} => {
+            let before=premiere_media_relink::fingerprint(&path)?;
+            if before.size_bytes>1024*1024 {
+                return Err("Caption SRT/VTT must be at most 1 MiB for bounded import proof.".into());
+            }
+            if expected_sha256.as_ref().is_some_and(|sha|
+                !before.sha256.eq_ignore_ascii_case(sha)) {
+                return Err("Caption source SHA256 changed before Adobe import; no mutation attempted.".into());
+            }
             let checkpoint=backup_premiere_project(&premiere_bridge).await?;
             let value=premiere_bridge.request("import_caption_source",json!({"path":path}),Duration::from_secs(30)).await?;
+            let after=premiere_media_relink::fingerprint(&path);
+            let unchanged=after.as_ref().is_ok_and(|after|premiere_media_relink::same_file(&before,after));
             let status=value.get("verificationStatus").and_then(Value::as_str);
-            let verified=matches!(status,Some("verified_caption_source_import")|Some("verified_existing_source"))
+            let native_observed=matches!(status,Some("verified_caption_source_import")|Some("verified_existing_source"))
                 && value.get("projectItemObserved").and_then(Value::as_bool)==Some(true);
+            let verified=native_observed&&unchanged;
             Ok(ActionResult{success:verified,tool,stdout:json!({"checkpoint":checkpoint,"result":value,
-                "source_import_verified":verified,"caption_track_created":false,"caption_text_write_supported":false,
+                "source_import_verified":verified,"source_sha256":before.sha256,
+                "source_size_bytes":before.size_bytes,
+                "source_unchanged_during_host_import":unchanged,
+                "native_project_item_observed":native_observed,
+                "source_hash_readback_error":after.as_ref().err(),
+                "premiere_project_save_verified":false,
+                "caption_track_created":false,"caption_text_write_supported":false,
                 "retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereImportMedia { paths, expected_sha256 } => {
@@ -17744,10 +18609,81 @@ try {{
                 }
             }
         }
+        ToolAction::PremiereVerifyMp4Decode{job_id,expected_project_guid,expected_sequence_guid,budget_secs} => {
+            // Hold the native export ledger only for identity selection. Release
+            // it BEFORE full MP4 hashing / optional bounded decoder process.
+            let job={
+                let path=premiere_export_jobs_path(app)?;
+                let _io=state.premiere_export_jobs_io.lock()
+                    .map_err(|_|"Premiere export job store unavailable.")?;
+                let jobs=premiere_export_jobs::load(&path)?;
+                jobs.jobs.iter().find(|entry|entry.job_id==job_id)
+                    .cloned().ok_or("Exact Premiere MP4 decode job is absent.")?
+            };
+            let report=premiere_full_decode::inspect(&job,&expected_project_guid,
+                &expected_sequence_guid,budget_secs)?;
+            let decoded=report.get("full_selected_stream_decode_verified")
+                .and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"inspection_completed":true,"full_decode_verified":decoded,
+                    "read_only":true,"evidence":report,
+                    "encoder_completion_verified":false,
+                    "export_job_attribution_verified":false,
+                    "visual_quality_verified":false,
+                    "final_delivery_ready":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereInspectDeliverySpec{job_id,expected_project_guid,expected_sequence_guid,spec} => {
+            let job={
+                let path=premiere_export_jobs_path(app)?;
+                let _io=state.premiere_export_jobs_io.lock()
+                    .map_err(|_|"Premiere export job store unavailable.")?;
+                let jobs=premiere_export_jobs::load(&path)?;
+                jobs.jobs.iter().find(|j|j.job_id==job_id)
+                    .cloned().ok_or("Exact Premiere technical QC job UUID not found.")?
+            };
+            // Release job-store mutex before output hashing and trusted ffprobe.
+            let qc=premiere_delivery_spec::inspect(
+                &job,&expected_project_guid,&expected_sequence_guid,&spec)?;
+            let matched=qc.get("technical_spec_conformance_verified")
+                .and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"inspection_completed":true,"read_only":true,
+                    "technical_spec_conformance_verified":matched,
+                    "technical_qc_evidence":qc,"encoder_completion_verified":false,
+                    "export_job_attribution_verified":false,"visual_quality_verified":false,
+                    "human_playback_verified":false,"final_delivery_ready":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereInspectFinalDelivery{job_id,expected_project_guid,expected_sequence_guid} => {
+            // Drop the export-store mutex before expensive read-only hashing/probe.
+            let job={
+                let path=premiere_export_jobs_path(app)?;
+                let _io=state.premiere_export_jobs_io.lock()
+                    .map_err(|_|"Premiere export job store unavailable.")?;
+                let jobs=premiere_export_jobs::load(&path)?;
+                jobs.jobs.iter().find(|j|j.job_id==job_id)
+                    .cloned().ok_or("Exact Premiere export job UUID not found.")?
+            };
+            let evidence=premiere_final_delivery::inspect(
+                &job,&expected_project_guid,&expected_sequence_guid)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"inspection_completed":true,
+                    "read_only":true,"job_evidence":evidence,
+                    "encoder_completion_independently_proven":false,
+                    "full_decode_proven":false,"final_delivery_ready":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::PremiereExportStatus {job_id} => {
             let path=premiere_export_jobs_path(app)?;
-            let identity=if state.premiere_bridge.status()?.paired {
+            let paired=state.premiere_bridge.status()?.paired;
+            let identity=if paired {
                 premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok()
+            }else{None};
+            // Observe the existing host queue/event ring without writing to it.
+            // Request the complete bounded ring before taking the Rust jobs mutex.
+            let native_events=if paired {
+                premiere_bridge.request("media_encoder_events",json!({"limit":100}),Duration::from_secs(8)).await.ok()
             }else{None};
             let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
             let mut jobs=premiere_export_jobs::load(&path)?;
@@ -17756,8 +18692,11 @@ try {{
                 context.get("projectGuid").and_then(Value::as_str)!=Some(job.project_guid.as_str())
                 || context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(job.sequence_guid.as_str()));
             let mut result=job.observe_once()?;
+            let native_observation=job.native_event_observation(native_events.as_ref());
             let media_validation_challenge=job.media_validation_challenge().ok();
-            if let Some(map)=result.as_object_mut(){map.insert("identity_checked".into(),json!(identity.is_some()));
+            if let Some(map)=result.as_object_mut(){
+                map.insert("native_encoder_event_observation".into(),native_observation);
+                map.insert("identity_checked".into(),json!(identity.is_some()));
                 map.insert("stale_project_or_sequence".into(),json!(stale));
                 map.insert("media_validation_challenge".into(),json!(media_validation_challenge));}
             premiere_export_jobs::save(&path,&jobs)?;
@@ -18132,6 +19071,15 @@ try {{
                             if queue_to_ame{"queued"}else{"accepted"}
                         }else{"execution_status_unknown"}.into();
                     let accepted=matches!(record.bridge_state.as_str(),"accepted"|"queued");
+                    // Save the actual bridge command identity only for the exact
+                    // accepted output. This is NOT an Adobe encoder job ID.
+                    if accepted && value.get("output").and_then(Value::as_str)==Some(output.as_str()){
+                        if let Some(id)=value.get("bridgeRequestId").and_then(Value::as_str)
+                            .filter(|id|!id.is_empty()&&id.len()<=160
+                                &&id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')) {
+                            record.bridge_request_id=Some(id.to_owned());
+                        }
+                    }
                     premiere_export_jobs::save(&jobs_path,&jobs)?;
                     Ok(ActionResult {success:accepted,tool,
                         stdout:serde_json::to_string_pretty(&json!({"job_id":job_id,"encoder":value,
@@ -18155,6 +19103,8 @@ try {{
             let expected_project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("").to_string();
             let before=if expected_path.is_empty(){Err("Active project path unavailable before save.".to_string())}
                 else{premiere_project_persistence::fingerprint(&expected_path)};
+            let checkpoint=if expected_path.is_empty(){return Err("Cannot save a project without an existing .prproj path.".into());}
+                else{premiere_checkpoint::create_checkpoint(Path::new(&expected_path),now_ms())?};
             let value = premiere_bridge
                 .request("save_project", json!({}), Duration::from_secs(15)).await?;
             let accepted = value.get("saved").and_then(Value::as_bool) == Some(true);
@@ -18180,6 +19130,7 @@ try {{
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "save":value,
+                    "pre_save_checkpoint":checkpoint,
                     "project_guid":expected_project,
                     "expected_project_path":expected_path,
                     "native_accepted":accepted,

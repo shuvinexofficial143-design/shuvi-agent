@@ -37,11 +37,29 @@ fn name_ok(s: &str) -> bool { !s.trim().is_empty() && s == s.trim() && s.encode_
 pub fn validate_name(s: &str) -> Result<(), String> {
     if name_ok(s) { Ok(()) } else { Err("Mapping names must contain 1–240 characters without surrounding whitespace or NUL.".into()) }
 }
+// Mirror the bounded primitive schema accepted by Premiere UXP's
+// mogrt-workflows.js. JSON objects must be explicitly tagged and have NO
+// unrecognized fields; do not coerce a native host readback into user input.
 fn primitive_type(v: &Value) -> Option<&'static str> {
     match v {
         Value::String(s) if s.encode_utf16().count() <= 2048 => Some("string"),
         Value::Bool(_) => Some("boolean"),
         Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => Some("number"),
+        Value::Object(obj) => match obj.get("type").and_then(Value::as_str) {
+            Some("point") if obj.len()==3 => {
+                let bounded=|key:&str|obj.get(key).and_then(Value::as_f64)
+                    .is_some_and(|v|v.is_finite()&&v.abs()<=1_000_000.0);
+                if bounded("x")&&bounded("y"){Some("point")}else{None}
+            },
+            Some("color") if obj.len()==5 => {
+                let channel=|key:&str|obj.get(key).and_then(Value::as_f64)
+                    .is_some_and(|v|v.is_finite()&&(0.0..=1.0).contains(&v));
+                if ["red","green","blue","alpha"].iter().all(|key|channel(key)){
+                    Some("color")
+                }else{None}
+            },
+            _=>None,
+        },
         _ => None,
     }
 }
@@ -75,7 +93,7 @@ impl Mapping {
         let mut selectors = HashSet::new();
         for f in &self.fields {
             if !name_ok(&f.role) || !roles.insert(&f.role) || !name_ok(&f.param_display_name)
-                || !matches!(f.primitive_type.as_str(), "string" | "number" | "boolean")
+                || !matches!(f.primitive_type.as_str(), "string" | "number" | "boolean" | "point" | "color")
                 || (f.component_match_name.is_none() && f.component_display_name.is_none())
                 || [f.component_match_name.as_ref(), f.component_display_name.as_ref()].into_iter().flatten().any(|s| !name_ok(s))
                 || !selectors.insert((&f.component_match_name, &f.component_display_name, &f.param_display_name)) {
@@ -316,6 +334,17 @@ mod tests {
             native["components"][0]["params"][0]["value"] = value;
             m.validate_inspection(&native).unwrap();
         }
+        // Essential Graphics native coordinates and RGBA static values use
+        // exact tagged JSON (the same primitive() contract as Premiere UXP).
+        for (kind,value) in [
+            ("point",json!({"type":"point","x":0.45,"y":0.88})),
+            ("color",json!({"type":"color","red":1.0,"green":0.3,"blue":0.1,"alpha":1.0}))
+        ] {
+            m.fields[0].primitive_type=kind.into();
+            native["components"][0]["params"][0]["type"]=json!(kind);
+            native["components"][0]["params"][0]["value"]=value;
+            m.validate_inspection(&native).unwrap();
+        }
         native["truncated"] = json!(true); assert!(m.validate_inspection(&native).is_err());
         let mut duplicate = mapping(); duplicate.fields.push(duplicate.fields[0].clone()); assert!(duplicate.validate().is_err());
         let mut alias = mapping(); let mut field = alias.fields[0].clone(); field.role = "cta".into(); field.component_match_name = None; field.component_display_name = Some("Native".into()); alias.fields.push(field);
@@ -331,6 +360,41 @@ mod tests {
         let mut m = mapping(); m.template = Template::Path {path:"relative.mogrt".into()}; assert!(m.validate().is_err());
         let mut b = batch(2); b.items[1].seconds = b.items[0].seconds; assert!(b.validate().is_err());
         let mut b = batch(1); b.items[0].duration_seconds = Some(-1.0); assert!(b.validate().is_err());
+    }
+    #[test] fn native_style_point_and_color_values_match_uxp_strictly() {
+        for (kind,valid) in [
+            ("point",json!({"type":"point","x":0.5,"y":0.88})),
+            ("color",json!({"type":"color","red":0.1,"green":0.5,"blue":1,"alpha":1}))
+        ] {
+            assert_eq!(primitive_type(&valid),Some(kind));
+            let mut m=mapping();
+            m.fields[0].primitive_type=kind.into();
+            m.validate().unwrap();
+            let mut saved=saved();
+            saved.mapping=m;
+            let mut b=batch(1);
+            b.items[0].fields.insert("name".into(),valid);
+            b.resolve(&saved).unwrap();
+        }
+        for bad in [
+            json!({"x":0.5,"y":0.88}),
+            json!({"type":"point","x":0.5,"y":0.88,"js":"unsafe"}),
+            json!({"type":"point","x":1000001,"y":0.88}),
+            json!({"type":"point","x":"0.5","y":0.88}),
+            json!({"type":"point","x":null,"y":0.88}),
+            json!({"type":"color","red":1,"green":0.2,"blue":1}),
+            json!({"type":"color","red":1,"green":0.2,"blue":1,"alpha":2}),
+            json!({"type":"color","red":-0.01,"green":0.2,"blue":1,"alpha":1}),
+            json!({"type":"color","red":1,"green":0.2,"blue":1,"alpha":1,"hex":"#ffffff"}),
+        ] {
+            assert!(primitive_type(&bad).is_none(), "bad style value: {bad}");
+            let mut b=batch(1);
+            b.items[0].fields.insert("name".into(),bad);
+            assert!(b.validate().is_err());
+        }
+        let mut m=mapping();
+        m.fields[0].primitive_type="vector3".into();
+        assert!(m.validate().is_err());
     }
     #[test] fn durable_library_save_update_delete_and_revisions() {
         let dir = std::env::temp_dir().join(format!("shuvi-graphics-{}",uuid::Uuid::new_v4())); fs::create_dir(&dir).unwrap();
