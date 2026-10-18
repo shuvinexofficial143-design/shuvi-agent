@@ -14,6 +14,7 @@ MAX_REOPEN_OBJECTS = 1000
 MAX_REOPEN_MESHES = 64
 MAX_REOPEN_TOTAL_VERTICES = 8192
 MAX_REOPEN_TOTAL_FACES = 8192
+MAX_REOPEN_TOTAL_FACE_INDICES = 32768
 PAGE_SIZE = 25
 SCENE_FIELDS = (
     "scene", "blender_version", "cursor", "units", "pivot", "world_present",
@@ -64,6 +65,56 @@ def _proof_key_light(item):
     )
 
 
+def _reopen_page_items(page: dict, *, session_id: str, revision: str,
+                       total: int, offset: int, seen_ids: set,
+                       seen_names: set) -> list:
+    """Check an exact upstream read-only page BEFORE secondary mesh queries.
+
+    Cursor, count, identities, object names and source snapshots must be
+    independently verified on every page; a duplicate item must not
+    silently displace a missing mesh in a saved-checkpoint fingerprint.
+    """
+    if not isinstance(page, dict):
+        raise ValueError("Blender reopen object page is not a mapping")
+    items = page.get("items")
+    expected = min(PAGE_SIZE, max(0, total - offset))
+    expected_next = offset + PAGE_SIZE if offset + PAGE_SIZE < total else None
+    if (page.get("session_id") != session_id
+            or page.get("revision") != revision
+            or type(page.get("total")) is not int
+            or page["total"] != total
+            or type(page.get("offset")) is not int
+            or page["offset"] != offset
+            or not isinstance(items, list)
+            or len(items) != expected
+            or page.get("next_offset") != expected_next
+            or type(page.get("next_offset")) not in (int, type(None))):
+        raise ValueError("Blender reopen page length, cursor or scene identity changed")
+    current_ids = set()
+    current_names = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Blender object page has invalid row type")
+        identity, name, kind, object_revision = (
+            item.get("object_id"), item.get("name"),
+            item.get("type"), item.get("revision"))
+        if (not isinstance(identity, str) or not identity.startswith(session_id + ":")
+                or not 1 <= len(identity) <= 256
+                or identity in seen_ids or identity in current_ids
+                or not isinstance(name, str) or not 1 <= len(name) <= 256
+                or "\x00" in name or name in seen_names or name in current_names
+                or not isinstance(kind, str) or not 1 <= len(kind) <= 32
+                or not isinstance(object_revision, str)
+                or len(object_revision) != 64
+                or any(c not in "0123456789abcdef" for c in object_revision)):
+            raise ValueError("Blender reopen object identity, name or revision duplicated or invalid")
+        current_ids.add(identity)
+        current_names.add(name)
+    seen_ids.update(current_ids)
+    seen_names.update(current_names)
+    return items
+
+
 def capture_scene(controller, expected_path: Path, *, require_saved_file: bool = True) -> dict:
     """Fingerprint full bounded object paging; deny missing/truncated/unstable reads."""
     from shuvi_blender_agent.contracts import Request, Status
@@ -91,8 +142,17 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
     if any(key not in scene for key in SCENE_FIELDS):
         raise ValueError("Blender scene summary missing verification fields")
     session_id, revision = scene.get("session_id"), scene.get("revision")
-    if not isinstance(session_id, str) or not session_id or not isinstance(revision, str) or len(revision) != 64:
+    if (not isinstance(session_id, str) or not 1 <= len(session_id) <= 128
+            or not isinstance(revision, str) or len(revision) != 64
+            or any(c not in "0123456789abcdef" for c in revision)):
         raise ValueError("Blender scene has no stable readback snapshot")
+    expected_type_counts = scene.get("object_counts_by_type")
+    if (not isinstance(expected_type_counts, dict)
+            or any(not isinstance(kind, str) or not kind
+                   or type(count) is not int or count < 0 or count > total
+                   for kind, count in expected_type_counts.items())
+            or sum(expected_type_counts.values()) != total):
+        raise ValueError("Blender scene object-type census is not trustworthy")
 
     # Scene.camera_id is session-local. Resolve it to a stable named camera
     # from the authenticated, revision-consistent object pages.
@@ -110,6 +170,10 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
     mesh_count = 0
     total_vertices = 0
     total_faces = 0
+    total_face_indices = 0
+    observed_type_counts = {}
+    seen_ids = set()
+    seen_names = set()
     offset = 0
     # Even an empty scene is explicitly paged to check the object count.
     while True:
@@ -117,13 +181,13 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         if offset:
             payload["expected_revision"] = revision
         page = call("objects.list", payload)
-        items = page.get("items")
-        if (page.get("session_id") != session_id or page.get("revision") != revision
-                or page.get("total") != total or page.get("offset") != offset
-                or not isinstance(items, list) or len(items) > PAGE_SIZE
-                or (offset < total and not items)):
-            raise ValueError("Blender readback page changed or is malformed")
+        items = _reopen_page_items(
+            page, session_id=session_id, revision=revision,
+            total=total, offset=offset, seen_ids=seen_ids,
+            seen_names=seen_names)
         for item in items:
+            kind = item["type"]
+            observed_type_counts[kind] = observed_type_counts.get(kind, 0) + 1
             if not isinstance(item, dict) or item.get("details_truncated") is not False:
                 raise ValueError("Blender object snapshot was truncated")
             if any(field not in item for field in OBJECT_FIELDS if field not in ("camera", "light")):
@@ -160,10 +224,14 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
                                       for x in face)
                                for face in faces)):
                     raise ValueError("Blender mesh geometry readback is malformed")
+                if any(len(set(face)) != len(face) for face in faces):
+                    raise ValueError("Blender mesh polygon contains a repeated index")
                 total_vertices += len(vertices)
                 total_faces += len(faces)
+                total_face_indices += sum(len(face) for face in faces)
                 if (total_vertices > MAX_REOPEN_TOTAL_VERTICES
-                        or total_faces > MAX_REOPEN_TOTAL_FACES):
+                        or total_faces > MAX_REOPEN_TOTAL_FACES
+                        or total_face_indices > MAX_REOPEN_TOTAL_FACE_INDICES):
                     raise ValueError("Blender mesh geometry proof exceeds total work budget")
                 mesh_payload = {"vertices": vertices, "faces": faces}
                 geometry_encoded = json.dumps(
@@ -194,6 +262,10 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
 
     if active_id is not None and active_camera_name is None:
         raise ValueError("Blender active camera is absent from paged objects")
+    if (len(seen_ids) != total or len(seen_names) != total
+            or {k: v for k, v in expected_type_counts.items() if v}
+               != observed_type_counts):
+        raise ValueError("Blender reopen object census differs from paged scene proof")
 
     proof_copper_material_verified = (
         proof_copper_meshes_seen == 1

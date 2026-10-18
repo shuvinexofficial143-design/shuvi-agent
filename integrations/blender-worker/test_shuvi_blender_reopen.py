@@ -369,8 +369,111 @@ class ReopenTests(unittest.TestCase):
             capture_scene(writer, self.file)
 
     def test_malformed_or_changed_page_denied(self):
-        with self.assertRaisesRegex(ValueError, "page changed"):
+        with self.assertRaisesRegex(ValueError, "page .*changed"):
             capture_scene(FakeController(self.file, bad_page=True), self.file)
+
+    def test_saved_scene_refuses_missing_duplicate_or_unaccounted_objects(self):
+        # An object can be counted twice by untrusted list pagination,
+        # making an actually missing saved object appear to have survived.
+        base = FakeController(self.file)
+        base.scene["object_counts_by_type"] = {"MESH": 0, "LIGHT": 1}
+        with self.assertRaisesRegex(ValueError, "object census"):
+            capture_scene(base, self.file)
+        base = FakeController(self.file)
+        base.scene["object_counts_by_type"] = {"MESH": True}
+        with self.assertRaisesRegex(ValueError, "census"):
+            capture_scene(base, self.file)
+
+        class Duplicates(ProofController):
+            def execute(self, request):
+                result = super().execute(request)
+                if request.operation == "objects.list":
+                    result.data["items"][1]["object_id"] = result.data["items"][0]["object_id"]
+                return result
+        with self.assertRaisesRegex(ValueError, "duplicated or invalid"):
+            capture_scene(Duplicates(self.file), self.file)
+        class DuplicateNames(ProofController):
+            def execute(self, request):
+                result = super().execute(request)
+                if request.operation == "objects.list":
+                    result.data["items"][1]["name"] = result.data["items"][0]["name"]
+                return result
+        with self.assertRaisesRegex(ValueError, "duplicated or invalid"):
+            capture_scene(DuplicateNames(self.file), self.file)
+
+    def test_paged_saved_scene_checks_cross_page_identity_and_cursor(self):
+        # 26 objects force two full upstream pages. No Blender or mesh
+        # execution is required to catch a swapped last page.
+        class PagedScene(FakeController):
+            def __init__(self, saved, *, swap_identity=False,
+                         swap_name=False, wrong_cursor=False,
+                         short_first=False):
+                super().__init__(saved)
+                self.scene["object_count"] = 26
+                self.scene["object_counts_by_type"] = {"EMPTY": 26}
+                self.scene["collections"][0]["object_count"] = 26
+                self.swap_identity = swap_identity
+                self.swap_name = swap_name
+                self.wrong_cursor = wrong_cursor
+                self.short_first = short_first
+                self.rows = []
+                for idx in range(26):
+                    self.rows.append({
+                        **self.obj,
+                        "object_id": f"session-A:obj-{idx:03d}",
+                        "name": f"Proof-{idx:03d}", "type": "EMPTY",
+                        "materials": [], "material_slot_count": 0,
+                    })
+            def execute(self, request):
+                if request.operation == "objects.list":
+                    offset = request.payload["offset"]
+                    page = [dict(v) for v in self.rows[offset:offset + 25]]
+                    if offset == 0 and self.short_first:
+                        page.pop()
+                    if offset == 25 and self.swap_identity:
+                        page[0]["object_id"] = self.rows[0]["object_id"]
+                    if offset == 25 and self.swap_name:
+                        page[0]["name"] = self.rows[0]["name"]
+                    cursor = (25 if offset == 0 else None)
+                    if offset == 0 and self.wrong_cursor:
+                        cursor = 24
+                    return DummyResult({
+                        "session_id": self.scene["session_id"],
+                        "revision": self.scene["revision"],
+                        "offset": offset, "total": 26, "items": page,
+                        "next_offset": cursor})
+                return super().execute(request)
+
+        report = capture_scene(PagedScene(self.file), self.file)
+        self.assertEqual(report["object_count"], 26)
+        self.assertEqual(report["mesh_count"], 0)
+        for kwargs in ({"swap_identity": True}, {"swap_name": True},
+                       {"wrong_cursor": True}, {"short_first": True}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(
+                    ValueError, "page|duplicated"):
+                capture_scene(PagedScene(self.file, **kwargs), self.file)
+
+    def test_saved_mesh_rejects_repeated_face_indices_even_with_matching_digest(self):
+        class RepeatedFace(FakeController):
+            def execute(self, request):
+                result = super().execute(request)
+                if request.operation == "mesh.inspect":
+                    result.data["faces"] = [[0, 1, 1]]
+                    data = {k: result.data[k] for k in ("vertices", "faces")}
+                    result.data["geometry_revision"] = hashlib.sha256(
+                        json.dumps(data, sort_keys=True, separators=(",", ":"),
+                                   allow_nan=False).encode()).hexdigest()
+                return result
+        with self.assertRaisesRegex(ValueError, "repeated index"):
+            capture_scene(RepeatedFace(self.file), self.file)
+
+    def test_invalid_saved_object_revision_cannot_be_verified(self):
+        for value in ("invalid", "F" * 64, None, True):
+            with self.subTest(value=value):
+                ctrl = FakeController(self.file)
+                ctrl.obj["revision"] = value
+                with self.assertRaisesRegex(ValueError, "duplicated or invalid"):
+                    capture_scene(ctrl, self.file)
 
     def test_large_or_truncated_scene_denied(self):
         controller = FakeController(self.file)

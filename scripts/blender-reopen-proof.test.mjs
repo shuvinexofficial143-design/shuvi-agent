@@ -55,7 +55,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 17 tests/);
+  assert.match(result.stderr,/Ran 21 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -84,4 +84,22 @@ test("saved supplementary copper look now requires typed shader graph inspection
     '"shader_parameters_independently_verified":',
     '"proof_copper_shader_revision": reopened["proof_copper_shader_revision"]'
   ])assert.ok(source.includes(snippet),snippet);
+});
+
+test("independent saved scene reopen checks every object across exact typed pages and the live scene census",()=>{
+  const source=readFileSync(helper,"utf8");
+  for(const token of [
+    "def _reopen_page_items(page: dict, *, session_id: str, revision: str,",
+    "expected = min(PAGE_SIZE, max(0, total - offset))",
+    "expected_next = offset + PAGE_SIZE if offset + PAGE_SIZE < total else None",
+    "identity in seen_ids or identity in current_ids",
+    "name in seen_names or name in current_names",
+    "object_counts_by_type",
+    "expected_type_counts",
+    "observed_type_counts",
+    "total_face_indices > MAX_REOPEN_TOTAL_FACE_INDICES",
+    "Blender mesh polygon contains a repeated index",
+    "test_paged_saved_scene_checks_cross_page_identity_and_cursor",
+    "test_saved_mesh_rejects_repeated_face_indices_even_with_matching_digest"
+  ]) assert.ok(source.includes(token),token);
 });

@@ -1413,3 +1413,29 @@ against accidentally relying solely on locally mocked shader tools.
 It uses a synthetic readback snapshot for the digest check; a real
 Blender graph still requires the separate, explicitly approved host
 acceptance run. No upstream repo files were changed.
+
+## Team-41 — saved checkpoint full-scene census and exact pagination proof
+
+The existing independent checkpoint reopen captures a bounded 1000-object
+scene through typed read-only `objects.list` pages in both a writer and a
+separate read-only Blender process. An object-page source reporting
+duplicated IDs/names, a short page with a seemingly valid cursor or a
+forged census could previously be canonicalized into an apparently
+consistent fingerprint while displacing an unseen object.
+
+Each page is now validated **before any secondary mesh inspection**:
+exact page length for `offset`/`PAGE_SIZE=25`/`total`, canonical
+continuation cursor, matching session and scene revision, valid lowercase
+64-hex per-object revisions and globally unique session-owned object IDs
+and visible names across all pages. The initial scene's nonnegative
+`object_counts_by_type` census must sum to its object count and must
+exactly match observed types across the completed pages. Missing, duplicated
+or substituted scene objects cause fail-closed source rejection. Valid
+empty scenes and 26-object/two-page scenes are regression tested.
+
+Geometry validation additionally rejects polygons that repeat a vertex
+index even if the upstream-provided SHA exactly matches that degenerate
+payload, and bounds aggregate polygon indices to 32768 to avoid unbounded
+mesh proof work. This is purely a read-only verification improvement;
+there are no new edit permissions, arbitrary scripts, Blender host runs or
+changes to the pinned upstream adapter.
