@@ -1068,3 +1068,40 @@ steps, forged step names, duplicate names, unexpected results, unexecuted
 steps, failed statuses, missing operation and manipulated counts. These
 tests use fake controllers/receipts; they are not real Windows Blender
 acceptance or visual quality evidence. No other team's branch changed.
+
+## Team-41 — useful bounded live Blender Object Details (source / read-only)
+
+The existing owner-approved `blender_session_objects` surface now returns
+more than an object's name/ID and scene revision. A successful authenticated
+`objects.list` page may include a strictly bounded **read-only** view of
+the object's position, rotation, scale, dimensions, render/viewport
+visibility, material-slot names (including genuinely empty slots),
+modifier name/type/render visibility and type-specific camera or light
+parameters. This helps Shuvi ground modeling edits, material decisions and
+scene navigation on observed data rather than inventing what is in Blender.
+
+Only existing typed read-only upstream operations are used. The broker
+projects rather than forwarding arbitrary raw upstream fields; it limits
+each object to 16 material slots and 16 modifiers and finite numeric
+vectors, rejects missing/ambiguous counts, malformed field types and
+unbounded camera/light values. Oversized or legitimately truncated upstream
+objects return `details_available=false` with a truncation indicator,
+not a fabricated full inspection. Legacy minimal synthetic pages return
+`details_available=false` and remain compatible with older callers.
+
+Rust independently checks all projected typed fields, session identity,
+revision, numeric bounds and **explicit false** flags for
+`shader_nodes_inspected` and `mesh_topology_inspected` before
+releasing a read-only page. It does not claim Principled BSDF parameter
+values, real mesh topology, absolute world-space matrices or image quality.
+The existing mutation gates and audit remain unchanged. No new native
+tool/action is created, no file changes or Blender launches are required
+for the source/fixture tests. A production Windows Blender host is still
+necessary for actual visual acceptance.
+
+Python fake-controller tests cover valid material/name/transform/modifier
+and camera/light projections, partial payload rejection, wrong counts,
+oversized detail lists, non-finite values and legacy/truncated readback.
+Rust unit tests mirror positive and negative security cases; Node source
+tests check that the broker projection is actually returned by the
+existing persistent-session object endpoint.

@@ -452,6 +452,83 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     result
 }
 
+/// Check every live read-only detail projection again in native Rust.
+/// No mutation, file reopen, shader-node or actual geometry claim is created.
+fn verified_object_views(items:&[Value],session_id:&str)->Result<(),String>{
+    for item in items {
+        let identity=item.get("object_id").and_then(Value::as_str).unwrap_or("");
+        let revision=item.get("revision").and_then(Value::as_str).unwrap_or("");
+        if !identity.starts_with(&format!("{session_id}:"))
+            || revision.len()!=64 ||!revision.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()) {
+            return Err("Blender object detail identity/revision invalid.".into());
+        }
+        let kind=item.get("type").and_then(Value::as_str).unwrap_or("");
+        let present=item.get("details_available").and_then(Value::as_bool)
+            .ok_or("Blender object detail availability is missing.")?;
+        let truncated=item.get("details_truncated").and_then(Value::as_bool)
+            .ok_or("Blender object truncation flag missing.")?;
+        if !present {
+            if item.get("details").is_some_and(|v|!v.is_null())
+                ||item.get("shader_nodes_inspected").and_then(Value::as_bool)==Some(true)
+                ||item.get("mesh_topology_inspected").and_then(Value::as_bool)==Some(true){
+                return Err("Unavailable Blender details cannot claim validation.".into());
+            }
+            continue;
+        }
+        if truncated ||item.get("shader_nodes_inspected").and_then(Value::as_bool)!=Some(false)
+            ||item.get("mesh_topology_inspected").and_then(Value::as_bool)!=Some(false){
+            return Err("Blender detail projection cannot claim shader/mesh attestation.".into());
+        }
+        let detail=item.get("details").filter(|v|v.is_object())
+            .ok_or("Blender detail projection object missing.")?;
+        let finite3=|value:Option<&Value>|value.and_then(Value::as_array).is_some_and(|a|{
+            a.len()==3 && a.iter().all(|x|x.as_f64().is_some_and(|n|n.is_finite()&&n.abs()<=1_000_000.0))
+        });
+        if !["location","rotation_euler","scale","dimensions"].iter()
+            .all(|field|finite3(detail.get(*field)))
+            ||detail.get("hide_render").and_then(Value::as_bool).is_none()
+            ||detail.get("hide_viewport").and_then(Value::as_bool).is_none(){
+            return Err("Blender detail transform/visibility invalid.".into());
+        }
+        let materials=detail.get("materials").and_then(Value::as_array)
+            .ok_or("Blender detail material list missing.")?;
+        let modifiers=detail.get("modifiers").and_then(Value::as_array)
+            .ok_or("Blender detail modifier list missing.")?;
+        let valid_name=|s:&str|!s.is_empty()&&s.len()<=128&&!s.chars().any(|c|c.is_control());
+        if materials.len()>16 ||modifiers.len()>16
+            ||detail.get("material_slot_count").and_then(Value::as_u64)!=Some(materials.len() as u64)
+            ||detail.get("modifier_count").and_then(Value::as_u64)!=Some(modifiers.len() as u64)
+            ||materials.iter().any(|m|!m.is_null()&&m.as_str().is_none_or(|x|!valid_name(x)))
+            ||modifiers.iter().any(|m|{
+                m.get("name").and_then(Value::as_str).is_none_or(|v|!valid_name(v))
+                ||m.get("type").and_then(Value::as_str).is_none_or(|v|!valid_name(v))
+                ||m.get("show_render").and_then(Value::as_bool).is_none()
+            }){
+            return Err("Blender detail material/modifier list invalid.".into());
+        }
+        let scalar=|data:&Value,key:&str,low:f64,high:f64|data.get(key)
+            .and_then(Value::as_f64).is_some_and(|v|v.is_finite()&&v>=low&&v<=high);
+        if kind=="CAMERA" {
+            let c=detail.get("camera").filter(|v|v.is_object())
+                .ok_or("Blender camera optics missing.")?;
+            if !matches!(c.get("type").and_then(Value::as_str),Some("PERSP"|"ORTHO"|"PANO"))
+                ||!["lens","clip_start","clip_end"].iter().all(|key|scalar(c,key,0.000001,100_000.0)){
+                return Err("Blender camera optics invalid.".into());
+            }
+        }else if detail.get("camera").is_some(){return Err("Unexpected camera optics.".into());}
+        if kind=="LIGHT"{
+            let l=detail.get("light").filter(|v|v.is_object())
+                .ok_or("Blender light properties missing.")?;
+            if !matches!(l.get("type").and_then(Value::as_str),Some("POINT"|"SUN"|"SPOT"|"AREA"))
+                ||!scalar(l,"energy",0.0,1_000_000.0)
+                ||!finite3(l.get("color")){
+                return Err("Blender light properties invalid.".into());
+            }
+        }else if detail.get("light").is_some(){return Err("Unexpected light settings.".into());}
+    }
+    Ok(())
+}
+
 pub(crate) fn objects(
     registry:&SessionRegistry,state:&ActionState,id:&str,
     scene_revision:&str,offset:u64,limit:u64,name_prefix:&str,object_type:Option<&str>
@@ -481,6 +558,8 @@ pub(crate) fn objects(
             ||response.get("total").and_then(Value::as_u64).is_none_or(|n|n>10000){
             return Err("Authenticated Blender object page evidence was incomplete.".into());
         }
+        verified_object_views(response["objects"].as_array()
+            .ok_or("Blender object page missing.")?,id)?;
         Ok(json!({"status":"read_only_object_page","session_id":id,
             "scene_revision":scene_revision,"offset":offset,
             "total":response["total"],"next_offset":response["next_offset"],
@@ -592,5 +671,85 @@ pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Resul
                 "descendant_exit_individually_unverified":true,
                 "no_automatic_reconnect":true})),
         _=>Err("Blender close outcome uncertain; owned launcher was retired.".into()),
+    }
+}
+
+
+#[cfg(test)]
+mod read_only_object_view_tests {
+    use super::*;
+    fn page_object(kind:&str)->Value{
+        let mut detail=json!({
+            "location":[1.0,2.0,3.0],
+            "rotation_euler":[0.1,0.2,0.3],
+            "scale":[1.0,1.0,1.0],
+            "dimensions":[2.0,3.0,4.0],
+            "hide_render":false,"hide_viewport":false,
+            "materials":["Copper",null],"material_slot_count":2,
+            "modifiers":[{"name":"Bevel","type":"BEVEL","show_render":true}],
+            "modifier_count":1
+        });
+        if kind=="CAMERA"{
+            detail["camera"]=json!({"type":"PERSP","lens":50.0,
+                                     "clip_start":0.1,"clip_end":100.0});
+        }
+        if kind=="LIGHT"{
+            detail["light"]=json!({"type":"POINT","energy":950.0,
+                                    "color":[1.0,0.94,0.85]});
+        }
+        json!({"object_id":"session-A:obj","name":"Proof","type":kind,
+            "revision":"a".repeat(64),
+            "details_available":true,"details_truncated":false,
+            "shader_nodes_inspected":false,"mesh_topology_inspected":false,
+            "details":detail})
+    }
+    #[test]
+    fn mesh_camera_and_light_details_pass_native_read_only_validation(){
+        for kind in ["MESH","CAMERA","LIGHT"]{
+            verified_object_views(&[page_object(kind)],"session-A").unwrap();
+        }
+    }
+    #[test]
+    fn historic_minimal_or_truncated_readback_never_claims_details(){
+        let mut item=page_object("MESH");
+        item["details_available"]=json!(false);
+        item["details"]=Value::Null;
+        item.as_object_mut().unwrap().remove("shader_nodes_inspected");
+        item.as_object_mut().unwrap().remove("mesh_topology_inspected");
+        verified_object_views(&[item.clone()],"session-A").unwrap();
+        item["details"]=json!({"materials":["forged"]});
+        assert!(verified_object_views(&[item.clone()],"session-A").is_err());
+        item["details"]=Value::Null;
+        item["shader_nodes_inspected"]=json!(true);
+        assert!(verified_object_views(&[item],"session-A").is_err());
+    }
+    #[test]
+    fn malformed_details_cannot_be_promoted_to_verified_inspection(){
+        let original=page_object("MESH");
+        let edits=[
+            ("/details/material_slot_count",json!(3)),
+            ("/details/modifiers/0/show_render",json!("yes")),
+            ("/details/location",json!([1.0,2.0])),
+            ("/details/dimensions/1",json!(2000000.0)),
+            ("/details_available",json!(false)),
+            ("/details_truncated",json!(true)),
+            ("/shader_nodes_inspected",json!(true)),
+            ("/mesh_topology_inspected",json!(true)),
+            ("/revision",json!("bad")),
+        ];
+        for (path,value) in edits{
+            let mut altered=original.clone();
+            *altered.pointer_mut(path).unwrap()=value;
+            assert!(verified_object_views(&[altered],"session-A").is_err(),"{path}");
+        }
+        let mut wrong=original.clone();
+        wrong["object_id"]=json!("other-session:obj");
+        assert!(verified_object_views(&[wrong],"session-A").is_err());
+        let mut wrong=page_object("CAMERA");
+        wrong["details"]["camera"]["clip_end"]=json!(-1);
+        assert!(verified_object_views(&[wrong],"session-A").is_err());
+        let mut wrong=page_object("LIGHT");
+        wrong["details"]["light"]["energy"]=json!(-1.0);
+        assert!(verified_object_views(&[wrong],"session-A").is_err());
     }
 }

@@ -394,6 +394,86 @@ class PersistentSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "transcript"):
             worker.require_complete_step_report(malformed, complete)
 
+    @staticmethod
+    def rich_item(kind="MESH"):
+        value = {
+            "name": "ProofObject", "type": kind,
+            "details_truncated": False,
+            "transform": {"location": [1, 2, 3],
+                          "rotation_euler": [0.1, 0.2, 0.3],
+                          "scale": [1, 1, 1]},
+            "dimensions": [2, 3, 4],
+            "visibility": {"hide_render": False, "hide_viewport": False},
+            "materials": ["Copper", None],
+            "material_slot_count": 2,
+            "modifiers": [{"name": "Bevel", "type": "BEVEL",
+                           "show_render": True}],
+            "modifier_count": 1,
+        }
+        if kind == "CAMERA":
+            value["camera"] = {"type": "PERSP", "lens": 50.,
+                               "clip_start": .1, "clip_end": 100.}
+        elif kind == "LIGHT":
+            value["light"] = {"type": "POINT", "energy": 950.,
+                              "color": [1., .94, .85]}
+        return value
+
+    def test_live_object_details_projects_materials_transform_and_modifiers(self):
+        result = worker.bounded_object_details(self.rich_item())
+        self.assertTrue(result["details_available"])
+        self.assertFalse(result["details_truncated"])
+        self.assertEqual(result["details"]["materials"], ["Copper", None])
+        self.assertEqual(result["details"]["location"], [1., 2., 3.])
+        self.assertEqual(result["details"]["modifiers"][0]["type"], "BEVEL")
+        self.assertFalse(result["shader_nodes_inspected"])
+        self.assertFalse(result["mesh_topology_inspected"])
+
+    def test_read_only_camera_and_lighting_properties_are_not_guessed(self):
+        for kind in ("CAMERA", "LIGHT"):
+            record = worker.bounded_object_details(self.rich_item(kind))
+            self.assertTrue(record["details_available"])
+            if kind == "CAMERA":
+                self.assertEqual(record["details"]["camera"]["lens"], 50.)
+            else:
+                self.assertEqual(record["details"]["light"]["energy"], 950.)
+        fake = self.rich_item("CAMERA")
+        del fake["camera"]
+        with self.assertRaisesRegex(ValueError, "camera properties"):
+            worker.bounded_object_details(fake)
+        fake = self.rich_item("LIGHT")
+        fake["light"]["energy"] = float("inf")
+        with self.assertRaisesRegex(ValueError, "energy"):
+            worker.bounded_object_details(fake)
+
+    def test_missing_legacy_or_truncated_details_do_not_claim_readback(self):
+        self.assertEqual(worker.bounded_object_details(
+            {"details_truncated": False}),
+            {"details_available": False, "details_truncated": False})
+        self.assertEqual(worker.bounded_object_details(
+            {**self.rich_item(), "details_truncated": True}),
+            {"details_available": False, "details_truncated": True})
+        oversize = self.rich_item()
+        oversize["materials"] = ["Copper"] * 17
+        oversize["material_slot_count"] = 17
+        self.assertFalse(worker.bounded_object_details(oversize)["details_available"])
+
+    def test_live_object_details_reject_partial_and_false_material_evidence(self):
+        for key in ("transform", "dimensions", "visibility", "materials",
+                    "material_slot_count", "modifiers", "modifier_count"):
+            broken = self.rich_item()
+            del broken[key]
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "incomplete"):
+                worker.bounded_object_details(broken)
+        for key, changed in [
+            ("materials", ["Copper", 4]), ("material_slot_count", 3),
+            ("dimensions", [float("nan"), 0., 1.]),
+            ("modifiers", [{"name": "X", "type": "BEVEL", "show_render": "yes"}]),
+        ]:
+            broken = self.rich_item()
+            broken[key] = changed
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                worker.bounded_object_details(broken)
+
     def test_approved_source_is_hash_checked_and_loaded_in_authenticated_blender(self):
         path = self.root / "source.blend"
         data = b"BLENDER-v430" + b"safe-checkpoint" * 5
@@ -450,6 +530,9 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertEqual(len(result["objects"]), 2)
         self.assertEqual(result["objects"][0]["name"], "ShuviMesh")
         self.assertEqual(result["objects"][0]["revision"], "a" * 64)
+        self.assertFalse(result["objects"][0]["details_available"])
+        self.assertFalse(result["objects"][0]["details_truncated"])
+        self.assertNotIn("details", result["objects"][0])
         self.assertEqual(len(self.sessions), 1)
         self.assertTrue(self.sessions[0].closed)
 

@@ -288,6 +288,105 @@ def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
     }
 
 
+def bounded_object_details(item: dict) -> dict:
+    """Conservative projection of an authenticated upstream objects.list item.
+
+    This is NOT topology/shader proof. Details can be unavailable for older or
+    truncated upstream sources, but never silently converted into guessed
+    values. Malformed available data is rejected rather than misrepresented.
+    """
+    from math import isfinite
+
+    truncated = item.get("details_truncated")
+    if type(truncated) is not bool:
+        raise ValueError("Blender object inspection truncation flag is missing")
+    fields = ("transform", "dimensions", "visibility", "materials",
+              "material_slot_count", "modifiers", "modifier_count")
+    present = [field in item for field in fields]
+    if truncated:
+        return {"details_available": False, "details_truncated": True}
+    if not any(present):
+        # Compatibility with prior read-only minimal synthetic sources.
+        return {"details_available": False, "details_truncated": False}
+    if not all(present):
+        raise ValueError("Blender object inspection fields are incomplete")
+    def vec(value):
+        if (not isinstance(value, (list, tuple)) or len(value) != 3
+                or any(type(n) not in (float, int) or
+                       not isfinite(n) or abs(n) > 1_000_000 for n in value)):
+            raise ValueError("Blender transform or dimension vector is malformed")
+        return [float(n) for n in value]
+    def name(value):
+        if (not isinstance(value, str) or not 1 <= len(value) <= 128
+                or "\x00" in value or any(ord(c) < 32 for c in value)):
+            raise ValueError("Blender object material/modifier name is malformed")
+        return value
+    transform,visibility=item["transform"],item["visibility"]
+    if (not isinstance(transform, dict) or not isinstance(visibility, dict)
+            or type(visibility.get("hide_render")) is not bool
+            or type(visibility.get("hide_viewport")) is not bool):
+        raise ValueError("Blender object transform/visibility is malformed")
+    materials,modifiers=item["materials"],item["modifiers"]
+    if (not isinstance(materials, list)
+            or type(item["material_slot_count"]) is not int
+            or item["material_slot_count"] != len(materials)
+            or not isinstance(modifiers, list)
+            or type(item["modifier_count"]) is not int
+            or item["modifier_count"] != len(modifiers)):
+        raise ValueError("Blender material/modifier counts are inconsistent")
+    if len(materials) > 16 or len(modifiers) > 16:
+        return {"details_available": False, "details_truncated": True}
+    if any(m is not None and not isinstance(m, str) for m in materials):
+        raise ValueError("Blender material slot is malformed")
+    clean_materials = [name(m) if m is not None else None for m in materials]
+    clean_modifiers = []
+    for mod in modifiers:
+        if (not isinstance(mod, dict)
+                or type(mod.get("show_render")) is not bool):
+            raise ValueError("Blender modifier snapshot is malformed")
+        clean_modifiers.append({"name": name(mod.get("name")),
+                                "type": name(mod.get("type")),
+                                "show_render": mod["show_render"]})
+    details = {
+        "location": vec(transform.get("location")),
+        "rotation_euler": vec(transform.get("rotation_euler")),
+        "scale": vec(transform.get("scale")),
+        "dimensions": vec(item["dimensions"]),
+        "hide_render": visibility["hide_render"],
+        "hide_viewport": visibility["hide_viewport"],
+        "materials": clean_materials,
+        "material_slot_count": len(clean_materials),
+        "modifiers": clean_modifiers,
+        "modifier_count": len(clean_modifiers),
+    }
+    kind = item.get("type")
+    if kind == "CAMERA":
+        camera = item.get("camera")
+        if not isinstance(camera, dict) or camera.get("type") not in ("PERSP", "ORTHO", "PANO"):
+            raise ValueError("Blender read-only camera properties missing")
+        for property_name in ("lens", "clip_start", "clip_end"):
+            n = camera.get(property_name)
+            if type(n) not in (int, float) or not isfinite(n) or n <= 0 or n > 100000:
+                raise ValueError("Blender camera optics are unbounded")
+        details["camera"] = {"type": camera["type"],
+                             "lens": float(camera["lens"]),
+                             "clip_start": float(camera["clip_start"]),
+                             "clip_end": float(camera["clip_end"])}
+    if kind == "LIGHT":
+        light = item.get("light")
+        if not isinstance(light, dict) or light.get("type") not in ("POINT", "SUN", "SPOT", "AREA"):
+            raise ValueError("Blender read-only light properties missing")
+        energy = light.get("energy")
+        if type(energy) not in (int, float) or not isfinite(energy) or not 0 <= energy <= 1_000_000:
+            raise ValueError("Blender light energy is unbounded")
+        details["light"] = {"type": light["type"], "energy": float(energy),
+                             "color": vec(light.get("color"))}
+    return {"details_available": True, "details_truncated": False,
+            "details": details,
+            "shader_nodes_inspected": False,
+            "mesh_topology_inspected": False}
+
+
 def inspect_input_source(filename: Path, expected_sha256: str) -> dict:
     """Read exact source bytes before/after authenticated Blender load."""
     if (not isinstance(expected_sha256, str)
@@ -452,10 +551,11 @@ def serve(argv: list[str] | None = None) -> int:
                                 or not isinstance(kind, str) or len(kind) > 32
                                 or not isinstance(rev, str) or len(rev) != 64):
                             raise ValueError("Blender object page item identity is invalid")
+                        observed = bounded_object_details(item)
                         objects.append({
                             "object_id": obj_id, "name": name,
                             "type": kind, "revision": rev,
-                            "details_truncated": bool(item.get("details_truncated")),
+                            **observed,
                         })
                     protocol({"version": 1, "status": "alive", "session_id": session_id,
                               "operation": "objects", "scene_revision": expected_revision,

@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 22 tests/);
+  assert.match(run.stderr,/Ran 26 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -148,4 +148,27 @@ test("persistent broker checks complete typed step transcript and emits explicit
     '"executed_steps": executed_steps'
   ])assert.ok(broker.includes(x),x);
   assert.ok(native.includes("verify_final_artifact_binding(plan,&response)?"));
+});
+
+test("persistent Blender read-only objects expose bounded material slots, transforms, modifiers and device snapshots",()=>{
+  for(const text of [
+    "def bounded_object_details(item: dict)",
+    "details_available",
+    "shader_nodes_inspected",
+    "mesh_topology_inspected",
+    "material_slot_count",
+    "modifier_count",
+    'observed = bounded_object_details(item)',
+    '"object_id": obj_id, "name": name'
+  ]) assert.ok(broker.includes(text),text);
+  for(const guard of [
+    "fn verified_object_views(items:&[Value],session_id:&str)",
+    "verified_object_views(response[\"objects\"].as_array()",
+    "Blender detail material/modifier list invalid.",
+    "Blender camera optics invalid.",
+    "Blender light properties invalid.",
+    "mesh_camera_and_light_details_pass_native_read_only_validation",
+    "malformed_details_cannot_be_promoted_to_verified_inspection",
+    "historic_minimal_or_truncated_readback_never_claims_details"
+  ])assert.ok(native.includes(guard),guard);
 });
