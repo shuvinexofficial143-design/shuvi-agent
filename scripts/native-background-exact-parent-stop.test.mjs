@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
-const queue=readFileSync(new URL("../src-tauri/src/native_background_parent_queue.rs",import.meta.url),"utf8");
-const os=readFileSync(new URL("../src-tauri/src/native_background_os_workers.rs",import.meta.url),"utf8");
+const normalize=text=>text.replaceAll("\r\n","\n");
+const rust=normalize(readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8"));
+const queue=normalize(readFileSync(new URL("../src-tauri/src/native_background_parent_queue.rs",import.meta.url),"utf8"));
+const os=normalize(readFileSync(new URL("../src-tauri/src/native_background_os_workers.rs",import.meta.url),"utf8"));
 const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 
 test("M55 one exact approved active dispatch authenticates only the pinned parent UUIDs",()=>{

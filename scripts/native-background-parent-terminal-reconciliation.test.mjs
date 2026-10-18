@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-const rust=readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8');
-const queue=readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8');
-const admission=readFileSync(new URL('../src-tauri/src/native_background_admission.rs',import.meta.url),'utf8');
-const os=readFileSync(new URL('../src-tauri/src/native_background_os_workers.rs',import.meta.url),'utf8');
-const ui=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
-const types=readFileSync(new URL('../src/types.ts',import.meta.url),'utf8');
+const normalize=text=>text.replaceAll('\r\n','\n');
+const rust=normalize(readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8'));
+const queue=normalize(readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8'));
+const admission=normalize(readFileSync(new URL('../src-tauri/src/native_background_admission.rs',import.meta.url),'utf8'));
+const os=normalize(readFileSync(new URL('../src-tauri/src/native_background_os_workers.rs',import.meta.url),'utf8'));
+const ui=normalize(readFileSync(new URL('../src/main.ts',import.meta.url),'utf8'));
+const types=normalize(readFileSync(new URL('../src/types.ts',import.meta.url),'utf8'));
 test('M57 only reconciles after separate M56 unknown owner review, canonical UUID and matched OS terminal journal',()=>{
  assert.match(queue,/fn reconcile_owned_terminal_at\(/);
  assert.match(queue,/if p.phase!="outcome_unknown"/);

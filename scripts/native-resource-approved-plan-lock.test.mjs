@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 const read=n=>readFileSync(new URL("../src-tauri/src/"+n,import.meta.url),"utf8");
-const ledger=read("native_resource_lanes.rs");
-const plan=read("native_blender_owned_plan.rs");
-const status=read("native_worker_status.rs");
+const normalize=text=>text.replaceAll("\r\n","\n");
+const ledger=normalize(read("native_resource_lanes.rs"));
+const plan=normalize(read("native_blender_owned_plan.rs"));
+const status=normalize(read("native_worker_status.rs"));
 test("approved full plan SHA-256 is durably held before owned native Blender execution",()=>{
  assert.ok(plan.includes("reserve_blender_plan(\n        app,action_id,blend_file,output_dir,&expected_plan_sha256)?;"));
  assert.ok(ledger.includes("approved_plan_sha256:Option<String>"));

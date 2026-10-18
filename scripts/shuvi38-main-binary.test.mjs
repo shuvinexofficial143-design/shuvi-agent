@@ -13,7 +13,7 @@ const paths=[
   "src-tauri/tauri.conf.json",
   "src-tauri/tauri.sha-sidecar.conf.json",
 ];
-const sources=Object.fromEntries(paths.map(path=>[path,readFileSync(path,"utf8")]));
+const sources=Object.fromEntries(paths.map(path=>[path,readFileSync(path,"utf8").replaceAll("\r\n","\n")]));
 const run=mutate=>{
   const root=mkdtempSync(join(tmpdir(),"shuvi38-main-bin-"));
   try{

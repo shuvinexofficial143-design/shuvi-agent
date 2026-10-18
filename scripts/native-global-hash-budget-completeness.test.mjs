@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-const source=readFileSync(new URL("../src-tauri/src/native_task_delivery.rs",import.meta.url),"utf8");
+const source=readFileSync(new URL("../src-tauri/src/native_task_delivery.rs",import.meta.url),"utf8").replaceAll("\r\n","\n");
 function functionBody(name){
  const begin=source.indexOf(name);
  assert.ok(begin>=0,name);

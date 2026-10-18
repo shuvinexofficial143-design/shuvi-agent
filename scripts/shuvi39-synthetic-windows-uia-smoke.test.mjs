@@ -37,7 +37,7 @@ test("smoke never manipulates an owner desktop or claims real application accept
 });
 
 test("capture PowerShell has two live Win32 surface checks bracketing CopyFromScreen",()=>{
- const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
+ const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8").replaceAll("\r\n","\n");
  const begin=rust.indexOf("function Assert-ShuviCaptureSurface");
  const before=rust.indexOf("Assert-ShuviCaptureSurface",begin+40);
  const copy=rust.indexOf("$graphics.CopyFromScreen(",before);
@@ -49,7 +49,7 @@ test("capture PowerShell has two live Win32 surface checks bracketing CopyFromSc
 });
 
 test("native screenshot rejects same-process foreign top-level modal and popup overlays",()=>{
- const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
+ const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8").replaceAll("\r\n","\n");
  const source=rust.slice(rust.indexOf("function Assert-ShuviCaptureSurface"),
   rust.indexOf("# Sample visible target ownership both before",rust.indexOf("function Assert-ShuviCaptureSurface")));
  assert.match(rust,/GetAncestor\(IntPtr hWnd, uint flags\)/);
@@ -67,7 +67,7 @@ test("native screenshot rejects same-process foreign top-level modal and popup o
 });
 
 test("native screenshot reattests HWND, PID, root, geometry, foreground and pixels AFTER Bitmap.Save",()=>{
- const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
+ const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8").replaceAll("\r\n","\n");
  const saved=rust.indexOf("$bitmap.Save(");
  const pid=rust.indexOf("$pidAfterSave = 0",saved);
  const identity=rust.indexOf("$root.Current.NativeWindowHandle",pid);

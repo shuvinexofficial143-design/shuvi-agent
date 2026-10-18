@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-const rust=readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8');
-const queue=readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8');
-const admission=readFileSync(new URL('../src-tauri/src/native_background_admission.rs',import.meta.url),'utf8');
-const ui=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+const normalize=text=>text.replaceAll('\r\n','\n');
+const rust=normalize(readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8'));
+const queue=normalize(readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8'));
+const admission=normalize(readFileSync(new URL('../src-tauri/src/native_background_admission.rs',import.meta.url),'utf8'));
+const ui=normalize(readFileSync(new URL('../src/main.ts',import.meta.url),'utf8'));
 const types=readFileSync(new URL('../src/types.ts',import.meta.url),'utf8');
 test('M54 each independent SHA parent requires own exact prepared owner UUID and typed enrollment',()=>{
   assert.match(rust,/"queue_readonly_sha_parent" => \{/);

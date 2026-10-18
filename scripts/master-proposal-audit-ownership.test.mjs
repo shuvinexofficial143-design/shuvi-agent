@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8").replaceAll("\r\n","\n");
 const stage=ui.slice(ui.indexOf("async function stageProposal("),ui.indexOf("const masterNativeSingleFlight="));
 const continuation=ui.slice(ui.indexOf("async function continueAfterOutcome"),ui.indexOf("async function stageProposal"));
 test("original task lease is captured BEFORE blocked or accepted native orchestration event awaits",()=>{

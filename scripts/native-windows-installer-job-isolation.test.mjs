@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8").replaceAll("\r\n","\n");
 const rust=ci.slice(ci.indexOf("\n  rust:\n"),ci.indexOf("\n  windows-installer-acceptance:\n"));
 const nsis=ci.slice(ci.indexOf("\n  windows-installer-acceptance:\n"));
 test("M65 core Rust CI remains independent of heavy NSIS and always uploads original test attestation",()=>{

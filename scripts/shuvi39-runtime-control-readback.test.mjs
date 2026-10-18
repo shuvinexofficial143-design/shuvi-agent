@@ -100,8 +100,8 @@ test("native agent captures controls before invalidation and attaches to execute
 });
 
 test("both UIA read-only actions Win32-check the same root before and after collecting evidence",()=>{
- const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
- const guard=readFileSync(new URL("../src-tauri/src/native_uia_window_guard.rs",import.meta.url),"utf8");
+ const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8").replaceAll("\r\n","\n");
+ const guard=readFileSync(new URL("../src-tauri/src/native_uia_window_guard.rs",import.meta.url),"utf8").replaceAll("\r\n","\n");
  const a=lib.indexOf("        ToolAction::UiDiscover { window } => {",570000);
  const b=lib.indexOf("        ToolAction::UiFind { name, automation_id, window } => {",a);
  const c=lib.indexOf("        ToolAction::UiClick { name, automation_id, window } => {",b);

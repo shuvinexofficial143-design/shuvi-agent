@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 
-const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
-const status=readFileSync(new URL("../src-tauri/src/native_worker_status.rs",import.meta.url),"utf8");
-const jobs=readFileSync(new URL("../src-tauri/src/native_worker_job.rs",import.meta.url),"utf8");
-const lease=readFileSync(new URL("../src-tauri/src/execution_lease.rs",import.meta.url),"utf8");
-const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+const normalize=text=>text.replaceAll("\r\n","\n");
+const lib=normalize(readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8"));
+const status=normalize(readFileSync(new URL("../src-tauri/src/native_worker_status.rs",import.meta.url),"utf8"));
+const jobs=normalize(readFileSync(new URL("../src-tauri/src/native_worker_job.rs",import.meta.url),"utf8"));
+const lease=normalize(readFileSync(new URL("../src-tauri/src/execution_lease.rs",import.meta.url),"utf8"));
+const ui=normalize(readFileSync(new URL("../src/main.ts",import.meta.url),"utf8"));
 
 test("read-only worker status is wired to the actual Tauri action state and durable recovery journal",()=>{
  assert.match(lib,/mod native_worker_status;/);

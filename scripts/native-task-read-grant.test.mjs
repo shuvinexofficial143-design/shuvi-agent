@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 
-const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
-const grants=readFileSync(new URL("../src-tauri/src/native_task_grant.rs",import.meta.url),"utf8");
-const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+const normalize=text=>text.replaceAll("\r\n","\n");
+const rust=normalize(readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8"));
+const grants=normalize(readFileSync(new URL("../src-tauri/src/native_task_grant.rs",import.meta.url),"utf8"));
+const ui=normalize(readFileSync(new URL("../src/main.ts",import.meta.url),"utf8"));
 
 test("Rust never authorizes a write, UI click, powershell or untyped action under a reused read grant",()=>{
   // Inspect only the actual production allowlist, not negative Rust test fixtures.
@@ -24,7 +25,7 @@ test("Rust never authorizes a write, UI click, powershell or untyped action unde
 test("Rust binds native action's low risk and exact arguments at staging",()=>{
   assert.match(rust,/grant_signature=if matches!\(&risk,RiskLevel::Low\)/);
   assert.match(rust,/native_task_grant::read_signature\(&tool,&proposal\.arguments\)/);
-  assert.match(rust,/grant_signature,\s*premiere_expectation,\s*task_graph: proposal\.task_graph\.clone\(\)/);
+  assert.match(rust,/grant_signature,\s*native_uia_target,\s*capture_target,\s*premiere_expectation,\s*task_graph: proposal\.task_graph\.clone\(\)/);
   assert.match(rust,/let sig=action\.grant_signature\.as_deref\(\)/);
   assert.match(rust,/grants\.issue\(&task_id,sig,now_ms\(\)\)/);
 });

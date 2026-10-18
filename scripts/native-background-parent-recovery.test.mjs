@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-const queue=readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8');
-const lib=readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8');
-const ui=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
-const types=readFileSync(new URL('../src/types.ts',import.meta.url),'utf8');
+const normalize=text=>text.replaceAll('\r\n','\n');
+const queue=normalize(readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8'));
+const lib=normalize(readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8'));
+const ui=normalize(readFileSync(new URL('../src/main.ts',import.meta.url),'utf8'));
+const types=normalize(readFileSync(new URL('../src/types.ts',import.meta.url),'utf8'));
 
 test('M56 restart recovery reads both durable OS and parent ledgers, with no false liveness/progress',()=>{
  assert.match(queue,/fn recovery_snapshot_at\(root:&Path\)/);
