@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "feature/shuvi42-combined-runtime"]
   pull_request:
 
 concurrency:
