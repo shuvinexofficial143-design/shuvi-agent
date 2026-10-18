@@ -991,7 +991,7 @@ mod read_only_object_view_tests {
         mesh["mesh_overview"]=Value::Null;
         verified_object_views(&[mesh.clone()],"session-A").unwrap();
         for (pointer,value) in [
-            ("/mesh_counts/vertex_count",json!(100)),
+            ("/mesh_counts/vertex_count",json!(100_000_001)),
             ("/mesh_counts/source",json!("unauthenticated")),
             ("/mesh_counts/topology_verified_by_counts",json!(true)),
             ("/mesh_counts/edge_count",json!(-1)),
