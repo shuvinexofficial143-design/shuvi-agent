@@ -55,7 +55,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 24 tests/);
+  assert.match(result.stderr,/Ran 25 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -128,4 +128,14 @@ test("persisted supplementary copper material cannot pass with flattened, collin
     "_copper_mesh_has_genuine_3d_faces(vertices, faces)",
     "test_persisted_copper_mesh_requires_unique_nondegenerate_3d_faces",
   ])assert.ok(helperSource.includes(word),word);
+});
+
+test("saved checkpoint non-object evidence cannot drift during multi-request geometry capture",()=>{
+  const source=readFileSync(helper,"utf8");
+  for (const token of [
+    'for field in (*SCENE_FIELDS, "file", "camera_id", "collections_truncated"):',
+    'final_scene.get(field) != scene.get(field)',
+    "Blender non-object scene settings changed during checkpoint proof",
+    "test_saved_scene_rejects_nonobject_changes_between_read_only_requests"
+  ])assert.ok(source.includes(token),token);
 });

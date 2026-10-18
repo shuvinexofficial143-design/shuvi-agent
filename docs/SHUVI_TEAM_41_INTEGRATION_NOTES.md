@@ -1479,3 +1479,17 @@ Three source regression cases recompute truthful SHAs for flattened,
 collinear and duplicate-faced examples and confirm none are promoted
 to persisted Copper proof or shader attestation. Real host acceptance
 and rendered visual quality are still unverified.
+
+## Team-41 — Reopen-proof consistency for render, active camera and saved file
+
+The independent writer/reopen fingerprint now checks more than object
+revisions across its potentially multi-call read-only capture. A final
+`scene.inspect` must still report the same saved file source, active
+camera ID, render configuration, frame range/current frame, collection
+census, render engine and all previously fingerprinted `SCENE_FIELDS`.
+A concurrent change to any such non-object setting is rejected even
+if the Blender object revision and object count did not change.
+Synthetic fake-controller tests cover file-source swaps, camera swaps,
+render-resolution edits, collection changes, object-type changes and
+frame changes between initial and final observations. No mutable Blender
+operation or background worker was added.

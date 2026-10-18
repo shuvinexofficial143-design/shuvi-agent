@@ -1,4 +1,5 @@
 """Fixture-level checks for reopen manifest fail-closed behavior; no Blender needed."""
+import copy
 import hashlib
 import json
 import sys
@@ -375,6 +376,35 @@ class ReopenTests(unittest.TestCase):
         self.assertEqual(original["mesh_count"], 1)
         self.assertEqual(original["total_vertices"], 3)
         self.assertEqual(original["total_faces"], 1)
+
+    def test_saved_scene_rejects_nonobject_changes_between_read_only_requests(self):
+        # The source revision can remain unchanged when a different active
+        # file/camera/render setting changes without an object mutation.
+        changes = (
+            ("file", lambda d: d.update(file="/other/scene.blend")),
+            ("camera_id", lambda d: d.update(camera_id="session-A:other-camera")),
+            ("render", lambda d: d["render"].update(resolution_x=2048)),
+            ("collections", lambda d: d["collections"][0].update(object_count=99)),
+            ("object_counts_by_type", lambda d: d.update(
+                object_counts_by_type={"LIGHT": 1})),
+            ("frames", lambda d: d["frames"].update(current=99)),
+        )
+        for field, edit in changes:
+            class Changed(FakeController):
+                def __init__(self, saved):
+                    super().__init__(saved)
+                    self.inspects = 0
+                def execute(self, request):
+                    result = super().execute(request)
+                    if request.operation == "scene.inspect":
+                        self.inspects += 1
+                        result.data = copy.deepcopy(result.data)
+                        if self.inspects > 1:
+                            edit(result.data)
+                    return result
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    ValueError, "non-object scene settings"):
+                capture_scene(Changed(self.file), self.file)
 
     def test_mutating_scene_during_mesh_paging_is_denied(self):
         with self.assertRaisesRegex(ValueError, "changed during geometry proof"):

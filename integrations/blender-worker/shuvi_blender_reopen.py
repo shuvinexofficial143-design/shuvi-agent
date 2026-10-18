@@ -352,6 +352,12 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             or final_scene.get("revision") != revision
             or final_scene.get("object_count") != total):
         raise ValueError("Blender scene changed during geometry proof")
+    # The upstream object revision alone does not attest non-object state.
+    # Bind the saved file source, active camera, collection census and render
+    # settings to the *same* completed multi-request read-only snapshot.
+    for field in (*SCENE_FIELDS, "file", "camera_id", "collections_truncated"):
+        if final_scene.get(field) != scene.get(field):
+            raise ValueError("Blender non-object scene settings changed during checkpoint proof")
 
     payload = {
         "scene": {field: scene[field] for field in SCENE_FIELDS},
