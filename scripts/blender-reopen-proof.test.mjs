@@ -7,6 +7,7 @@ import {fileURLToPath} from "node:url";
 const root=fileURLToPath(new URL("../",import.meta.url));
 const plan=fileURLToPath(new URL("../integrations/blender-worker/shuvi_blender_plan.py",import.meta.url));
 const helper=fileURLToPath(new URL("../integrations/blender-worker/shuvi_blender_reopen.py",import.meta.url));
+const reopenTests=readFileSync(new URL("../integrations/blender-worker/test_shuvi_blender_reopen.py",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/blender_plan_worker.rs",import.meta.url),"utf8");
 const bundle=JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json",import.meta.url),"utf8"));
 
@@ -99,8 +100,6 @@ test("independent saved scene reopen checks every object across exact typed page
     "observed_type_counts",
     "total_face_indices > MAX_REOPEN_TOTAL_FACE_INDICES",
     "Blender mesh polygon contains a repeated index",
-    "test_paged_saved_scene_checks_cross_page_identity_and_cursor",
-    "test_saved_mesh_rejects_repeated_face_indices_even_with_matching_digest"
   ]) assert.ok(source.includes(token),token);
 });
 
@@ -112,8 +111,6 @@ test("saved meshes reconcile authenticated upstream datablock metadata with full
     'for name in ("vertices", "polygons", "edges"):',
     "metadata_vertices, metadata_faces, _ = _saved_mesh_metadata(item)",
     "len(vertices) != metadata_vertices or len(faces) != metadata_faces",
-    "test_saved_mesh_datablock_counts_match_actual_inspected_geometry",
-    "test_missing_or_oversized_saved_mesh_metadata_fails_before_mesh_probe"
   ])assert.ok(source.includes(token),token);
 });
 
@@ -126,7 +123,6 @@ test("persisted supplementary copper material cannot pass with flattened, collin
     "normal_area_sq > 1e-10",
     "return nondegenerate >= 5",
     "_copper_mesh_has_genuine_3d_faces(vertices, faces)",
-    "test_persisted_copper_mesh_requires_unique_nondegenerate_3d_faces",
   ])assert.ok(helperSource.includes(word),word);
 });
 
@@ -136,6 +132,16 @@ test("saved checkpoint non-object evidence cannot drift during multi-request geo
     'for field in (*SCENE_FIELDS, "file", "camera_id", "collections_truncated"):',
     'final_scene.get(field) != scene.get(field)',
     "Blender non-object scene settings changed during checkpoint proof",
-    "test_saved_scene_rejects_nonobject_changes_between_read_only_requests"
   ])assert.ok(source.includes(token),token);
+});
+
+test("new saved-scene failure modes have executable Python regression coverage",()=>{
+  for(const testName of   [
+      "test_paged_saved_scene_checks_cross_page_identity_and_cursor",
+      "test_saved_mesh_rejects_repeated_face_indices_even_with_matching_digest",
+      "test_saved_mesh_datablock_counts_match_actual_inspected_geometry",
+      "test_missing_or_oversized_saved_mesh_metadata_fails_before_mesh_probe",
+      "test_persisted_copper_mesh_requires_unique_nondegenerate_3d_faces",
+      "test_saved_scene_rejects_nonobject_changes_between_read_only_requests"
+  ])assert.ok(reopenTests.includes("def "+testName+"("),testName);
 });
