@@ -45,7 +45,7 @@ test("NSIS packaging builds exact Windows sidecar per target without untrusted d
  assert.equal(config.bundle.externalBin,undefined);
  assert.deepEqual(sidecarConfig.bundle.externalBin,["binaries/shuvi-readonly-hash-worker"]);
  assert.equal(config.build.beforeBuildCommand,"npm run build");
- assert.equal(pkg.scripts["build:windows-installer"],"npm run prepare:sha-sidecar && node scripts/build-pinned-sha-installer.mjs");
+ assert.equal(pkg.scripts["build:windows-installer"],"node scripts/check-shuvi38-tauri-version-parity.mjs && npm run prepare:sha-sidecar && node scripts/build-pinned-sha-installer.mjs");
  assert.match(read("scripts/build-pinned-sha-installer.mjs"),/SHUVI_REQUIRE_PINNED_SHA_SIDECAR:"1"/);
  assert.match(read("src-tauri/build.rs"),/SHUVI_PINNED_SHA_SIDECAR/);
  assert.equal(pkg.scripts["prepare:sha-sidecar"],"node scripts/prepare-native-sha-sidecar.mjs");
