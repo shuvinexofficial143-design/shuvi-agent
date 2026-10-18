@@ -1323,3 +1323,42 @@ before writing anything; the longest accepted body is 131,071 bytes, with
 one trailing newline. A fixture regression exercises both adjacent
 boundaries without launching Blender. No permissions or actual file
 operations were altered.
+
+## Team-41 — Independent persisted copper shader inspection before still render
+
+The pinned upstream Blender agent actually exposes a **typed read-only**
+`material.shader_inspect` operation. This resolves a gap noted in the
+earlier source-only material-still contract: merely finding a material
+slot called `Shuvi41ProofCopper` did not prove its shader properties.
+
+The optional `look_render` persistent broker preflight now reads that
+exact named material from the SHA-pinned `shuvi41-proof-material.blend`
+source scene and independently checks its actual Principled BSDF node.
+The base color must be approximately `[0.8,0.41,0.16,1.0]`,
+metallic `0.65` and roughness `0.31` (within 0.002 to account for
+Blender float32 sockets); the shader must have exactly one Principled
+node, bounded node/link counts, and **no external links overriding
+those fixed inputs**. The Python broker rehashes the entire
+`material.shader_inspect` snapshot excluding the supplied
+`shader_revision` field with the pinned upstream canonical JSON SHA,
+and compares the independently calculated revision. The subsequent
+`scene.inspect` still confirms the original session/scene revision.
+
+A successful material-still preflight now contains
+`shader_parameters_independently_verified=true`,
+`shader_node_graph_revision_verified=true` and the shader SHA-256.
+Native Rust checks all of these fields against its action/source/session
+receipt and stores the historical shader graph revision in the
+material PNG manifest, preserving the independent approved .blend
+source-file SHA-256 check. Historical manifest reviews verify that
+conservative typed receipt but explicitly do **not** re-run Blender or
+claim current shader freshness. The earlier *look checkpoint* reopen
+still proves a persisted material SLOT and camera/light, not its
+actual shader sockets; this stronger assertion belongs specifically
+to the later `look_render` live read-only preflight.
+
+The broker checks these fields before any `render.execute`. Tests
+reject changed base color, metallic/roughness, wrong upstream shader
+revision, node-graph overrides and missing Principled nodes. This is
+not a render-completion, appearance or final visual-quality attestation,
+and no Blender application has been launched in this source-only CI.

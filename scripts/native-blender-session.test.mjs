@@ -123,7 +123,7 @@ test("persistent Blender predispatch verifies reserved stage source and exact pl
 
 test("authenticated material render broker evidence is bound to native startup source and exact session before handoff",()=>{
   assert.ok(broker.includes('result["material_render_preflight"] = preflight'));
-  assert.ok(broker.includes('"shader_parameters_independently_verified": False'));
+  assert.ok(broker.includes('"shader_parameters_independently_verified": True'));
   assert.ok(broker.includes('"approval_reauthenticated_by_preflight": False'));
   assert.ok(native.includes('let material_claim=response.get("material_render_preflight")'));
   assert.ok(native.includes('stage==Some("look_render")'));
@@ -288,4 +288,19 @@ test("broker JSON-line frame guard rejects the exact native max, preserving one 
   assert.ok(native.includes("const MAX_FRAME:usize=131072;"));
   assert.ok(native.includes("if data.len()>=MAX_FRAME{return;}"));
   assert.ok(broker.includes("Bounded Blender broker response exceeded"));
+});
+
+test("typed material.shader_inspect verifies genuine copper base color, metallic, roughness and shader SHA before look still",()=>{
+  for(const p of [
+    'def verify_shuvi41_copper_shader(snapshot: dict) -> str:',
+    '"material.shader_inspect", {"material_name": "Shuvi41ProofCopper"}',
+    'shader_revision = verify_shuvi41_copper_shader(read(',
+    'computed != revision',
+    '"shader_node_graph_revision_verified": True',
+    '"shader_graph_revision": shader_revision'
+  ])assert.ok(broker.includes(p),p);
+  for(const p of [
+    'proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)',
+    'proof.get("shader_node_graph_revision_verified").and_then(Value::as_bool)!=Some(true)'
+  ])assert.ok(native.includes(p),p);
 });

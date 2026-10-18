@@ -35,7 +35,8 @@ fn material_source_evidence(
         ||claim.get("material_slot_name").and_then(Value::as_str)!=Some("Shuvi41ProofCopper")
         ||claim.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
         ||claim.get("key_light_name").and_then(Value::as_str)!=Some("Shuvi41ProofKey")
-        ||claim.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(false)
+        ||claim.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)
+        ||claim.get("shader_node_graph_revision_verified").and_then(Value::as_bool)!=Some(true)
         ||claim.get("render_completed_by_preflight").and_then(Value::as_bool)!=Some(false)
         ||claim.get("approval_reauthenticated_by_preflight").and_then(Value::as_bool)!=Some(false){
         return Err("Material render source preflight claims are missing or overstated.".into());
@@ -44,6 +45,12 @@ fn material_source_evidence(
         .ok_or("Material source preflight revision missing.")?;
     if revision.len()!=64 || !revision.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()){
         return Err("Material source preflight revision is invalid.".into());
+    }
+    let shader_rev=claim.get("shader_graph_revision").and_then(Value::as_str)
+        .ok_or("Material read-only shader graph revision missing.")?;
+    if shader_rev.len()!=64
+        ||!shader_rev.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase()){
+        return Err("Material shader graph revision is invalid.".into());
     }
     let source=claim.get("source_blend_path").and_then(Value::as_str)
         .ok_or("Material source path missing.")?;
@@ -66,7 +73,9 @@ fn material_source_evidence(
         "active_camera_name":"Shuvi41ProofCamera","key_light_name":"Shuvi41ProofKey",
         "native_source_sha256_verified_at_delivery":true,
         "read_only_preflight_verified_at_delivery":true,
-        "shader_parameters_independently_verified":false,
+        "shader_parameters_independently_verified":true,
+        "shader_node_graph_revision_verified":true,
+        "shader_graph_revision":shader_rev,
         "render_completed_by_preflight":false,
         "approval_reauthenticated_by_preflight":false,
     }))
@@ -91,7 +100,9 @@ fn validate_historical_material_proof(evidence:&Value,artifact:&Value)->Result<b
         .ok_or("Material history source hash missing.")?;
     let rev=proof.get("source_scene_revision").and_then(Value::as_str)
         .ok_or("Material history scene revision missing.")?;
-    for hash in [sha,rev]{
+    let shader=proof.get("shader_graph_revision").and_then(Value::as_str)
+        .ok_or("Material historical shader fingerprint missing.")?;
+    for hash in [sha,rev,shader]{
         if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()){
             return Err("Malformed historical material source identity.".into());
         }
@@ -99,7 +110,8 @@ fn validate_historical_material_proof(evidence:&Value,artifact:&Value)->Result<b
     if proof.get("schema_version").and_then(Value::as_u64)!=Some(1)
         ||proof.get("native_source_sha256_verified_at_delivery").and_then(Value::as_bool)!=Some(true)
         ||proof.get("read_only_preflight_verified_at_delivery").and_then(Value::as_bool)!=Some(true)
-        ||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(false)
+        ||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)
+        ||proof.get("shader_node_graph_revision_verified").and_then(Value::as_bool)!=Some(true)
         ||proof.get("render_completed_by_preflight").and_then(Value::as_bool)!=Some(false)
         ||proof.get("approval_reauthenticated_by_preflight").and_then(Value::as_bool)!=Some(false)
         ||proof.get("source_blend_path").and_then(Value::as_str)
@@ -469,14 +481,17 @@ mod tests {
             "material_slot_name":"Shuvi41ProofCopper",
             "active_camera_name":"Shuvi41ProofCamera",
             "key_light_name":"Shuvi41ProofKey",
-            "shader_parameters_independently_verified":false,
+            "shader_parameters_independently_verified":true,
+            "shader_node_graph_revision_verified":true,
+            "shader_graph_revision":"e".repeat(64),
             "render_completed_by_preflight":false,
             "approval_reauthenticated_by_preflight":false
         });
         let proof=material_source_evidence(Some(&preflight),&material_png,Some(SESSION)).unwrap();
         assert_eq!(proof["source_sha256"],hash);
         assert_eq!(proof["native_source_sha256_verified_at_delivery"],true);
-        assert_eq!(proof["shader_parameters_independently_verified"],false);
+        assert_eq!(proof["shader_parameters_independently_verified"],true);
+        assert_eq!(proof["shader_graph_revision"],"e".repeat(64));
         let file=json!({"format":"PNG","absolute_path":material_png["path"]});
         assert!(validate_historical_material_proof(
             &json!({"material_render_source":proof}),&file).unwrap());
@@ -490,7 +505,13 @@ mod tests {
         altered["key_light_name"]=json!("Counterfeit");
         assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
         altered=preflight.clone();
-        altered["shader_parameters_independently_verified"]=json!(true);
+        altered["shader_parameters_independently_verified"]=json!(false);
+        assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
+        altered=preflight.clone();
+        altered["shader_graph_revision"]=json!("not-a-shader-hash");
+        assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
+        altered=preflight.clone();
+        altered["shader_node_graph_revision_verified"]=json!(false);
         assert!(material_source_evidence(Some(&altered),&material_png,Some(SESSION)).is_err());
         assert!(material_source_evidence(Some(&preflight),&material_png,None).is_err());
         assert!(material_source_evidence(None,&material_png,Some(SESSION)).is_err());
@@ -513,13 +534,19 @@ mod tests {
             "read_only_preflight_verified_at_delivery":true,
             "mesh_name":"Shuvi41ProofMesh","material_slot_name":"Shuvi41ProofCopper",
             "active_camera_name":"Shuvi41ProofCamera","key_light_name":"Shuvi41ProofKey",
-            "shader_parameters_independently_verified":false,
+            "shader_parameters_independently_verified":true,
+            "shader_node_graph_revision_verified":true,
+            "shader_graph_revision":"e".repeat(64),
             "render_completed_by_preflight":false,
             "approval_reauthenticated_by_preflight":false
         });
         assert!(validate_historical_material_proof(
             &json!({"material_render_source":proof}),&file).unwrap());
         proof["approval_reauthenticated_by_preflight"]=json!(true);
+        assert!(validate_historical_material_proof(
+            &json!({"material_render_source":proof}),&file).is_err());
+        proof["approval_reauthenticated_by_preflight"]=json!(false);
+        proof["shader_graph_revision"]=json!("bad");
         assert!(validate_historical_material_proof(
             &json!({"material_render_source":proof}),&file).is_err());
         let unrelated=json!({"format":"PNG",

@@ -93,6 +93,63 @@ def _is_material_render(plan: object) -> bool:
     return False
 
 
+def verify_shuvi41_copper_shader(snapshot: dict) -> str:
+    """Verify actual typed material.shader_inspect nodes and Principled inputs.
+
+    This source is the pinned upstream read-only Blender adapter, independent
+    of the earlier material.create_assign success receipt. Do not infer image
+    quality, texture colorspace or render completion from this evidence.
+    """
+    from math import isfinite
+
+    if not isinstance(snapshot, dict) or snapshot.get("material_name") != "Shuvi41ProofCopper":
+        raise ValueError("Copper shader material identity is wrong")
+    revision = snapshot.get("shader_revision")
+    if (not isinstance(revision, str) or len(revision) != 64
+            or any(c not in "0123456789abcdef" for c in revision)):
+        raise ValueError("Copper shader revision is not a bounded SHA-256")
+    content = {k: v for k, v in snapshot.items() if k != "shader_revision"}
+    computed = hashlib.sha256(json.dumps(
+        content, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")).hexdigest()
+    if computed != revision:
+        raise ValueError("Copper shader revision differs from read-only node data")
+    nodes, links = snapshot.get("nodes"), snapshot.get("links")
+    if (not isinstance(nodes, list) or not 1 <= len(nodes) <= 64
+            or snapshot.get("node_count") != len(nodes)
+            or not isinstance(links, list) or len(links) > 128
+            or snapshot.get("link_count") != len(links)):
+        raise ValueError("Copper shader node/edge counts are malformed")
+    principled_nodes = [
+        node["name"] for node in nodes
+        if isinstance(node, dict) and node.get("type") == "BSDF_PRINCIPLED"
+        and isinstance(node.get("name"), str)
+    ]
+    if len(principled_nodes) != 1:
+        raise ValueError("Copper shader needs exactly one Principled BSDF node")
+    for link in links:
+        if not isinstance(link, list) or len(link) != 4 or not all(
+                isinstance(x, str) for x in link):
+            raise ValueError("Copper shader link graph is malformed")
+        if link[2] == principled_nodes[0] and link[3] in (
+                "Base Color", "Metallic", "Roughness"):
+            raise ValueError("Copper shader fixed inputs are overridden by linked nodes")
+    values = snapshot.get("principled")
+    if not isinstance(values, dict):
+        raise ValueError("Copper shader Principled parameters are missing")
+    def close(actual, target):
+        return (type(actual) in (int, float) and isfinite(actual)
+                and abs(actual - target) <= 0.002)
+    color = values.get("base_color")
+    if (not isinstance(color, list) or len(color) != 4
+            or not all(close(a, b) for a, b in zip(
+                color, (0.8, 0.41, 0.16, 1.0)))
+            or not close(values.get("metallic"), 0.65)
+            or not close(values.get("roughness"), 0.31)):
+        raise ValueError("Saved copper shader values differ from fixed approved look")
+    return revision
+
+
 def validate_material_render_source(controller, input_checkpoint: dict | None,
                                     expected_revision: str, allow_render: bool) -> None:
     """Read-only source/scene/material gate before the first render mutation.
@@ -173,12 +230,18 @@ def validate_material_render_source(controller, input_checkpoint: dict | None,
     if not _proof_key_light(found["LIGHT"]):
         raise ValueError("Material render proof key light missing")
 
+    # Independent, typed upstream read-only shader graph inspection.
+    # The pinned contract supports material.shader_inspect by material name.
+    shader_revision = verify_shuvi41_copper_shader(read(
+        "material.shader_inspect", {"material_name": "Shuvi41ProofCopper"}))
+
     final = read("scene.inspect")
     if (final.get("revision") != revision or final.get("session_id") != session
             or final.get("camera_id") != camera_id):
         raise ValueError("Material render scene changed during preflight")
-    # Pre-mutation evidence only. This is NOT a render result, a shader-node
-    # attestation or the approval itself. Native Rust rechecks these fields.
+    # This is a *read-only shader inspection*, not a rendered-image or
+    # action-approval attestation. Native Rust independently binds its receipt
+    # to the original exact source SHA, owner session and scene revision.
     return {
         "schema_version": 1, "verified": True, "read_only_preflight": True,
         "session_id": session, "source_scene_revision": revision,
@@ -189,7 +252,9 @@ def validate_material_render_source(controller, input_checkpoint: dict | None,
         "material_slot_name": "Shuvi41ProofCopper",
         "active_camera_name": "Shuvi41ProofCamera",
         "key_light_name": "Shuvi41ProofKey",
-        "shader_parameters_independently_verified": False,
+        "shader_parameters_independently_verified": True,
+        "shader_graph_revision": shader_revision,
+        "shader_node_graph_revision_verified": True,
         "render_completed_by_preflight": False,
         "approval_reauthenticated_by_preflight": False,
     }

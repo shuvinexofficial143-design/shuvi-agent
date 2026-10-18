@@ -70,7 +70,7 @@ test("materialized render delivery includes source-SHA-bound preflight, but reve
   assert.ok(rust.includes('fn validate_historical_material_proof('));
   assert.ok(rust.includes("material_source_preflight_reexecuted"));
   assert.ok(rust.includes('"material_source_current_bytes_reverified":false'));
-  assert.ok(rust.includes('"shader_parameters_independently_verified":false'));
+  assert.ok(rust.includes('"shader_parameters_independently_verified":true'));
   for(const caseName of [
     "native_material_delivery_binds_real_source_sha_camera_light_and_session",
     "historical_material_evidence_is_non_authoritative_and_fail_closed"
@@ -88,4 +88,13 @@ test("saved optional copper .blend requires independently reopened slot and came
     "copper_look_handoff_requires_independent_reopened_material_camera_and_light",
     "stage2_checkpoint_is_not_mistaken_for_optional_look_proof"
   ])assert.ok(rust.includes(token),token);
+});
+
+test("material-render preflight historical provenance includes independently authenticated shader graph revision",()=>{
+  for(const p of [
+    '"shader_graph_revision":shader_rev',
+    '"shader_node_graph_revision_verified":true',
+    'let shader=proof.get("shader_graph_revision")',
+    '||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)'
+  ])assert.ok(rust.includes(p),p);
 });

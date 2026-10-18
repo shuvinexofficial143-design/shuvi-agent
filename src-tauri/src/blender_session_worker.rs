@@ -931,7 +931,11 @@ pub(crate) fn plan(
                 ||proof.get("source_scene_revision").and_then(Value::as_str)!=Some(expected_scene_revision)
                 ||proof.get("source_blend_path").and_then(Value::as_str)!=Some(source.canonical_path.as_str())
                 ||proof.get("source_sha256").and_then(Value::as_str)!=Some(source.sha256.as_str())
-                ||proof.get("source_bytes").and_then(Value::as_u64)!=Some(source.bytes){
+                ||proof.get("source_bytes").and_then(Value::as_u64)!=Some(source.bytes)
+                ||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(true)
+                ||proof.get("shader_node_graph_revision_verified").and_then(Value::as_bool)!=Some(true)
+                ||proof.get("shader_graph_revision").and_then(Value::as_str)
+                    .is_none_or(|h|h.len()!=64 ||!h.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase())){
                 return Err("Material render preflight is not bound to this native source, action and session.".into());
             }
         }else if material_claim.is_some(){

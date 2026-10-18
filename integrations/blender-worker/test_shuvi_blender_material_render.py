@@ -55,6 +55,26 @@ class FakeReadOnlyController:
                       "color": [1, 0.94, 0.85]},
         }
         self.objects = {"MESH": mesh, "CAMERA": camera, "LIGHT": lamp}
+        self.shader = {
+            "material_name": "Shuvi41ProofCopper", "node_count": 2,
+            "link_count": 1,
+            "nodes": [
+                {"name": "Principled BSDF", "type": "BSDF_PRINCIPLED", "image": None},
+                {"name": "Material Output", "type": "OUTPUT_MATERIAL", "image": None},
+            ],
+            "links": [["Principled BSDF", "BSDF", "Material Output", "Surface"]],
+            "principled": {"base_color": [0.8, 0.41, 0.16, 1.0],
+                          "metallic": 0.65, "roughness": 0.31},
+            "auxiliary": {}, "textures": {},
+        }
+        self.update_shader_revision()
+
+    def update_shader_revision(self):
+        import json
+        content = {k: v for k, v in self.shader.items() if k != "shader_revision"}
+        self.shader["shader_revision"] = hashlib.sha256(json.dumps(
+            content, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()).hexdigest()
 
     def execute(self, request):
         self.calls.append(request.operation)
@@ -62,6 +82,10 @@ class FakeReadOnlyController:
             if self.mutate == "late_revision" and self.calls.count("scene.inspect") == 2:
                 return Result({**self.scene, "revision": "d" * 64})
             return Result(copy.deepcopy(self.scene))
+        if request.operation == "material.shader_inspect":
+            if request.payload != {"material_name": "Shuvi41ProofCopper"}:
+                raise AssertionError("Only exact named copper shader inspection permitted")
+            return Result(copy.deepcopy(self.shader))
         if request.operation == "objects.list":
             obj = self.objects[request.payload["object_type"]]
             if self.mutate == "ambiguous_mesh" and obj["type"] == "MESH":
@@ -112,12 +136,14 @@ class MaterialRenderPreflightTests(unittest.TestCase):
         self.assertEqual(proof["material_slot_name"], "Shuvi41ProofCopper")
         self.assertEqual(proof["active_camera_name"], "Shuvi41ProofCamera")
         self.assertEqual(proof["key_light_name"], "Shuvi41ProofKey")
-        self.assertFalse(proof["shader_parameters_independently_verified"])
+        self.assertTrue(proof["shader_parameters_independently_verified"])
+        self.assertTrue(proof["shader_node_graph_revision_verified"])
+        self.assertEqual(proof["shader_graph_revision"], self.ctrl.shader["shader_revision"])
         self.assertFalse(proof["render_completed_by_preflight"])
         self.assertFalse(proof["approval_reauthenticated_by_preflight"])
         self.assertEqual(self.ctrl.calls, ["scene.inspect", "objects.list",
                                            "objects.list", "objects.list",
-                                           "scene.inspect"])
+                                           "material.shader_inspect", "scene.inspect"])
         self.assertFalse(any(x in self.ctrl.calls for x in
                              ("render.execute", "render.configure", "material.create_assign")))
 
@@ -128,7 +154,40 @@ class MaterialRenderPreflightTests(unittest.TestCase):
         self.assertNotIn("action_approved", report)
         self.assertFalse(report["render_completed_by_preflight"])
         self.assertFalse(report["approval_reauthenticated_by_preflight"])
-        self.assertFalse(report["shader_parameters_independently_verified"])
+        self.assertTrue(report["shader_parameters_independently_verified"])
+
+    def test_saved_copper_shader_wrong_base_color_metallic_roughness_denied(self):
+        for key, value in [
+            ("base_color", [0.2, 0.4, 0.6, 1.0]),
+            ("metallic", 0.1), ("roughness", 0.88),
+        ]:
+            self.ctrl = FakeReadOnlyController(self.path)
+            self.ctrl.shader["principled"][key] = value
+            self.ctrl.update_shader_revision()
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "Saved copper shader values"):
+                    self.proof()
+
+    def test_shader_revision_must_match_actual_nodes(self):
+        self.ctrl.shader["shader_revision"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "shader revision differs"):
+            self.proof()
+
+    def test_copper_shader_fixed_inputs_cannot_be_overridden_by_texture_links(self):
+        self.ctrl.shader["links"].append(
+            ["Texture", "Color", "Principled BSDF", "Base Color"])
+        self.ctrl.shader["link_count"] += 1
+        self.ctrl.update_shader_revision()
+        with self.assertRaisesRegex(ValueError, "overridden by linked"):
+            self.proof()
+
+    def test_missing_principled_shader_node_denied(self):
+        self.ctrl.shader["nodes"] = [
+            {"name": "Material Output", "type": "OUTPUT_MATERIAL", "image": None}]
+        self.ctrl.shader["node_count"] = 1
+        self.ctrl.update_shader_revision()
+        with self.assertRaisesRegex(ValueError, "one Principled"):
+            self.proof()
 
     def test_missing_wrong_or_multiple_material_slots_fail_before_dispatch(self):
         mesh = self.ctrl.objects["MESH"]
