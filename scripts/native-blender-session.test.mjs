@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 38 tests/);
+  assert.match(run.stderr,/Ran 42 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -229,4 +229,38 @@ test("large Blender meshes skip upstream-limited topology inspection and report 
     'large_mesh_counts_only_fallback_is_provenance_bounded',
     'in_range_mesh_metadata_must_match_full_or_compact_geometry'
   ])assert.ok(native.includes(token),token);
+});
+
+test("Shuvi 41 cross-language binary geometry commitment is recomputed only by native after approved small-mesh readback",()=>{
+  for(const item of [
+    "def native_mesh_binary_commitment(vertices: list, faces: list)",
+    'h.update(b"SHUVI41-MESH-NATIVE-V1" + bytes([0]))',
+    '"native_binary_commitment_sha256":',
+    '"native_binary_commitment_recomputed": False'
+  ])assert.ok(broker.includes(item),item);
+  for(const item of [
+    "fn native_binary_mesh_sha(vertices:&[Value],faces:&[Value])->Result<String,String>",
+    'hasher.update(b"SHUVI41-MESH-NATIVE-V1")',
+    "native_binary_mesh_sha(vertices,faces)?!=native_expected",
+    'row["mesh_geometry_summary"]["native_binary_commitment_recomputed"]=Value::Bool(true)',
+    "fn small_mesh_topology_checks_all_bounded_vertices_and_faces("
+  ])assert.ok(native.includes(item),item);
+});
+test("object discovery checks pagination cursors, requested filters, identity and duplicates in broker and native",()=>{
+  for(const item of [
+    "def verify_object_page_contract(page: dict, query: dict, session_id: str,",
+    'expected_count = min(limit, max(0, total - offset))',
+    'expected_next = offset + limit if offset + limit < total else None',
+    'or object_id in seen',
+    'name.startswith(query["name_prefix"])',
+    "verify_object_page_contract(",
+  ])assert.ok(broker.includes(item),item);
+  for(const item of [
+    "fn verified_object_page_contract(",
+    "let expected_count=limit.min(total.saturating_sub(offset));",
+    "let expected_next=if offset+limit<total{Some(offset+limit)}else{None};",
+    "verified_object_page_contract(",
+    "fn native_object_page_requires_unique_filtered_exact_continuation(",
+    "fn native_object_page_continuation_tracks_actual_query_window("
+  ])assert.ok(native.includes(item),item);
 });

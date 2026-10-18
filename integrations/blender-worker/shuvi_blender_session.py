@@ -387,6 +387,69 @@ def bounded_object_details(item: dict) -> dict:
             "mesh_topology_inspected": False}
 
 
+def native_mesh_binary_commitment(vertices: list, faces: list) -> str:
+    """Stable cross-language SHA-256 of the full geometry, independent of
+    JSON floating-point formatting. This is not an upstream shader digest.
+    Every coordinate is finite binary64; face indices are unsigned u32.
+    """
+    import struct
+
+    h = hashlib.sha256()
+    h.update(b"SHUVI41-MESH-NATIVE-V1" + bytes([0]))
+    h.update(struct.pack(">I", len(vertices)))
+    for xyz in vertices:
+        for value in xyz:
+            h.update(struct.pack(">d", float(value)))
+    h.update(struct.pack(">I", len(faces)))
+    for face in faces:
+        h.update(struct.pack(">I", len(face)))
+        for index in face:
+            h.update(struct.pack(">I", index))
+    return h.hexdigest()
+
+
+def verify_object_page_contract(page: dict, query: dict, session_id: str,
+                                revision: str) -> None:
+    """Validate real upstream paging, filters, and unique object identities
+    BEFORE any secondary mesh.inspect call can run.
+    """
+    if (page.get("session_id") != session_id
+            or page.get("revision") != revision
+            or type(page.get("offset")) is not int
+            or page["offset"] != query["offset"]
+            or type(page.get("total")) is not int
+            or not 0 <= page["total"] <= 10000
+            or not isinstance(page.get("items"), list)):
+        raise ValueError("Blender object page does not match fresh scene identity")
+    offset, limit, total = query["offset"], query["limit"], page["total"]
+    expected_count = min(limit, max(0, total - offset))
+    expected_next = offset + limit if offset + limit < total else None
+    if (len(page["items"]) != expected_count
+            or type(page.get("next_offset")) not in (int, type(None))
+            or page.get("next_offset") != expected_next):
+        raise ValueError("Blender object page continuation does not match approved bounds")
+    seen = set()
+    for item in page["items"]:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid Blender object page item")
+        object_id, name, kind, record_revision = (
+            item.get("object_id"), item.get("name"),
+            item.get("type"), item.get("revision"))
+        if (not isinstance(object_id, str)
+                or not object_id.startswith(session_id + ":")
+                or object_id in seen
+                or not isinstance(name, str) or not 1 <= len(name) <= 256
+                or not name.startswith(query["name_prefix"])
+                or not isinstance(kind, str) or not 1 <= len(kind) <= 32
+                or (query["object_type"] is not None
+                    and kind != query["object_type"])
+                or not isinstance(record_revision, str)
+                or len(record_revision) != 64
+                or any(c not in "0123456789abcdef" for c in record_revision)):
+            raise ValueError("Blender object page identity/filter/uniqueness failed")
+        seen.add(object_id)
+
+
 def authenticated_mesh_counts(item: dict) -> dict | None:
     """Read authoritative Blender mesh metadata from the existing object page.
 
@@ -476,7 +539,10 @@ def read_bounded_mesh_topology(controller, item: dict, session_id: str) -> dict:
                     "vertex_count": len(vertices), "face_count": len(faces),
                     "vertices": vertices, "faces": faces, "geometry_sha256": calculated,
                     "digest_checked_in_authenticated_broker": True,
-                    "native_digest_recomputed": False}}
+                    "native_digest_recomputed": False,
+                    "native_binary_commitment_sha256":
+                        native_mesh_binary_commitment(vertices, faces),
+                    "native_binary_commitment_recomputed": False}}
     bounds_min = [min(vertex[axis] for vertex in vertices) for axis in range(3)]
     bounds_max = [max(vertex[axis] for vertex in vertices) for axis in range(3)]
     return {**metadata, "mesh_topology_inspected": False, "geometry_available": False,
@@ -636,14 +702,8 @@ def serve(argv: list[str] | None = None) -> int:
                     if result.status != Status.SUCCEEDED or not isinstance(result.data, dict):
                         raise ValueError("Authenticated Blender object page failed")
                     page = result.data
-                    if (page.get("session_id") != session_id
-                            or page.get("revision") != expected_revision
-                            or page.get("offset") != payload["offset"]
-                            or type(page.get("total")) is not int
-                            or not 0 <= page["total"] <= 10000
-                            or not isinstance(page.get("items"), list)
-                            or len(page["items"]) > payload["limit"]):
-                        raise ValueError("Blender object page does not match fresh scene identity")
+                    verify_object_page_contract(
+                        page, payload, session_id, expected_revision)
                     objects = []
                     for item in page["items"]:
                         if not isinstance(item, dict):

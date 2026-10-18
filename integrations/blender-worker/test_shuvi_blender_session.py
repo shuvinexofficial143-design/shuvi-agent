@@ -475,6 +475,109 @@ class PersistentSessionTests(unittest.TestCase):
                 worker.bounded_object_details(broken)
 
     @staticmethod
+    def valid_object_page():
+        return {
+            "session_id": SESSION_ID, "revision": "f" * 64,
+            "offset": 0, "total": 2, "next_offset": None,
+            "items": [
+                {"object_id": SESSION_ID + ":mesh-one", "name": "ShuviMesh",
+                 "type": "MESH", "revision": "a" * 64,
+                 "details_truncated": False},
+                {"object_id": SESSION_ID + ":camera", "name": "ShuviCamera",
+                 "type": "CAMERA", "revision": "b" * 64,
+                 "details_truncated": False},
+            ],
+        }
+
+    def test_object_page_requires_unique_filtered_complete_continuation(self):
+        import copy
+        q = {"offset": 0, "limit": 5, "name_prefix": "Shuvi",
+             "object_type": None}
+        base = self.valid_object_page()
+        worker.verify_object_page_contract(base, q, SESSION_ID, "f" * 64)
+        forged = [
+            {"next_offset": 1}, {"next_offset": False},
+            {"total": 3}, {"total": True}, {"offset": 1},
+            {"items": [base["items"][0]]},
+            {"items": [base["items"][0], base["items"][0]]},
+            {"session_id": "different"},
+            {"revision": "0" * 64},
+        ]
+        for patch_values in forged:
+            with self.subTest(patch_values=patch_values):
+                bad = copy.deepcopy(base)
+                bad.update(patch_values)
+                with self.assertRaises(ValueError):
+                    worker.verify_object_page_contract(
+                        bad, q, SESSION_ID, "f" * 64)
+        for field, value in [
+            ("object_id", "different:mesh"),
+            ("name", "WrongPrefix"),
+            ("type", "LIGHT"),
+            ("revision", "G" * 64),
+        ]:
+            bad = copy.deepcopy(base)
+            bad["items"][0][field] = value
+            bad_q = {**q, "object_type": "MESH"} if field == "type" else q
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                worker.verify_object_page_contract(
+                    bad, bad_q, SESSION_ID, "f" * 64)
+
+    def test_object_pagination_end_and_midpoint_follow_up_are_consistent(self):
+        q = {"offset": 0, "limit": 1, "name_prefix": "Shuvi",
+             "object_type": None}
+        page = self.valid_object_page()
+        page["items"] = page["items"][:1]
+        page["next_offset"] = 1
+        worker.verify_object_page_contract(page, q, SESSION_ID, "f" * 64)
+        q["offset"] = 1
+        page["offset"] = 1
+        page["items"] = [self.valid_object_page()["items"][1]]
+        page["next_offset"] = None
+        worker.verify_object_page_contract(page, q, SESSION_ID, "f" * 64)
+        q["offset"] = 2
+        page["offset"] = 2
+        page["items"] = []
+        worker.verify_object_page_contract(page, q, SESSION_ID, "f" * 64)
+        page["next_offset"] = 2
+        with self.assertRaisesRegex(ValueError, "continuation"):
+            worker.verify_object_page_contract(page, q, SESSION_ID, "f" * 64)
+
+    def test_forged_page_is_rejected_before_secondary_mesh_inspection(self):
+        original = FakeController.execute
+        visited = []
+        def malicious(controller, request):
+            visited.append(request.operation)
+            if request.operation == "objects.list":
+                page = self.valid_object_page()
+                page["next_offset"] = 7
+                return FakeResult("succeeded", page)
+            if request.operation == "mesh.inspect":
+                raise AssertionError("Must reject forged pagination before mesh.inspect")
+            return original(controller, request)
+        with patch.object(FakeController, "execute", malicious):
+            code, replies = self.serve(self.frame("objects", query={
+                "offset": 0, "limit": 5, "name_prefix": "Shuvi",
+                "object_type": None}, expected_scene_revision="f" * 64))
+        self.assertEqual(code, 4)
+        self.assertEqual(replies[-1]["status"], "outcome_unknown")
+        self.assertNotIn("mesh.inspect", visited)
+        self.assertTrue(self.sessions[0].closed)
+
+    def test_mesh_binary_commitment_is_stable_and_sensitive_to_face_order(self):
+        geometry = self.small_topology()
+        digest = worker.native_mesh_binary_commitment(
+            geometry["vertices"], geometry["faces"])
+        self.assertEqual(digest, "1cc438cac98bd1882f52a5e2acdaaec4996832426e3c3915c7ba927043dab365")
+        reverse_faces = list(reversed(geometry["faces"]))
+        self.assertNotEqual(digest, worker.native_mesh_binary_commitment(
+            geometry["vertices"], reverse_faces))
+        changed = [list(p) for p in geometry["vertices"]]
+        changed[0][0] += 0.5
+        self.assertNotEqual(digest, worker.native_mesh_binary_commitment(
+            changed, geometry["faces"]))
+
+    @staticmethod
     def small_topology():
         return {
             "vertices": [[0., 0., 0.], [1., 0., 0.],
@@ -509,6 +612,9 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertEqual(result["mesh_geometry_summary"]["geometry_sha256"], actual)
         self.assertTrue(result["mesh_geometry_summary"]["digest_checked_in_authenticated_broker"])
         self.assertFalse(result["mesh_geometry_summary"]["native_digest_recomputed"])
+        self.assertFalse(result["mesh_geometry_summary"]["native_binary_commitment_recomputed"])
+        self.assertEqual(result["mesh_geometry_summary"]["native_binary_commitment_sha256"],
+                         "1cc438cac98bd1882f52a5e2acdaaec4996832426e3c3915c7ba927043dab365")
 
     def test_large_mesh_geometry_is_unavailable_without_claiming_digest(self):
         class Controller:

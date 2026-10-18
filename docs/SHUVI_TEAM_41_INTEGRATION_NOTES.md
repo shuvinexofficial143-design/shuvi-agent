@@ -1225,3 +1225,49 @@ without a `mesh.inspect` command, empty mesh reasons, invalid counts,
 metadata/geometry mismatches, 1200-vertex compact inspection and
 an end-to-end authenticated object-page query. These are
 source/fixture validations rather than real Blender host acceptance.
+
+## Shuvi 41 — Native independently rehashed geometry + strict object-page replay guards
+
+The persistent, owner-approved read-only Blender object query is
+now covered by two independent structural and integrity layers.
+
+**Independent binary geometry commitment (small complete meshes).**
+The pinned upstream `mesh.inspect` still emits its own canonical-JSON
+`geometry_revision` that the Python broker compares against all actual
+received vertices/faces. In addition, the broker now hashes those
+same validated values using a versioned, language-independent
+binary representation: `SHUVI41-MESH-NATIVE-V1 + NUL`, u32-big-endian
+vertex count, each finite float64-big-endian coordinate, u32-big-endian
+face count, then u32-big-endian polygon sizes and indices. The broker
+includes the resulting SHA-256 commitment but declares
+`native_binary_commitment_recomputed=false`.
+Native Rust rejects the small topology if this fingerprint does not
+equal its own independently recomputed binary64/u32 SHA. **Only after**
+native verification does Rust set the response-specific
+`native_binary_commitment_recomputed=true`. The pre-existing
+`native_digest_recomputed=false` still truthfully refers to the
+upstream JSON-specific geometry revision; it must not be confused
+with this new binary commitment. For medium summaries and large
+counts-only meshes no arrays are transmitted, so no native independent
+vertex/face hash is claimed. No shader proof is inferred.
+
+**Exact object-page proof.** Before the broker runs even the first
+secondary `mesh.inspect` it checks exact page item count, offset,
+total, next-offset cursor, unique session-bound object IDs, lowercase
+object revisions, requested name prefix and requested object type.
+Rust independently revalidates the same fields before publishing
+the page to Shuvi planning. A malformed or repeated object,
+inconsistent continuation or wrong filtered object fails closed,
+invalidates the owned session and never becomes a verified read-only
+observation. Normal empty/end pages and multi-page filtered queries
+remain supported; no mutation or automatic retry is introduced.
+
+The Rust CI regression identified in HEAD `b6ed996` was an obsolete
+fixture expecting 5,000 face indices to exceed the previous 4,096
+limit, although the new upstream-compatible bound is 32,768.
+The test now uses 32,769 as a genuinely invalid count without weakening
+the production bound. New Python tests exercise stale/duplicate/filter
+rejection before secondary mesh work and commitment sensitivity; native
+Rust tests exercise forged cursors, duplicate objects and tampered
+coordinates/indices independently. This milestone is code and CI
+validation only, not a real Windows Blender host acceptance.

@@ -452,6 +452,37 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     result
 }
 
+/// Independent native SHA-256 across binary64 coordinates / unsigned face
+/// indices. Unlike cross-language JSON formatting this is byte-identical
+/// across Python and Rust; the broker's own JSON geometry digest is separate.
+fn native_binary_mesh_sha(vertices:&[Value],faces:&[Value])->Result<String,String>{
+    use sha2::{Digest,Sha256};
+    let mut hasher=Sha256::new();
+    hasher.update(b"SHUVI41-MESH-NATIVE-V1");
+    hasher.update([0u8]);
+    hasher.update((vertices.len() as u32).to_be_bytes());
+    for vertex in vertices {
+        let xyz=vertex.as_array().ok_or("Native mesh commitment vertex malformed.")?;
+        if xyz.len()!=3{return Err("Native mesh commitment vertex length invalid.".into());}
+        for coord in xyz{
+            let number=coord.as_f64().ok_or("Native mesh commitment coordinate invalid.")?;
+            if !number.is_finite(){return Err("Native mesh commitment coordinate non-finite.".into());}
+            hasher.update(number.to_be_bytes());
+        }
+    }
+    hasher.update((faces.len() as u32).to_be_bytes());
+    for face in faces{
+        let indices=face.as_array().ok_or("Native mesh commitment face malformed.")?;
+        hasher.update((indices.len() as u32).to_be_bytes());
+        for index in indices{
+            let value=index.as_u64().ok_or("Native mesh commitment index malformed.")?;
+            let value=u32::try_from(value).map_err(|_|"Native mesh index too large.")?;
+            hasher.update(value.to_be_bytes());
+        }
+    }
+    Ok(format!("{:x}",hasher.finalize()))
+}
+
 /// Bind count-only large-mesh results to the authenticated object-page
 /// metadata. Counts are observed, not a substitute for topology/geometry SHA.
 fn verify_mesh_counts(item:&Value,kind:&str)->Result<(),String>{
@@ -630,6 +661,14 @@ fn verify_read_only_topology(item:&Value,kind:&str)->Result<(),String>{
         ||proof.get("native_digest_recomputed").and_then(Value::as_bool)!=Some(false){
         return Err("Mesh digest claims are invalid or overstated.".into());
     }
+    let native_expected=proof.get("native_binary_commitment_sha256").and_then(Value::as_str)
+        .ok_or("Independent binary mesh commitment is missing.")?;
+    if native_expected.len()!=64
+        ||!native_expected.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase())
+        ||proof.get("native_binary_commitment_recomputed").and_then(Value::as_bool)!=Some(false)
+        ||native_binary_mesh_sha(vertices,faces)?!=native_expected {
+        return Err("Blender mesh binary commitment differs from native recomputation.".into());
+    }
     Ok(())
 }
 
@@ -717,6 +756,51 @@ fn verified_object_views(items:&[Value],session_id:&str)->Result<(),String>{
     Ok(())
 }
 
+/// Native validation of the upstream page's exact offset/count/cursor,
+/// requested filters and unique session-owned object IDs. This runs after
+/// the broker's own validation and before returning data for new AI plans.
+fn verified_object_page_contract(
+    response:&Value,session_id:&str,offset:u64,limit:u64,
+    name_prefix:&str,object_type:Option<&str>
+)->Result<(),String>{
+    let rows=response.get("objects").and_then(Value::as_array)
+        .ok_or("Blender page rows missing.")?;
+    let total=response.get("total").and_then(Value::as_u64)
+        .ok_or("Blender total count missing.")?;
+    let next=response.get("next_offset")
+        .ok_or("Blender page continuation is missing.")?;
+    let next=if next.is_null(){None}else{
+        Some(next.as_u64().ok_or("Blender page continuation invalid.")?)
+    };
+    let expected_count=limit.min(total.saturating_sub(offset));
+    let expected_next=if offset+limit<total{Some(offset+limit)}else{None};
+    if rows.len() as u64!=expected_count||next!=expected_next{
+        return Err("Blender object page length/cursor contradicts requested window.".into());
+    }
+    let mut seen=std::collections::HashSet::new();
+    for row in rows{
+        let id=row.get("object_id").and_then(Value::as_str)
+            .ok_or("Object page has no object identity.")?;
+        let name=row.get("name").and_then(Value::as_str)
+            .ok_or("Object page has no object name.")?;
+        let kind=row.get("type").and_then(Value::as_str)
+            .ok_or("Object page has no object type.")?;
+        let rev=row.get("revision").and_then(Value::as_str)
+            .ok_or("Object page has no object revision.")?;
+        if !id.starts_with(&format!("{session_id}:"))
+            ||!seen.insert(id)
+            ||name.is_empty()||name.len()>256
+            ||!name.starts_with(name_prefix)
+            ||kind.is_empty()||kind.len()>32
+            ||object_type.is_some_and(|expected|kind!=expected)
+            ||rev.len()!=64
+            ||!rev.bytes().all(|v|v.is_ascii_hexdigit()&&!v.is_ascii_uppercase()){
+            return Err("Blender object page has stale, duplicate or unfiltered identity.".into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn objects(
     registry:&SessionRegistry,state:&ActionState,id:&str,
     scene_revision:&str,offset:u64,limit:u64,name_prefix:&str,object_type:Option<&str>
@@ -746,12 +830,23 @@ pub(crate) fn objects(
             ||response.get("total").and_then(Value::as_u64).is_none_or(|n|n>10000){
             return Err("Authenticated Blender object page evidence was incomplete.".into());
         }
+        verified_object_page_contract(
+            &response,id,offset,limit,name_prefix,object_type)?;
         verified_object_views(response["objects"].as_array()
             .ok_or("Blender object page missing.")?,id)?;
+        // This flag is native-owned and assigned only after the independent
+        // binary digest check above, never copied from the broker.
+        let mut verified_rows=response["objects"].as_array()
+            .ok_or("Blender object page missing.")?.clone();
+        for row in verified_rows.iter_mut(){
+            if row.get("mesh_topology_inspected").and_then(Value::as_bool)==Some(true){
+                row["mesh_geometry_summary"]["native_binary_commitment_recomputed"]=Value::Bool(true);
+            }
+        }
         Ok(json!({"status":"read_only_object_page","session_id":id,
             "scene_revision":scene_revision,"offset":offset,
             "total":response["total"],"next_offset":response["next_offset"],
-            "objects":response["objects"],"read_only":true,
+            "objects":verified_rows,"read_only":true,
             "requires_new_action_approval_for_mutation":true}))
     })();
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
@@ -909,7 +1004,9 @@ mod read_only_object_view_tests {
             "vertex_count":4,"face_count":2,
             "geometry_sha256":"a".repeat(64),
             "digest_checked_in_authenticated_broker":true,
-            "native_digest_recomputed":false
+            "native_digest_recomputed":false,
+            "native_binary_commitment_sha256":"1cc438cac98bd1882f52a5e2acdaaec4996832426e3c3915c7ba927043dab365",
+            "native_binary_commitment_recomputed":false
         });
         verified_object_views(&[mesh.clone()],"session-A").unwrap();
         for (ptr,value) in [
@@ -919,6 +1016,9 @@ mod read_only_object_view_tests {
             ("/mesh_geometry_summary/vertices/0/1",json!(2000000.0)),
             ("/mesh_geometry_summary/native_digest_recomputed",json!(true)),
             ("/mesh_geometry_summary/geometry_sha256",json!("bad")),
+            ("/mesh_geometry_summary/native_binary_commitment_sha256",json!("0".repeat(64))),
+            ("/mesh_geometry_summary/native_binary_commitment_recomputed",json!(true)),
+            ("/mesh_geometry_summary/vertices/0/0",json!(0.5)),
             ("/geometry_truncated",json!(true)),
             ("/mesh_topology_inspected",json!(false))
         ]{
@@ -949,7 +1049,7 @@ mod read_only_object_view_tests {
         });
         verified_object_views(&[item.clone()],"session-A").unwrap();
         for (path,value) in [
-            ("/mesh_overview/face_index_count",json!(5000)),
+            ("/mesh_overview/face_index_count",json!(32769)),
             ("/mesh_overview/vertex_count",json!(0)),
             ("/mesh_overview/bounds_min/1",json!(5.0)),
             ("/mesh_overview/geometry_sha256",json!("bad")),
@@ -1046,6 +1146,43 @@ mod read_only_object_view_tests {
         verified_object_views(&[mesh.clone()],"session-A").unwrap();
         mesh["geometry_truncated"]=json!(false);
         assert!(verified_object_views(&[mesh],"session-A").is_err());
+    }
+    #[test]
+    fn native_object_page_requires_unique_filtered_exact_continuation(){
+        let mesh=page_object("MESH");
+        let mut good=json!({"total":1,"next_offset":null,
+            "objects":[mesh],"read_only":true});
+        verified_object_page_contract(&good,"session-A",0,5,"Pro",None).unwrap();
+        let mut wrong=good.clone();
+        wrong["next_offset"]=json!(3);
+        assert!(verified_object_page_contract(&wrong,"session-A",0,5,"Pro",None).is_err());
+        wrong=good.clone();
+        wrong["total"]=json!(2);
+        assert!(verified_object_page_contract(&wrong,"session-A",0,5,"Pro",None).is_err());
+        wrong=good.clone();
+        wrong["objects"].as_array_mut().unwrap().push(page_object("MESH"));
+        wrong["total"]=json!(2);
+        assert!(verified_object_page_contract(&wrong,"session-A",0,5,"Pro",None).is_err());
+        wrong=good.clone();
+        wrong["objects"][0]["object_id"]=json!("different:obj");
+        assert!(verified_object_page_contract(&wrong,"session-A",0,5,"Pro",None).is_err());
+        assert!(verified_object_page_contract(&good,"session-A",0,5,"Wrong",None).is_err());
+        assert!(verified_object_page_contract(&good,"session-A",0,5,"Pro",Some("LIGHT")).is_err());
+        good["objects"][0]["revision"]=json!("not-a-sha");
+        assert!(verified_object_page_contract(&good,"session-A",0,5,"Pro",None).is_err());
+    }
+    #[test]
+    fn native_object_page_continuation_tracks_actual_query_window(){
+        let one=page_object("MESH");
+        let head=json!({"total":2,"next_offset":1,"objects":[one]});
+        verified_object_page_contract(&head,"session-A",0,1,"Pro",None).unwrap();
+        let tail=json!({"total":2,"next_offset":null,"objects":[page_object("CAMERA")]});
+        verified_object_page_contract(&tail,"session-A",1,1,"Pro",None).unwrap();
+        let empty=json!({"total":2,"next_offset":null,"objects":[]});
+        verified_object_page_contract(&empty,"session-A",2,1,"Pro",None).unwrap();
+        let mut forged=empty;
+        forged["next_offset"]=json!(2);
+        assert!(verified_object_page_contract(&forged,"session-A",2,1,"Pro",None).is_err());
     }
     #[test]
     fn historic_minimal_or_truncated_readback_never_claims_details(){
