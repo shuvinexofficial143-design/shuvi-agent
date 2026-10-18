@@ -2,6 +2,8 @@
 
 Base SHA: `99c9e58ef0e43139edfe2d6464f6411be47e1aa0`
 Branch: `feature/shuvi41-blender-worker`
+Integrated source tip: `903805a0f3525a62502173711e2f24db09d06cea` (merged into Shuvi 42 as the Shuvi 41 checkpoint).
+Source Sign-off: **pending**; this checkpoint contains source/fixture contract coverage, not live Blender/Windows acceptance.
 Owner: team-41. This branch is independent and must **not** be merged automatically.
 
 ## Functional behavior
