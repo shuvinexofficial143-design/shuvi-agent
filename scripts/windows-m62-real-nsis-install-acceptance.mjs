@@ -89,6 +89,12 @@ try{
   if(removal.error||removal.status!==0){
     throw Error("Real ephemeral NSIS uninstall did not complete successfully.");
   }
+  // A zero process exit code alone is NOT proof the NSIS uninstaller
+  // removed the installed desktop and SHA worker binaries.
+  if(existsSync(join(installDir,"shuvi.exe"))
+     ||existsSync(join(installDir,"shuvi-readonly-hash-worker.exe"))){
+    throw Error("NSIS uninstall returned zero but kept installed Shuvi or SHA worker.");
+  }
   uninstalled=true;
   const report={
     schemaVersion:1,
