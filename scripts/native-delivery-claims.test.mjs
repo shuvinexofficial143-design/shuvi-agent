@@ -48,11 +48,56 @@ test("unverified completed task is never promoted to final deliverable",()=>{
 test("real frontend wires delivery after terminal schedule validation, before clearing checkpoint",()=>{
  const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
  const block=ui.slice(ui.indexOf('if (continuation.mode==="complete")'),
-   ui.indexOf("await clearActiveCheckpoint()",ui.indexOf('if (continuation.mode==="complete")')));
- assert.match(block,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule\)/);
+   ui.indexOf("setBusy(false);",ui.indexOf('if (continuation.mode==="complete")')));
+ assert.match(block,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule,\{/);
+ assert.match(block,/taskId:activePermissionScope.taskId,created:projectCreationEvidence/);
  assert.match(block,/invoke<NativeTaskDelivery>\("finalize_native_task_delivery"/);
  assert.match(block,/nativeDelivery/);
  const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
  assert.match(rust,/fn finalize_native_task_delivery\(/);
  assert.match(rust,/native_task_delivery::finalize\(&app,steps\)/);
+});
+
+test("audited UUIDs cannot launder graph dependency drift into Rust final delivery",()=>{
+ const g=dag([
+  node("inspect","read_file",evidence(A,"read_file","inspect",1)),
+  node("check","git_status",evidence(B,"git_status","check",2),["inspect"])
+ ]);
+ const s=schedule([job("inspect","read_file",A),job("check","git_status",B,["inspect"])]);
+ assert.ok(claims(g,s));
+ assert.equal(claims(g,{...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:[]}]}),null);
+ assert.equal(claims(g,{...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:["foreign"]}]}),null);
+ assert.equal(claims(g,{...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:["inspect","inspect"]}]}),null);
+ const forged=structuredClone(g);forged.steps[1].depends_on=[];
+ assert.equal(claims(forged,s),null);
+ for(const bad of [null,undefined,7,{},false]){
+  const wrong=structuredClone(g);
+  wrong.steps[1].depends_on=[bad];
+  const native=structuredClone(s);
+  native.jobs[1].dependsOn=[bad];
+  assert.equal(claims(wrong,native),null,"invalid dependency "+String(bad));
+ }
+ const valid=structuredClone(s);valid.jobs[1].dependsOn=["inspect"];
+ assert.ok(claims(g,valid));
+});
+
+test("corrupt native scheduler job cannot crash delivery preflight or become a receipt",()=>{
+ const g=dag([
+  node("inspect","read_file",evidence(A,"read_file","inspect",1)),
+  node("check","git_status",evidence(B,"git_status","check",2),["inspect"])
+ ]);
+ const s=schedule([job("inspect","read_file",A),job("check","git_status",B,["inspect"])]);
+ assert.ok(claims(g,s));
+ for(const invalid of [null,undefined,false,42,"audited",[],{}]){
+  const bad={...s,jobs:[s.jobs[0],invalid]};
+  assert.doesNotThrow(()=>claims(g,bad));
+  assert.equal(claims(g,bad),null);
+ }
+ // A malformed or missing native dependency list also fails closed, not
+ // as an unhandled exception inside the terminal finalization callback.
+ for(const invalid of [null,undefined,"inspect",{},[null],[123]]){
+  const bad={...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:invalid}]};
+  assert.doesNotThrow(()=>claims(g,bad));
+  assert.equal(claims(g,bad),null);
+ }
 });

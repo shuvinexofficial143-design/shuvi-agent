@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -67,7 +67,12 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    return response;
   }
   if(name==="prepare_tool"){
-   const id=reusePendingId?"action-1":"action-"+(staged.length+1);
+   const uuidIds=["e8b36b21-1c6a-459e-9b6f-75dd5692ab81",
+    "0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172",
+    "a64df912-9eb2-4d42-a46d-898327992516"];
+   const id=reusePendingId?"action-1":uuidPreparedIds
+    ?(uuidIds[staged.length]??"a64df912-9eb2-4d42-a46d-898327992516")
+    :"action-"+(staged.length+1);
    staged.push({id,proposal:params.proposal});
    return {id,kind:staged.length===wrongStageIndex?"wrong_tool":params.proposal.tool,
     summary:"Run "+params.proposal.tool,detail:"Approval needed",risk:"medium"};
@@ -248,12 +253,13 @@ test("Premiere opening has separate detect, launch and window-inspection approva
  await until(()=>s.allow.disabled===false,"second action approval ready");
  s.allow.listeners.get("click")();
  await until(()=>s.staged.length===3,"Premiere window inspection approval");
- assert.equal(s.staged[2].proposal.tool,"ui_find");
- assert.deepEqual(s.staged[2].proposal.arguments,{name:"Adobe Premiere Pro"});
+ assert.equal(s.staged[2].proposal.tool,"ui_windows");
+ assert.deepEqual(s.staged[2].proposal.arguments,{});
+ assert.equal(s.chatInputs.length,2,"audited launch uses deterministic readback instead of a new paid model call");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2,
   "window inspection must NOT happen before a third approval");
- assert.equal(s.approval.hidden,false);
- assert.match(s.chatInputs[2].messages.at(-1).content,/Launching a process is not evidence/);
+ await until(()=>s.approval.hidden===false,"third action approval visible");
+ assert.match(s.transport.getReplies("premiere-inspect")[0],/window inspection|readback/i);
 });
 
 test("audited failed read-only UI lookup stages window recovery without paying AI again",async()=>{
@@ -518,7 +524,7 @@ test("Batch 07 continuation rejects mismatched prepared kind after audited first
   model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
  const s=setup({first:launch,second:read,wrongStageIndex:2});
  await until(()=>s.transport.connected(),"ready");
- await s.transport.send("Open Premiere and inspect window","wrong-followup-kind",0);
+ await s.transport.send("Open Premiere and edit project footage","wrong-followup-kind",0);
  s.allow.listeners.get("click")();
  await until(()=>s.transport.getReplies("wrong-followup-kind")[0]?.includes("Next Windows tool preparation failed"),
   "mismatch fail closed");
@@ -629,7 +635,7 @@ test("Batch 13 blocks cross-app model click after audited Premiere window read",
  await until(()=>s.transport.connected(),"native");
  await s.transport.send("Premiere kholo","guard-cross-app",0);
  s.allow.listeners.get("click")();
- await until(()=>/Unsafe app selection|Unsafe or ambiguous UI target/.test(s.transport.getReplies("guard-cross-app")[0]??""),"unsafe blocked");
+ await until(()=>/Unsafe Master task proposal blocked|Unsafe app selection|Unsafe or ambiguous UI target/.test(s.transport.getReplies("guard-cross-app")[0]??""),"unsafe blocked");
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });
@@ -640,7 +646,7 @@ test("Batch 13 allows uniquely observed exact window but still requires owner Al
  const s=setup({first,second,stdoutFor:{ui_windows:JSON.stringify([
   {Name:"Adobe Premiere Pro 2026",ProcessId:200,NativeWindowHandle:44,ProcessName:"Adobe Premiere Pro"}])}});
  await until(()=>s.transport.connected(),"native");
- await s.transport.send("Premiere kholo","guard-right-app",0);
+ await s.transport.send("Premiere me naya project banao","guard-right-app",0);
  s.allow.listeners.get("click")();
  await until(()=>s.staged.length===2,"approval staged");
  assert.equal(s.staged[1].proposal.tool,"ui_click");
@@ -652,7 +658,7 @@ test("Batch 14 post-audit continuation exception does not start UI read recovery
  const s=setup({first:launch,second:{content:"continue",provider:"xkiro",model:"model/master",tool_proposal:null},
   continuationRenderError:true});
  await until(()=>s.transport.connected(),"native");
- await s.transport.send("Premiere kholo","audited-then-continuation-error",0);
+ await s.transport.send("Premiere me naya project banao","audited-then-continuation-error",0);
  s.allow.listeners.get("click")();
  await until(()=>s.transport.getReplies("audited-then-continuation-error")[0]?.includes("Native action remained audit-verified"),"post-audit exception");
  const reply=s.transport.getReplies("audited-then-continuation-error")[0];
@@ -1171,4 +1177,66 @@ test("unreadable WebView recovery blocks new Windows tasks without paid model di
  assert.match(blocked.error,/previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
+});
+
+
+test("exact audited Premiere opening closes with no unnecessary third paid model request",async()=>{
+ const inventory=[{Name:"Adobe Premiere Pro 2026",ProcessName:"Adobe Premiere Pro",
+  ProcessId:101,NativeWindowHandle:2580}];
+ const s=setup({first:launch,uuidPreparedIds:true,stdoutFor:{ui_windows:JSON.stringify(inventory)}});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo","simple-open-terminal",0);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"second separately approved window readback");
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.chatInputs.length,1,"zero model calls spent on deterministic second step");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ await until(()=>s.allow.disabled===false,"window approval ready");
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("simple-open-terminal")[0]?.includes("OPENING VERIFIED"),
+  "independently accepted Premiere opening");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
+ assert.equal(s.chatInputs.length,1,"never purchases a model call to recheck a verified narrow opening");
+ assert.equal(s.staged.length,2,"no third prepared Windows action");
+ assert.match(s.transport.getReplies("simple-open-terminal")[0],/Project creation.*remain UNVERIFIED/);
+ const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
+ assert.deepEqual(phases.slice(-2),["audit_verified","paused"]);
+});
+
+test("ambiguous Premiere window does not bypass Master outcome verification",async()=>{
+ const inventory=[{Name:"Adobe Premiere Pro 2026",ProcessName:"Notepad",
+  ProcessId:101,NativeWindowHandle:2580}];
+ const s=setup({first:launch,second:{content:"Need to check app identity.",tool_proposal:null,
+  provider:"xkiro",model:"model/master"},uuidPreparedIds:true,
+  stdoutFor:{ui_windows:JSON.stringify(inventory)}});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo","invalid-window-terminal",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"separate window inspection");
+ await until(()=>s.allow.disabled===false,"window approval ready");
+ s.allow.listeners.get("click")();
+ await until(()=>s.chatInputs.length===2,"unverified window invokes Master replan");
+ assert.doesNotMatch(s.transport.getReplies("invalid-window-terminal")[0]??"",/OPENING VERIFIED/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
+});
+
+test("Premiere project creation cannot terminate merely because its window was audited",async()=>{
+ const inventory=[{Name:"Adobe Premiere Pro 2026",ProcessName:"Adobe Premiere Pro",
+  ProcessId:101,NativeWindowHandle:2580}];
+ const s=setup({first:launch,second:{content:JSON.stringify({tool:"ui_windows",arguments:{}}),
+  tool_proposal:{tool:"ui_windows",arguments:{}},provider:"xkiro",model:"model/master"},
+  following:[{content:"Next project steps need owner confirmation.",tool_proposal:null,
+   provider:"xkiro",model:"model/master"}],
+  uuidPreparedIds:true,stdoutFor:{ui_windows:JSON.stringify(inventory)}});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo aur naya project banao","project-not-terminal",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"explicit project inspection");
+ await until(()=>s.allow.disabled===false,"project inspection approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.chatInputs.length===3,"project requires further Master model continuation");
+ assert.doesNotMatch(s.transport.getReplies("project-not-terminal")[0]??"",/OPENING VERIFIED/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
 });

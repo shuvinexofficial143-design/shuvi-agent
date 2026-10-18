@@ -78,6 +78,7 @@ export type AgentOrchestrationState = {
   last_outcome: ToolOutcome | null;
   recovery_mode: "normal" | "replan_required" | "stopped";
   objective: string | null;
+  owner_request: string | null; // Source owner brief; model may not redefine native task scope.
   last_plan_step: string | null;
   last_success_criteria: string | null;
   stop_reason: string | null;
@@ -359,7 +360,7 @@ export function proposalFingerprint(proposal: ToolProposal): string {
   return canonical({ tool: proposal.tool, arguments: proposal.arguments }).slice(0, 16_384);
 }
 
-export function createAgentOrchestrationState(ownerBudget: number = MAX_AGENT_STEPS, now = Date.now()): AgentOrchestrationState {
+export function createAgentOrchestrationState(ownerBudget: number = MAX_AGENT_STEPS, now = Date.now(), ownerRequest: string | null = null): AgentOrchestrationState {
   return {
     version: 5,
     next_step: 1,
@@ -374,6 +375,7 @@ export function createAgentOrchestrationState(ownerBudget: number = MAX_AGENT_ST
     last_outcome: null,
     recovery_mode: "normal",
     objective: null,
+    owner_request: typeof ownerRequest === "string" && ownerRequest.trim() && ownerRequest.length <= 2500 ? ownerRequest.trim() : null,
     last_plan_step: null,
     last_success_criteria: null,
     stop_reason: null,
@@ -446,12 +448,14 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   const receipts = input.version === 3 || input.version === 4 || input.version === 5 ? input.unsuccessful_fingerprints
     : input.last_proposal_fingerprint && ["failure", "denied", "blocked"].includes(String(input.last_outcome))
       ? [input.last_proposal_fingerprint] : [];
+  const validOwnerRequest = input.owner_request === undefined || input.owner_request === null ||
+    (typeof input.owner_request === "string" && !!input.owner_request.trim() && input.owner_request.length <= 2500);
   const validReceipts = Array.isArray(receipts) && receipts.length <= maxSteps
     && receipts.every(x => typeof x === "string" && x.length > 0 && x.length <= 16_384);
   const interrupted = restored.ok ? restored.interrupted : [];
   const invalid = !validContract || !validRequests || requestedNextStep < 1 || requestedNextStep > maxSteps + 1 || nextStep > maxSteps + 1
     || toolActions < 0 || toolActions > maxSteps || !restored.ok
-    || legacyUnboundGraph || legacyUnauditedGraph || !validReceipts
+    || legacyUnboundGraph || legacyUnauditedGraph || !validReceipts || !validOwnerRequest
     || (restored.ok && restored.graph && restored.graph.objective !== input.objective);
   const result: AgentOrchestrationState = {
     version: 5,
@@ -467,6 +471,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     last_outcome: outcome as ToolOutcome | null,
     recovery_mode: recoveryMode as AgentOrchestrationState["recovery_mode"],
     objective: boundedText(input.objective, 500),
+    owner_request: validOwnerRequest ? boundedText(input.owner_request, 2500) : null,
     last_plan_step: boundedText(input.last_plan_step, 500),
     last_success_criteria: boundedText(input.last_success_criteria, 800),
     stop_reason: boundedText(input.stop_reason, 800),
@@ -955,6 +960,7 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
   const unfinishedIds=new Set(verifiedProgress.steps.filter(s=>!s.evidence_verified).map(s=>s.step_id));
   const parts = [
     "Agent orchestration state:",
+    `- owner original brief (immutable): ${state.owner_request?.slice(0,450) ?? "legacy/unbound; inspect task before new native work"}`,
     `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`,
     ...(state.task_graph ? [
       `- graph revision ${state.task_graph.revision}; verified completed IDs: ${verifiedProgress.steps.filter(s=>s.evidence_verified).map(s=>s.step_id).join(",") || "none"}`,

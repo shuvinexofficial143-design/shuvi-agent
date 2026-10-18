@@ -13,7 +13,7 @@ test("owner action budgets are a narrow explicit allowlist",()=>{
  for(const x of [8,24,48]) assert.equal(allowedTaskBudget(x),true);
  for(const x of [undefined,null,0,9,49,1000,"48",NaN,1.5]) assert.equal(allowedTaskBudget(x),false);
  assert.match(main,/id="taskActionBudget"/);
- assert.match(main,/createAgentOrchestrationState\(allowedTaskBudget\(selectedActions\) \? selectedActions : 8\)/);
+ assert.match(main,/createAgentOrchestrationState\(allowedTaskBudget\(selectedActions\) \? selectedActions : 8, Date\.now\(\), content\)/);
  assert.match(orchestrator,/max_steps: allowedTaskBudget\(ownerBudget\) \? ownerBudget : MAX_AGENT_STEPS/);
 });
 
@@ -78,7 +78,7 @@ test("model-call reservations are finite, counted before dispatch and never sile
 
 test("runtime persists the model request BEFORE a paid chat and validates restored counts",()=>{
  const reserve=main.indexOf("const reservation = reserveTaskModelRequest(orchestration)");
- const persist=main.indexOf('await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });',reserve);
+ const persist=main.indexOf('await guardedSaveNativeCheckpoint(true)',reserve);
  const dispatch=main.indexOf('const response = await invoke<ChatResponse>("chat", {',persist);
  assert.ok(reserve>=0 && persist>reserve && dispatch>persist);
  assert.match(main.slice(reserve,dispatch),/orchestration = reservation.state/);

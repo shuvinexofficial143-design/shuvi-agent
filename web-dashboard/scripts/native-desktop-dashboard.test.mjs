@@ -44,7 +44,9 @@ test("normal web dashboard and remote mobile UI are preserved",()=>{
 test("Windows mobile pairing changes become visible to existing hidden agent coordinator",()=>{
  const source=root("src/main.ts");
  const adapter=web("src/native-agent.ts");
- assert.match(source,/await refreshRemoteAgent\(\);\s*if\(!remoteAgentEnabled\)return;\s*const inbox/);
+ assert.match(source,/await refreshRemoteAgent\(\);\s*if\(!remoteAgentEnabled\)return;/);
+ assert.match(source,/const inboxFence=captureRemoteInboxOwner\(/);
+ assert.match(source,/const inbox=await invoke<RemoteInbox>\("remote_agent_poll"\);\s*if\(!inboxCurrent\(\)\)return;/);
  assert.match(adapter,/invoke<void>\("remote_agent_pair"/);
  assert.match(adapter,/invoke<void>\("remote_agent_disconnect"/);
  assert.match(adapter,/64-character Windows agent code/);
