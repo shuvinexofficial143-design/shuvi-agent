@@ -117,3 +117,13 @@ test("BLEND handoff preserves and cross-checks bytes-stable reopen SHA against c
     '"checkpoint_file_sha256":evidence["checkpoint_file_sha256"]'
   ])assert.ok(rust.includes(t),t);
 });
+
+test("native handoff binds reserved stage names to historical geometry/camera/light evidence without restricting generic saves",()=>{
+  for(const t of [
+    'let fixed_stage=matches!(stage,Some("shuvi41-proof-stage1.blend"|"shuvi41-proof-stage2.blend"))',
+    '"fixed_stage_geometry_verified":fixed_stage',
+    'evidence.get("fixed_stage_name").and_then(Value::as_str)!=saved_name',
+    '"fixed_stage_geometry_verified":evidence["fixed_stage_geometry_verified"]',
+    "fn reserved_stage_checkpoint_needs_real_persisted_shape_camera_and_light()"
+  ])assert.ok(rust.includes(t),t);
+});

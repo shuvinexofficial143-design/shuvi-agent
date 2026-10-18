@@ -31,6 +31,19 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
                 ||!expected.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase()){
                 return Err("Blender checkpoint file was not stable and SHA-bound across independent reopen.".into());
             }
+            // Reserved modeling stages must prove the actual fixed pyramid
+            // geometry, active camera, and stage-two key light after
+            // independent disk reopen. Correct filenames are not enough.
+            let stage=canonical.file_name().and_then(|n|n.to_str());
+            if matches!(stage,Some("shuvi41-proof-stage1.blend"|"shuvi41-proof-stage2.blend"))
+                && (proof.get("fixed_stage_name").and_then(Value::as_str)!=stage
+                    ||proof.get("fixed_stage_geometry_verified").and_then(Value::as_bool)!=Some(true)
+                    ||proof.get("proof_camera_verified").and_then(Value::as_bool)!=Some(true)
+                    ||proof.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
+                    ||(stage==Some("shuvi41-proof-stage2.blend")
+                        && proof.get("proof_key_light_verified").and_then(Value::as_bool)!=Some(true))){
+                return Err("Reserved Blender stage lacks independent fixed geometry, camera or light proof.".into());
+            }
             // The supplementary copper-look checkpoint requires independent
             // persisted material-slot verification, not just a valid .blend
             // header and the writer's earlier mutation acknowledgement.

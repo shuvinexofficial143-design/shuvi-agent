@@ -1525,3 +1525,30 @@ Fixture tests validate both stable copies and tampering during the
 separate read-only session, malformed/symlink .blend headers and
 forged native or manifest digest claims. Unrelated PNG
 verification retains its existing structural integrity guard.
+
+## Team-41 — Actual Stage-1/Stage-2 fixed pyramid persisted geometry
+
+The first two reserved demonstration checkpoints now require that the
+independent writer/reader scene snapshots contain exactly one
+`Shuvi41ProofMesh` matching the **fixed typed recipe's vertex
+coordinates and polygon topology**: four planar base corners plus
+the apex at local Z = 1.45 for `shuvi41-proof-stage1.blend` and
+Z = 1.95 for `shuvi41-proof-stage2.blend`. The checker tolerates
+minor floating-point readback differences (0.0002), face-list
+reordering and cyclic polygon start rotation but **not**
+reversed winding, missing faces, wrong apex height or duplicate
+proof meshes. It independently validates that the fixed camera is
+active and that Stage 2's key light survives; the existing typed
+shape/geometry SHA and unchanged input source evidence remain required.
+An unrelated generic user .blend is **not** forced to match this
+example pyramid, so ordinary approved Blender workflows are unaffected.
+
+The independent reopen proof now includes
+`fixed_stage_geometry_verified` and `fixed_stage_name`. Rust
+native output verification requires these exact fields for the
+reserved filenames and the historical artifact manifest carries
+them through independent file SHA re-verification. Synthetic
+fixtures test good Stage-1/2 pyramids, wrong heights, wrong winding,
+nonreserved saves, native rejection of forged/missing proof and
+historical manifest forgery. Source/CI checks are not licensed
+Blender host visual acceptance.

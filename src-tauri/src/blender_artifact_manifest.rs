@@ -188,6 +188,17 @@ pub(crate) fn build(
     let material=material_source_evidence(
         output.get("material_render_preflight"),artifact,session.as_deref()
     )?;
+    let stage=if saved {Path::new(path).file_name().and_then(|x|x.to_str())}else{None};
+    let fixed_stage=matches!(stage,Some("shuvi41-proof-stage1.blend"|"shuvi41-proof-stage2.blend"));
+    if fixed_stage && (
+        proof.and_then(|p|p.get("fixed_stage_geometry_verified")).and_then(Value::as_bool)!=Some(true)
+        ||proof.and_then(|p|p.get("fixed_stage_name")).and_then(Value::as_str)!=stage
+        ||proof.and_then(|p|p.get("proof_camera_verified")).and_then(Value::as_bool)!=Some(true)
+        ||proof.and_then(|p|p.get("active_camera_name")).and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
+        ||(stage==Some("shuvi41-proof-stage2.blend")
+            && proof.and_then(|p|p.get("proof_key_light_verified")).and_then(Value::as_bool)!=Some(true))){
+        return Err("Fixed Blender stage lacks persistent geometry and camera/light proof.".into());
+    }
     let material_look= saved && Path::new(path).file_name().and_then(|x|x.to_str())
         ==Some("shuvi41-proof-material.blend");
     if material_look && (
@@ -227,6 +238,8 @@ pub(crate) fn build(
             "scene_fingerprint":if saved {proof.unwrap()["fingerprint"].clone()}else{Value::Null},
             "object_count":if saved {proof.unwrap()["object_count"].clone()}else{Value::Null},
             "mesh_geometry_verified":saved,
+            "fixed_stage_geometry_verified":fixed_stage,
+            "fixed_stage_name":if fixed_stage {proof.unwrap()["fixed_stage_name"].clone()}else{Value::Null},
             "material_look_checkpoint_verified":material_look,
             "proof_copper_material_verified":if material_look {Value::Bool(true)}else{Value::Null},
             "shader_parameters_independently_verified":if material_look {Value::Bool(true)}else{Value::Null},
@@ -304,6 +317,21 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
                 ||evidence.get("checkpoint_file_sha256").and_then(Value::as_str)!=Some(hash){
                 return Err("Blender source reopen file SHA history is missing or contradictory.".into());
             }
+            let saved_name=Path::new(file).file_name().and_then(|x|x.to_str());
+            let fixed_stage=matches!(saved_name,Some("shuvi41-proof-stage1.blend"|"shuvi41-proof-stage2.blend"));
+            if fixed_stage && (
+                evidence.get("fixed_stage_geometry_verified").and_then(Value::as_bool)!=Some(true)
+                ||evidence.get("fixed_stage_name").and_then(Value::as_str)!=saved_name
+                ||evidence.get("proof_camera_verified").and_then(Value::as_bool)!=Some(true)
+                ||evidence.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
+                ||(saved_name==Some("shuvi41-proof-stage2.blend")
+                    && evidence.get("proof_key_light_verified").and_then(Value::as_bool)!=Some(true))){
+                return Err("Fixed Blender stage lacks historical geometry and camera/light proof.".into());
+            }
+            if !fixed_stage && (evidence.get("fixed_stage_geometry_verified").and_then(Value::as_bool)==Some(true)
+                ||evidence.get("fixed_stage_name").is_some_and(|v|!v.is_null())){
+                return Err("Unrelated Blender checkpoint cannot claim fixed-stage geometry.".into());
+            }
             let material_look=Path::new(file).file_name().and_then(|x|x.to_str())
                 ==Some("shuvi41-proof-material.blend");
             if material_look && (
@@ -331,6 +359,8 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
                 "fingerprint":evidence["scene_fingerprint"],
                 "object_count":evidence["object_count"],
                 "mesh_geometry_verified":evidence["mesh_geometry_verified"],
+                "fixed_stage_geometry_verified":evidence["fixed_stage_geometry_verified"],
+                "fixed_stage_name":evidence["fixed_stage_name"],
                 "active_camera_name":evidence["active_camera_name"],
                 "proof_camera_verified":evidence["proof_camera_verified"],
                 "proof_key_light_verified":evidence["proof_key_light_verified"],
@@ -434,6 +464,36 @@ mod tests {
         assert_eq!(data["handoff"]["import_performed"],false);
         assert_eq!(data["handoff"]["host_live_acceptance_proven"],false);
         assert_eq!(data["handoff"]["requires_new_action_approval"],true);
+    }
+    #[test]
+    fn reserved_stage_checkpoint_needs_real_persisted_shape_camera_and_light(){
+        let f=Fixture::new();
+        let (original,size,sha)=f.save("blend");
+        for stage in ["shuvi41-proof-stage1.blend","shuvi41-proof-stage2.blend"]{
+            let path=f.0.join(stage);
+            fs::copy(&original,&path).unwrap();
+            let path=path.to_str().unwrap();
+            let mut result=proof(path,size,&sha);
+            assert!(build(&result,&f.0,ACTION,None).is_err());
+            result["checkpoint_reopen"]["fixed_stage_geometry_verified"]=json!(true);
+            result["checkpoint_reopen"]["fixed_stage_name"]=json!(stage);
+            result["checkpoint_reopen"]["proof_camera_verified"]=json!(true);
+            result["checkpoint_reopen"]["active_camera_name"]=json!("Shuvi41ProofCamera");
+            if stage.contains("stage2"){
+                assert!(build(&result,&f.0,ACTION,None).is_err());
+                result["checkpoint_reopen"]["proof_key_light_verified"]=json!(true);
+            }
+            let handoff=build(&result,&f.0,ACTION,None).unwrap();
+            assert_eq!(handoff["evidence"]["fixed_stage_geometry_verified"],true);
+            assert_eq!(handoff["evidence"]["fixed_stage_name"],stage);
+            reverify(&handoff,&f.0).unwrap();
+            let mut forged=handoff.clone();
+            forged["evidence"]["fixed_stage_geometry_verified"]=json!(false);
+            assert!(reverify(&forged,&f.0).is_err());
+            let mut forged=handoff;
+            forged["evidence"]["fixed_stage_name"]=json!("shuvi41-proof-stage3.blend");
+            assert!(reverify(&forged,&f.0).is_err());
+        }
     }
     #[test]
     fn tampering_on_disk_or_outside_approved_root_is_denied(){

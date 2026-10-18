@@ -211,6 +211,10 @@ mod tests {
             "destructive_allowed":false,"executed_steps":6,
             "artifact":artifact,
             "checkpoint_reopen":{"verified":true,"read_only":true,
+                "checkpoint_bytes_stable_during_reopen":true,
+                "checkpoint_file_sha256":format!("{:x}",Sha256::digest(&bytes)),
+                "fixed_stage_name":NAMES[which],
+                "fixed_stage_geometry_verified":true,
                 "fingerprint":if which==0{"a".repeat(64)}else{"b".repeat(64)},
                 "object_count":if which==0{2}else{3},
                 "active_camera_name":"Shuvi41ProofCamera",
@@ -299,6 +303,25 @@ mod tests {
             "verified_loaded_file_path":true,"loaded_file_hash_checked":true,
         });
         json!([first,second,render])
+    }
+
+    #[test]
+    fn acceptance_chain_stage_geometry_and_reopen_byte_attestations_are_required(){
+        let work=Workspace::new();
+        let receipt=blend_receipt(&work,0,A1,S1);
+        let saved=receipt["artifact_manifest"].clone();
+        assert_eq!(saved["evidence"]["fixed_stage_geometry_verified"],true);
+        assert_eq!(saved["evidence"]["fixed_stage_name"],NAMES[0]);
+        assert_eq!(saved["evidence"]["checkpoint_file_sha256"],
+                   saved["artifact"]["sha256"]);
+        let mut tampered=receipt;
+        tampered["artifact_manifest"]["evidence"]["fixed_stage_geometry_verified"]=json!(false);
+        assert!(crate::blender_artifact_manifest::reverify(
+            &tampered["artifact_manifest"],&work.0).is_err());
+        tampered["artifact_manifest"]=saved;
+        tampered["artifact_manifest"]["evidence"]["checkpoint_file_sha256"]=json!("0".repeat(64));
+        assert!(crate::blender_artifact_manifest::reverify(
+            &tampered["artifact_manifest"],&work.0).is_err());
     }
 
     #[test]

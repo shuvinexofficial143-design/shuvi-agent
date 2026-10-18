@@ -33,6 +33,45 @@ def _near_vector(actual, expected, *, tolerance=0.0002):
                     for value, target in zip(actual, expected)))
 
 
+_FIXED_STAGES = {
+    "shuvi41-proof-stage1.blend": 1.45,
+    "shuvi41-proof-stage2.blend": 1.95,
+}
+
+
+def _fixed_stage_geometry_matches(vertices: list, faces: list, name: str) -> bool:
+    """Verify the fixed typed-pipeline pyramid actually survived disk save.
+
+    This is intentionally specific to the two reserved acceptance files,
+    not an assertion that arbitrary user geometry must be pyramid-shaped.
+    """
+    from math import isfinite
+
+    apex = _FIXED_STAGES.get(name)
+    if apex is None or len(vertices) != 5 or len(faces) != 5:
+        return False
+    expected_vertices = [
+        [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0], [0.0, 0.0, apex],
+    ]
+    if any(
+        type(x) not in (int, float) or not isfinite(x)
+        or abs(float(x) - expected) > 0.0002
+        for actual, expected_vector in zip(vertices, expected_vertices)
+        for x, expected in zip(actual, expected_vector)
+    ):
+        return False
+    # Blender may rotate each polygon loop's starting index when it is
+    # serialized. Preserve winding while tolerating cyclic start changes
+    # and face-list ordering. Reversal is intentionally NOT equivalent.
+    def rotation_key(face):
+        return min(tuple(face[i:] + face[:i]) for i in range(len(face)))
+    expected_faces = [[3, 2, 1, 0], [0, 1, 4],
+                      [1, 2, 4], [2, 3, 4], [3, 0, 4]]
+    return sorted(rotation_key(f) for f in faces) == sorted(
+        rotation_key(f) for f in expected_faces)
+
+
 def _copper_mesh_has_genuine_3d_faces(vertices: list, faces: list) -> bool:
     """Supplementary pyramid look cannot certify a collapsed/flat fake mesh.
 
@@ -226,6 +265,9 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
     proof_key_light_verified = False
     proof_copper_meshes_seen = 0
     proof_copper_material_verified_count = 0
+    fixed_stage = saved.name if saved.name in _FIXED_STAGES else None
+    fixed_stage_meshes_seen = 0
+    fixed_stage_geometry_matches = 0
     objects = []
     mesh_count = 0
     total_vertices = 0
@@ -306,6 +348,10 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
                 stable["geometry_sha256"] = digest
                 stable["vertex_count"] = len(vertices)
                 stable["face_count"] = len(faces)
+                if fixed_stage is not None and item["name"] == "Shuvi41ProofMesh":
+                    fixed_stage_meshes_seen += 1
+                    if _fixed_stage_geometry_matches(vertices, faces, fixed_stage):
+                        fixed_stage_geometry_matches += 1
                 if item["name"] == "Shuvi41ProofMesh":
                     proof_copper_meshes_seen += 1
                     if (item["materials"] == ["Shuvi41ProofCopper"]
@@ -379,7 +425,12 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             "proof_key_light_verified": proof_key_light_verified,
             "proof_copper_material_verified": proof_copper_material_verified,
              "proof_copper_shader_verified": proof_copper_shader_verified,
-             "proof_copper_shader_revision": proof_copper_shader_revision}
+             "proof_copper_shader_revision": proof_copper_shader_revision,
+             "fixed_stage_name": fixed_stage,
+             "fixed_stage_geometry_verified": (
+                 fixed_stage is not None and fixed_stage_meshes_seen == 1
+                 and fixed_stage_geometry_matches == 1),
+             }
 
 
 def _stable_checkpoint_bytes(saved: Path) -> str:
@@ -454,6 +505,16 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
         raise ValueError("Saved Blender checkpoint bytes changed while reopening")
     if reopened != original:
         raise ValueError("Saved Blender checkpoint content differs after independent reopen")
+    if saved.name in _FIXED_STAGES:
+        if (original.get("fixed_stage_geometry_verified") is not True
+                or reopened.get("fixed_stage_geometry_verified") is not True
+                or original.get("fixed_stage_name") != saved.name
+                or reopened.get("fixed_stage_name") != saved.name
+                or reopened.get("active_camera_name") != "Shuvi41ProofCamera"
+                or reopened.get("proof_camera_verified") is not True
+                or (saved.name == "shuvi41-proof-stage2.blend"
+                    and reopened.get("proof_key_light_verified") is not True)):
+            raise ValueError("Saved fixed Blender stage geometry/camera/light is unverified")
     if saved.name == "shuvi41-proof-material.blend":
         if (original.get("proof_copper_material_verified") is not True
                 or reopened.get("proof_copper_material_verified") is not True
@@ -479,4 +540,6 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
             "shader_parameters_independently_verified":
                  saved.name == "shuvi41-proof-material.blend"
                  and reopened["proof_copper_shader_verified"] is True,
-             "proof_copper_shader_revision": reopened["proof_copper_shader_revision"]}
+             "proof_copper_shader_revision": reopened["proof_copper_shader_revision"],
+             "fixed_stage_name": reopened["fixed_stage_name"],
+             "fixed_stage_geometry_verified": reopened["fixed_stage_geometry_verified"]}

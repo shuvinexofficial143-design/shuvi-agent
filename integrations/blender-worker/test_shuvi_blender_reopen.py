@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shuvi_blender_reopen import capture_scene, reopen_checkpoint, _stable_checkpoint_bytes
+from shuvi_blender_reopen import capture_scene, reopen_checkpoint, _stable_checkpoint_bytes, _fixed_stage_geometry_matches
 
 
 class Request:
@@ -318,6 +318,56 @@ class ReopenTests(unittest.TestCase):
                 CopperProofController(material, material="Wrong"), material)
             with self.assertRaisesRegex(ValueError, "copper material/look"):
                 reopen_checkpoint(Path("/dummy/blender"), material, unverified_original)
+
+    def test_stage_one_and_two_pyramids_reopen_from_expected_typed_geometry(self):
+        base_vertices = [
+            [-1., -1., 0.], [1., -1., 0.], [1., 1., 0.],
+            [-1., 1., 0.], [0., 0., 1.45]]
+        faces = [[3, 2, 1, 0], [0, 1, 4], [1, 2, 4],
+                 [2, 3, 4], [3, 0, 4]]
+
+        class SavedStage(ProofController):
+            def __init__(self, saved, *, apex, bad=False):
+                super().__init__(saved)
+                self.obj["name"] = "Shuvi41ProofMesh"
+                self.obj["data"] = {"object_type": "MESH", "vertices": 5,
+                                    "polygons": 5, "edges": 8}
+                self.apex = apex - 0.10 if bad else apex
+            def execute(self, request):
+                if request.operation == "mesh.inspect":
+                    verts = copy.deepcopy(base_vertices)
+                    verts[4][2] = self.apex
+                    geometry = {"vertices": verts, "faces": faces}
+                    digest = hashlib.sha256(json.dumps(
+                        geometry, sort_keys=True, separators=(",", ":"),
+                        allow_nan=False).encode()).hexdigest()
+                    return DummyResult({
+                        **geometry, "geometry_revision": digest,
+                        "object_id": self.obj["object_id"],
+                        "name": "Shuvi41ProofMesh"})
+                return super().execute(request)
+
+        for stage, apex in [("shuvi41-proof-stage1.blend", 1.45),
+                            ("shuvi41-proof-stage2.blend", 1.95)]:
+            output = self.file.with_name(stage)
+            output.write_bytes(b"BLENDER-v430")
+            proven = capture_scene(SavedStage(output, apex=apex), output)
+            self.assertTrue(proven["fixed_stage_geometry_verified"])
+            self.assertEqual(proven["fixed_stage_name"], stage)
+            wrong = capture_scene(SavedStage(output, apex=apex, bad=True), output)
+            self.assertFalse(wrong["fixed_stage_geometry_verified"])
+        # Reversing winding is not a cyclic permutation of a polygon.
+        self.assertTrue(_fixed_stage_geometry_matches(
+            base_vertices, [faces[3], faces[0], faces[4], faces[2], faces[1]],
+            "shuvi41-proof-stage1.blend"))
+        self.assertFalse(_fixed_stage_geometry_matches(
+            base_vertices, [[0, 1, 2, 3]] + faces[1:],
+            "shuvi41-proof-stage1.blend"))
+
+    def test_nonreserved_user_blend_not_restricted_to_fixed_pyramid(self):
+        ordinary = capture_scene(FakeController(self.file), self.file)
+        self.assertIsNone(ordinary["fixed_stage_name"])
+        self.assertFalse(ordinary["fixed_stage_geometry_verified"])
 
     def test_checkpoint_hash_requires_real_regular_bounded_blend_bytes(self):
         self.assertEqual(_stable_checkpoint_bytes(self.file),

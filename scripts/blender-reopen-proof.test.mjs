@@ -56,7 +56,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 27 tests/);
+  assert.match(result.stderr,/Ran 29 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -161,4 +161,20 @@ test("Blender checkpoint copy is SHA-bound across separate read-only reopen and 
     'proof.get("checkpoint_bytes_stable_during_reopen").and_then(Value::as_bool)!=Some(true)',
     'proof.get("checkpoint_file_sha256").and_then(Value::as_str)!=Some(expected)'
   ])assert.ok(rust.includes(proof),proof);
+});
+
+test("fixed Stage-1 and Stage-2 .blend saves require actual typed pyramid geometry after reopen",()=>{
+  const source=readFileSync(helper,"utf8");
+  for(const item of [
+    '"shuvi41-proof-stage1.blend": 1.45',
+    '"shuvi41-proof-stage2.blend": 1.95',
+    "def _fixed_stage_geometry_matches(vertices: list, faces: list, name: str)",
+    "fixed_stage_geometry_matches += 1",
+    '"fixed_stage_geometry_verified": (',
+    "original.get(\"fixed_stage_geometry_verified\") is not True",
+    '"fixed_stage_geometry_verified": reopened["fixed_stage_geometry_verified"]'
+  ])assert.ok(source.includes(item),item);
+  assert.ok(reopenTests.includes("def test_stage_one_and_two_pyramids_reopen_from_expected_typed_geometry("));
+  assert.ok(reopenTests.includes("def test_nonreserved_user_blend_not_restricted_to_fixed_pyramid("));
+  assert.ok(rust.includes('proof.get("fixed_stage_geometry_verified")'));
 });
