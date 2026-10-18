@@ -324,7 +324,7 @@ test("stage two requires private, previously verified Stage-1 receipt within sam
   "stage_two_dependency(stage,session.verified_first_stage_sha256.as_deref(),",
   'provenance.get("source_stage").and_then(Value::as_str)!=Some("model1")',
   'provenance.get("source_sha256").and_then(Value::as_str)',
-  'session.verified_first_stage_sha256=if stage==Some("model1")',
+  'session.verified_first_stage_sha256=Some(response["artifact"]["sha256"].as_str()',
   "fn model2_requires_native_owned_prior_stage1_success()",
  ])assert.ok(native.includes(token),token);
  for(const token of [
