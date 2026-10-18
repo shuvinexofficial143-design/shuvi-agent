@@ -109,7 +109,7 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 26 tests/);
+  assert.match(run.stderr,/Ran 31 tests/);
 });
 
 test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
@@ -171,4 +171,25 @@ test("persistent Blender read-only objects expose bounded material slots, transf
     "malformed_details_cannot_be_promoted_to_verified_inspection",
     "historic_minimal_or_truncated_readback_never_claims_details"
   ])assert.ok(native.includes(guard),guard);
+});
+
+test("read-only Blender objects can return fully bounded vertex/face topology from authenticated mesh.inspect",()=>{
+  for(const text of [
+    "def read_bounded_mesh_topology(controller, item: dict, session_id: str)",
+    '"mesh.inspect", {"object_id": identity}',
+    "len(vertices) > 128 or len(faces) > 128",
+    '"mesh_geometry_summary": {',
+    '"digest_checked_in_authenticated_broker": True',
+    '"native_digest_recomputed": False',
+    'observed.update(read_bounded_mesh_topology(',
+    'Blender scene changed during read-only geometry page'
+  ])assert.ok(broker.includes(text),text);
+  for(const text of [
+    "fn verify_read_only_topology(item:&Value,kind:&str)",
+    "verify_read_only_topology(item,kind)?",
+    "digest_checked_in_authenticated_broker",
+    "native_digest_recomputed",
+    "small_mesh_topology_checks_all_bounded_vertices_and_faces",
+    "large_mesh_never_fabricates_verified_geometry"
+  ])assert.ok(native.includes(text),text);
 });

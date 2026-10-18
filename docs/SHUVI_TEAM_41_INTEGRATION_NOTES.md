@@ -1105,3 +1105,42 @@ oversized detail lists, non-finite values and legacy/truncated readback.
 Rust unit tests mirror positive and negative security cases; Node source
 tests check that the broker projection is actually returned by the
 existing persistent-session object endpoint.
+
+## Team-41 — bounded read-only actual mesh topology in Object Discovery
+
+The existing `blender_session_objects` operation now reads actual mesh
+vertex coordinates and polygon index lists for a small, bounded subset
+of real Blender MESH objects in the same owner-approved persistent session.
+It uses the pinned upstream **read-only typed `mesh.inspect`**, without
+adding a new model tool, mutation capability, launch, approval bypass or
+arbitrary Python. This is intended for practical geometry awareness before
+a separate explicitly approved modeling/editing plan.
+
+When an upstream object has complete bounded detail fields, its live
+`mesh.inspect` result must be tied to the same object ID/name. For up to
+128 vertices, 128 polygons and 512 total polygon indices, the broker
+validates all finite coordinates, face index bounds, duplicate indices
+and the upstream geometry revision against the actual canonical JSON
+SHA-256 of complete vertices/faces. It returns these arrays, counts and
+digest with `mesh_topology_inspected=true`. It rechecks the Blender scene
+revision after the additional read-only calls so mixed-state object pages
+fail closed and the owned session is retired on uncertainty.
+
+For larger meshes the new response explicitly says
+`geometry_available=false`, `geometry_truncated=true` and
+`mesh_topology_inspected=false`: it does not manufacture partial
+coordinates or a trusted geometry digest. Legacy minimal synthetic pages
+remain available without invented detail proof. Rust separately checks
+the geometry bounds, all array lengths, finite values and every polygon
+vertex reference. The digest verification is performed in the
+authenticated broker; the native response conservatively declares
+`native_digest_recomputed=false` (not a second byte-level digest proof).
+No source data is modified, and permission checks remain unchanged.
+
+Python fake-controller regressions include complete genuine small-mesh
+geometry, wrong identity, SHA mismatch, malformed/non-finite vertices,
+invalid face indices, large-truncated meshes, end-to-end same-broker
+object-page delivery and mid-inspection scene revision changes.
+Rust tests independently exercise structure and false evidence claims.
+These source-only CI tests **do not** prove host Blender behavior or
+professional geometry outcomes until live acceptance is authorized.

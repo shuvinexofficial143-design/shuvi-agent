@@ -387,6 +387,60 @@ def bounded_object_details(item: dict) -> dict:
             "mesh_topology_inspected": False}
 
 
+def read_bounded_mesh_topology(controller, item: dict, session_id: str) -> dict:
+    """Read-only mesh.inspect with actual small-mesh topology and revision proof.
+
+    Large meshes are explicitly unavailable, never represented by a
+    misleading partial geometry digest. No mutation or approval occurs.
+    """
+    from math import isfinite
+    from shuvi_blender_agent.contracts import Request, Status
+
+    identity = item["object_id"]
+    if (not isinstance(identity, str)
+            or not identity.startswith(session_id + ":")):
+        raise ValueError("Mesh inspection object identity is stale")
+    result = controller.execute(Request(
+        "mesh.inspect", {"object_id": identity}, timeout_ms=10_000))
+    if result.status != Status.SUCCEEDED or not isinstance(result.data, dict):
+        raise ValueError("Authenticated mesh.inspect failed or exceeded upstream limits")
+    mesh = result.data
+    if mesh.get("object_id") != identity or mesh.get("name") != item["name"]:
+        raise ValueError("Mesh geometry readback belongs to a different object")
+    vertices, faces = mesh.get("vertices"), mesh.get("faces")
+    if (not isinstance(vertices, list) or not 3 <= len(vertices) <= 4096
+            or not isinstance(faces, list) or not 1 <= len(faces) <= 4096):
+        raise ValueError("Mesh geometry readback has invalid counts")
+    if (len(vertices) > 128 or len(faces) > 128
+            or sum(len(face) if isinstance(face, list) else 513 for face in faces) > 512):
+        return {"mesh_topology_inspected": False, "geometry_available": False,
+                "geometry_truncated": True, "mesh_geometry_summary": None}
+    for vertex in vertices:
+        if (not isinstance(vertex, list) or len(vertex) != 3
+                or any(type(n) not in (int, float) or not isfinite(n)
+                       or abs(n) > 1_000_000 for n in vertex)):
+            raise ValueError("Mesh read-only vertex coordinates are invalid")
+    for face in faces:
+        if (not isinstance(face, list) or not 3 <= len(face) <= 32
+                or any(type(index) is not int or not 0 <= index < len(vertices)
+                       for index in face) or len(set(face)) != len(face)):
+            raise ValueError("Mesh read-only face references are invalid")
+    canonical = json.dumps({"vertices": vertices, "faces": faces},
+                           sort_keys=True, separators=(",", ":"),
+                           allow_nan=False).encode("utf-8")
+    calculated = hashlib.sha256(canonical).hexdigest()
+    if mesh.get("geometry_revision") != calculated:
+        raise ValueError("Mesh read-only topology digest differs from actual vertices/faces")
+    return {"mesh_topology_inspected": True, "geometry_available": True,
+            "geometry_truncated": False,
+            "mesh_geometry_summary": {
+                "vertex_count": len(vertices), "face_count": len(faces),
+                "vertices": vertices, "faces": faces, "geometry_sha256": calculated,
+                "digest_checked_in_authenticated_broker": True,
+                "native_digest_recomputed": False,
+            }}
+
+
 def inspect_input_source(filename: Path, expected_sha256: str) -> dict:
     """Read exact source bytes before/after authenticated Blender load."""
     if (not isinstance(expected_sha256, str)
@@ -552,11 +606,27 @@ def serve(argv: list[str] | None = None) -> int:
                                 or not isinstance(rev, str) or len(rev) != 64):
                             raise ValueError("Blender object page item identity is invalid")
                         observed = bounded_object_details(item)
+                        # The old minimal object response remains supported,
+                        # without an invented topology claim.
+                        if kind == "MESH" and observed["details_available"]:
+                            observed.update(read_bounded_mesh_topology(
+                                controller, item, session_id))
                         objects.append({
                             "object_id": obj_id, "name": name,
                             "type": kind, "revision": rev,
                             **observed,
                         })
+                    # Mesh reads cross multiple authenticated requests.
+                    # Reject mixed scene revisions rather than giving stale
+                    # geometry to an AI planning a follow-up mutation.
+                    if any(row.get("geometry_available") is True for row in objects):
+                        final_scene = controller.execute(Request(
+                            "scene.inspect", timeout_ms=10_000))
+                        if (final_scene.status != Status.SUCCEEDED
+                                or not isinstance(final_scene.data, dict)
+                                or final_scene.data.get("session_id") != session_id
+                                or final_scene.data.get("revision") != expected_revision):
+                            raise ValueError("Blender scene changed during read-only geometry page")
                     protocol({"version": 1, "status": "alive", "session_id": session_id,
                               "operation": "objects", "scene_revision": expected_revision,
                               "total": page["total"], "offset": payload["offset"],

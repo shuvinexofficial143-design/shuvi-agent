@@ -474,6 +474,144 @@ class PersistentSessionTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 worker.bounded_object_details(broken)
 
+    @staticmethod
+    def small_topology():
+        return {
+            "vertices": [[0., 0., 0.], [1., 0., 0.],
+                         [1., 1., 0.], [0., 1., 0.]],
+            "faces": [[0, 1, 2], [0, 2, 3]],
+        }
+
+    def test_real_small_mesh_returns_all_vertices_faces_and_sha_readback(self):
+        geometry = self.small_topology()
+        actual = hashlib.sha256(json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        expected_id = SESSION_ID + ":mesh-one"
+        class Controller:
+            calls = []
+            def execute(self, request):
+                self.calls.append(request.operation)
+                self.last = request
+                return FakeResult("succeeded", {
+                    **geometry, "geometry_revision": actual,
+                    "object_id": expected_id, "name": "ShuviMesh",
+                })
+        controller = Controller()
+        item = {"object_id": expected_id, "name": "ShuviMesh"}
+        result = worker.read_bounded_mesh_topology(controller, item, SESSION_ID)
+        self.assertEqual(controller.calls, ["mesh.inspect"])
+        self.assertEqual(controller.last.payload, {"object_id": expected_id})
+        self.assertTrue(result["geometry_available"])
+        self.assertTrue(result["mesh_topology_inspected"])
+        self.assertFalse(result["geometry_truncated"])
+        self.assertEqual(result["mesh_geometry_summary"]["faces"], geometry["faces"])
+        self.assertEqual(result["mesh_geometry_summary"]["geometry_sha256"], actual)
+        self.assertTrue(result["mesh_geometry_summary"]["digest_checked_in_authenticated_broker"])
+        self.assertFalse(result["mesh_geometry_summary"]["native_digest_recomputed"])
+
+    def test_large_mesh_geometry_is_unavailable_without_claiming_digest(self):
+        geometry = {"vertices": [[float(x), 0., 0.] for x in range(129)],
+                    "faces": [[0, 1, 2]]}
+        class Controller:
+            def execute(self, request):
+                return FakeResult("succeeded", {
+                    **geometry, "geometry_revision": "0" * 64,
+                    "object_id": SESSION_ID + ":mesh-one", "name": "ShuviMesh"})
+        result = worker.read_bounded_mesh_topology(
+            Controller(), {"object_id": SESSION_ID + ":mesh-one",
+                           "name": "ShuviMesh"}, SESSION_ID)
+        self.assertFalse(result["geometry_available"])
+        self.assertFalse(result["mesh_topology_inspected"])
+        self.assertTrue(result["geometry_truncated"])
+        self.assertIsNone(result["mesh_geometry_summary"])
+
+    def test_mesh_readback_rejects_tampered_faces_wrong_identity_and_sha(self):
+        geometry = self.small_topology()
+        digest = hashlib.sha256(json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        item = {"object_id": SESSION_ID + ":mesh-one", "name": "ShuviMesh"}
+        for data in [
+            {**geometry, "geometry_revision": "0" * 64},
+            {**geometry, "faces": [[0, 1, 1]], "geometry_revision": digest},
+            {**geometry, "faces": [[0, 1, 99]], "geometry_revision": digest},
+            {**geometry, "vertices": [[float("nan"), 0., 0.]] + geometry["vertices"][1:],
+             "geometry_revision": digest},
+            {**geometry, "name": "WrongName", "geometry_revision": digest},
+            {**geometry, "object_id": "different:object", "geometry_revision": digest},
+        ]:
+            with self.subTest(data=data):
+                class Controller:
+                    def execute(self, request):
+                        return FakeResult("succeeded", {
+                            **data,
+                            "name": data.get("name", "ShuviMesh"),
+                            "object_id": data.get("object_id", SESSION_ID + ":mesh-one")})
+                with self.assertRaises(ValueError):
+                    worker.read_bounded_mesh_topology(Controller(), item, SESSION_ID)
+
+    def test_authenticated_object_page_includes_small_mesh_topology(self):
+        geometry = self.small_topology()
+        digest = hashlib.sha256(json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        original = FakeController.execute
+        def enriched(controller, request):
+            if request.operation == "mesh.inspect":
+                return FakeResult("succeeded", {**geometry,
+                    "geometry_revision": digest,
+                    "name": "ShuviMesh",
+                    "object_id": SESSION_ID + ":mesh-one"})
+            value = original(controller, request)
+            if request.operation == "objects.list":
+                obj = value.data["items"][0]
+                obj.update(self.rich_item())
+                obj["name"], obj["type"] = "ShuviMesh", "MESH"
+            return value
+        with patch.object(FakeController, "execute", enriched):
+            code, replies = self.serve(
+                self.frame("objects", query={
+                    "offset": 0, "limit": 5, "name_prefix": "Shuvi",
+                    "object_type": None}, expected_scene_revision="f" * 64)
+                + self.frame("close"))
+        self.assertEqual(code, 0)
+        page = replies[1]["objects"]
+        self.assertEqual(len(page), 2)
+        self.assertTrue(page[0]["geometry_available"])
+        self.assertEqual(page[0]["mesh_geometry_summary"]["vertex_count"], 4)
+        self.assertFalse(page[1]["details_available"])
+        self.assertTrue(self.sessions[0].closed)
+
+    def test_mid_mesh_inspection_scene_revision_change_closes_owned_session(self):
+        geometry = self.small_topology()
+        digest = hashlib.sha256(json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        original = FakeController.execute
+        seen = {"mesh": False}
+        def changed(controller, request):
+            if request.operation == "mesh.inspect":
+                seen["mesh"] = True
+                return FakeResult("succeeded", {**geometry,
+                    "geometry_revision": digest,
+                    "name": "ShuviMesh",
+                    "object_id": SESSION_ID + ":mesh-one"})
+            result = original(controller, request)
+            if request.operation == "objects.list":
+                result.data["items"][0].update(self.rich_item())
+                result.data["items"][0]["name"] = "ShuviMesh"
+            if request.operation == "scene.inspect" and seen["mesh"]:
+                result.data["revision"] = "1" * 64
+            return result
+        with patch.object(FakeController, "execute", changed):
+            code, replies = self.serve(self.frame("objects", query={
+                "offset": 0, "limit": 5, "name_prefix": "Shuvi",
+                "object_type": None}, expected_scene_revision="f" * 64))
+        self.assertEqual(code, 4)
+        self.assertEqual(replies[-1]["status"], "outcome_unknown")
+        self.assertTrue(self.sessions[0].closed)
+
     def test_approved_source_is_hash_checked_and_loaded_in_authenticated_blender(self):
         path = self.root / "source.blend"
         data = b"BLENDER-v430" + b"safe-checkpoint" * 5

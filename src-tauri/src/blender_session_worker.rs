@@ -452,6 +452,67 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     result
 }
 
+/// Validate complete small-mesh topology independently of the owned broker.
+/// The broker verifies the source SHA over actual vertices/faces. Rust checks
+/// geometry structure but deliberately does not claim to re-hash float JSON.
+fn verify_read_only_topology(item:&Value,kind:&str)->Result<(),String>{
+    let touched=item.get("geometry_available").is_some()
+        ||item.get("geometry_truncated").is_some()
+        ||item.get("mesh_geometry_summary").is_some();
+    let topology=item.get("mesh_topology_inspected").and_then(Value::as_bool)
+        .ok_or("Mesh topology status missing.")?;
+    if !touched {
+        if topology{return Err("Unbacked Blender topology attestation.".into());}
+        return Ok(()); // Legacy minimal object detail page.
+    }
+    if kind!="MESH"{return Err("Only mesh objects may carry geometry evidence.".into());}
+    let available=item.get("geometry_available").and_then(Value::as_bool)
+        .ok_or("Mesh geometry availability missing.")?;
+    let truncated=item.get("geometry_truncated").and_then(Value::as_bool)
+        .ok_or("Mesh truncation status missing.")?;
+    if !available{
+        if !truncated||topology||item.get("mesh_geometry_summary").is_some_and(|v|!v.is_null()){
+            return Err("Incomplete mesh cannot claim topology content.".into());
+        }
+        return Ok(());
+    }
+    if truncated||!topology{return Err("Available mesh has incomplete topology proof.".into());}
+    let proof=item.get("mesh_geometry_summary").filter(|x|x.is_object())
+        .ok_or("Mesh geometry proof missing.")?;
+    let vertices=proof.get("vertices").and_then(Value::as_array)
+        .filter(|v|(3..=128).contains(&v.len())).ok_or("Mesh vertices out of bounds.")?;
+    let faces=proof.get("faces").and_then(Value::as_array)
+        .filter(|v|(1..=128).contains(&v.len())).ok_or("Mesh faces out of bounds.")?;
+    if proof.get("vertex_count").and_then(Value::as_u64)!=Some(vertices.len() as u64)
+        ||proof.get("face_count").and_then(Value::as_u64)!=Some(faces.len() as u64){
+        return Err("Mesh geometry counts disagree with elements.".into());
+    }
+    if vertices.iter().any(|v|v.as_array().is_none_or(|a|{
+        a.len()!=3||a.iter().any(|n|n.as_f64().is_none_or(|x|!x.is_finite()||x.abs()>1_000_000.0))
+    })){return Err("Mesh has invalid coordinates.".into());}
+    let mut loops=0usize;
+    for face in faces{
+        let ids=face.as_array().filter(|a|(3..=32).contains(&a.len()))
+            .ok_or("Mesh polygon has invalid size.")?;
+        loops+=ids.len();
+        if loops>512{return Err("Mesh polygon budget exceeded.".into());}
+        let mut seen=std::collections::HashSet::new();
+        for vertex in ids{
+            let index=vertex.as_u64().ok_or("Mesh face index malformed.")?;
+            if index>=vertices.len() as u64||!seen.insert(index){
+                return Err("Mesh face contains invalid/repeated vertex.".into());
+            }
+        }
+    }
+    let digest=proof.get("geometry_sha256").and_then(Value::as_str).unwrap_or("");
+    if digest.len()!=64||!digest.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase())
+        ||proof.get("digest_checked_in_authenticated_broker").and_then(Value::as_bool)!=Some(true)
+        ||proof.get("native_digest_recomputed").and_then(Value::as_bool)!=Some(false){
+        return Err("Mesh digest claims are invalid or overstated.".into());
+    }
+    Ok(())
+}
+
 /// Check every live read-only detail projection again in native Rust.
 /// No mutation, file reopen, shader-node or actual geometry claim is created.
 fn verified_object_views(items:&[Value],session_id:&str)->Result<(),String>{
@@ -470,15 +531,17 @@ fn verified_object_views(items:&[Value],session_id:&str)->Result<(),String>{
         if !present {
             if item.get("details").is_some_and(|v|!v.is_null())
                 ||item.get("shader_nodes_inspected").and_then(Value::as_bool)==Some(true)
-                ||item.get("mesh_topology_inspected").and_then(Value::as_bool)==Some(true){
+                ||item.get("mesh_topology_inspected").and_then(Value::as_bool)==Some(true)
+                ||item.get("geometry_available").and_then(Value::as_bool)==Some(true)
+                ||item.get("mesh_geometry_summary").is_some_and(|v|!v.is_null()){
                 return Err("Unavailable Blender details cannot claim validation.".into());
             }
             continue;
         }
-        if truncated ||item.get("shader_nodes_inspected").and_then(Value::as_bool)!=Some(false)
-            ||item.get("mesh_topology_inspected").and_then(Value::as_bool)!=Some(false){
-            return Err("Blender detail projection cannot claim shader/mesh attestation.".into());
+        if truncated ||item.get("shader_nodes_inspected").and_then(Value::as_bool)!=Some(false){
+            return Err("Blender detail projection cannot claim shader node inspection.".into());
         }
+        verify_read_only_topology(item,kind)?;
         let detail=item.get("details").filter(|v|v.is_object())
             .ok_or("Blender detail projection object missing.")?;
         let finite3=|value:Option<&Value>|value.and_then(Value::as_array).is_some_and(|a|{
@@ -708,6 +771,50 @@ mod read_only_object_view_tests {
         for kind in ["MESH","CAMERA","LIGHT"]{
             verified_object_views(&[page_object(kind)],"session-A").unwrap();
         }
+    }
+    #[test]
+    fn small_mesh_topology_checks_all_bounded_vertices_and_faces(){
+        let mut mesh=page_object("MESH");
+        mesh["mesh_topology_inspected"]=json!(true);
+        mesh["geometry_available"]=json!(true);
+        mesh["geometry_truncated"]=json!(false);
+        mesh["mesh_geometry_summary"]=json!({
+            "vertices":[[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]],
+            "faces":[[0,1,2],[0,2,3]],
+            "vertex_count":4,"face_count":2,
+            "geometry_sha256":"a".repeat(64),
+            "digest_checked_in_authenticated_broker":true,
+            "native_digest_recomputed":false
+        });
+        verified_object_views(&[mesh.clone()],"session-A").unwrap();
+        for (ptr,value) in [
+            ("/mesh_geometry_summary/face_count",json!(3)),
+            ("/mesh_geometry_summary/faces/1/0",json!(99)),
+            ("/mesh_geometry_summary/faces/0/2",json!(1)),
+            ("/mesh_geometry_summary/vertices/0/1",json!(2000000.0)),
+            ("/mesh_geometry_summary/native_digest_recomputed",json!(true)),
+            ("/mesh_geometry_summary/geometry_sha256",json!("bad")),
+            ("/geometry_truncated",json!(true)),
+            ("/mesh_topology_inspected",json!(false))
+        ]{
+            let mut corrupt=mesh.clone();
+            *corrupt.pointer_mut(ptr).unwrap()=value;
+            assert!(verified_object_views(&[corrupt],"session-A").is_err(),"{ptr}");
+        }
+        let mut wrong=mesh;
+        wrong["type"]=json!("CAMERA");
+        assert!(verified_object_views(&[wrong],"session-A").is_err());
+    }
+    #[test]
+    fn large_mesh_never_fabricates_verified_geometry(){
+        let mut mesh=page_object("MESH");
+        mesh["mesh_topology_inspected"]=json!(false);
+        mesh["geometry_available"]=json!(false);
+        mesh["geometry_truncated"]=json!(true);
+        mesh["mesh_geometry_summary"]=Value::Null;
+        verified_object_views(&[mesh.clone()],"session-A").unwrap();
+        mesh["geometry_truncated"]=json!(false);
+        assert!(verified_object_views(&[mesh],"session-A").is_err());
     }
     #[test]
     fn historic_minimal_or_truncated_readback_never_claims_details(){
