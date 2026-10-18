@@ -321,6 +321,24 @@ pub fn voice_engine_status(
 // Voice Transcribe Command
 // ============================================================================
 
+/// Decode and validate an encoded WAV before any filesystem or subprocess work.
+fn decode_and_validate_wav(encoded_wav: &str) -> Result<Vec<u8>, String> {
+    let wav_data = BASE64
+        .decode(encoded_wav)
+        .map_err(|e| format!("Failed to decode base64 WAV data: {}", e))?;
+
+    if wav_data.len() > MAX_WAV_BYTES {
+        return Err(format!(
+            "WAV data exceeds maximum size: {} > {} bytes",
+            wav_data.len(),
+            MAX_WAV_BYTES
+        ));
+    }
+
+    validate_wav_bytes(&wav_data)?;
+    Ok(wav_data)
+}
+
 /// Transcribe WAV audio using whisper.cpp
 ///
 /// Steps:
@@ -333,30 +351,17 @@ pub fn voice_engine_status(
 /// 7. Return bounded transcript
 #[tauri::command]
 pub fn voice_transcribe(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     request: VoiceTranscribeRequest,
 ) -> Result<VoiceTranscribeResponse, String> {
     // Decode base64 data
+    let _ = app;
     let VoiceTranscribeRequest {
         wav_data: encoded_wav,
         whisper_exe_path,
         whisper_model_path,
     } = request;
-    let wav_data = BASE64
-        .decode(encoded_wav)
-        .map_err(|e| format!("Failed to decode base64 WAV data: {}", e))?;
-
-    // Validate size
-    if wav_data.len() > MAX_WAV_BYTES {
-        return Err(format!(
-            "WAV data exceeds maximum size: {} > {} bytes",
-            wav_data.len(),
-            MAX_WAV_BYTES
-        ));
-    }
-
-    // Validate WAV structure
-    validate_wav_bytes(&wav_data)?;
+    let wav_data = decode_and_validate_wav(&encoded_wav)?;
 
     // Generate temporary file paths
     let wav_temp_path = generate_temp_path(".wav")?;
@@ -770,7 +775,7 @@ mod tests {
         };
 
         // This should fail because base64 of empty is empty
-        let result = voice_transcribe(tauri::AppHandle::default(), request);
+        let result = decode_and_validate_wav(&request.wav_data);
 
         // The actual behavior depends on the base64 decode
         // but it should fail at some validation step
@@ -816,7 +821,7 @@ mod tests {
             whisper_model_path: None,
         };
 
-        let result = voice_transcribe(tauri::AppHandle::default(), request);
+        let result = decode_and_validate_wav(&request.wav_data);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds maximum size"));
