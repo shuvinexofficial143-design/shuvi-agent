@@ -7,6 +7,7 @@ import {readFileSync,readdirSync,existsSync,mkdtempSync,rmSync,lstatSync,writeFi
 import {resolve,join,basename,dirname} from "node:path";
 import {createHash} from "node:crypto";
 import {verifyUnsignedReleaseEvidence,verifyInstalledWorker} from "./native-pinned-release-manifest.mjs";
+import {verifyPackedMainContent} from "./native-packed-main-content.mjs";
 
 if(process.platform!=="win32"||process.env.CI!=="true"
    ||process.env.GITHUB_ACTIONS!=="true"||!process.env.RUNNER_TEMP){
@@ -53,6 +54,13 @@ try{
     throw Error("Real NSIS silent installation failed on ephemeral Windows CI.");
   }
   installed=true;
+  const mainWitnessPath=resolve(".shuvi-release","m63-packed-main-"+target+".json");
+  const verifiedPackedMain=verifyPackedMainContent({
+    witnessPath:mainWitnessPath,
+    mainExecutablePath:join(installDir,"shuvi.exe"),
+    installerSha256:verified.installerSha256,
+    target,
+  });
   const installedView=verifyInstalledWorker({manifestPath,installDir});
   if(installedView.manifest.workerSha256!==verified.workerSha256
      ||sha(installedView.installedWorker)!==verified.workerSha256){
@@ -102,6 +110,8 @@ try{
     target,
     installerSha256:verified.installerSha256,
     installedWorkerSha256:verified.workerSha256,
+    verifiedPackedMainExeSha256:verifiedPackedMain.packedMainExeSha256,
+    actualPackedVsInstalledMainExeVerified:true,
     actualNsisSilentInstallVerified:installed,
     installedFixedWorkerContentsVerified:smokeVerified,
     wrongDigestUuidReplayAndUnknownCommandDenied:true,
