@@ -212,6 +212,41 @@ class ReopenTests(unittest.TestCase):
         self.assertTrue(writer["proof_camera_verified"])
         self.assertTrue(writer["proof_key_light_verified"])
 
+    def test_persisted_copper_mesh_requires_unique_nondegenerate_3d_faces(self):
+        material = self.file.with_name("shuvi41-proof-material.blend")
+        material.write_bytes(b"BLENDER-v430")
+        good = capture_scene(CopperProofController(material), material)
+        self.assertTrue(good["proof_copper_material_verified"])
+
+        class GeometryTamper(CopperProofController):
+            def __init__(self, saved, case):
+                super().__init__(saved)
+                self.case = case
+            def execute(self, request):
+                result = super().execute(request)
+                if request.operation == "mesh.inspect":
+                    vertices = result.data["vertices"]
+                    faces = result.data["faces"]
+                    if self.case == "flat":
+                        for point in vertices:
+                            point[2] = 0.0
+                    elif self.case == "collinear":
+                        for i, point in enumerate(vertices):
+                            point[:] = [float(i), 0.0, 0.0]
+                    elif self.case == "duplicate_polygons":
+                        faces[:] = [list(faces[0]) for _ in faces]
+                    changed = {"vertices": vertices, "faces": faces}
+                    result.data["geometry_revision"] = hashlib.sha256(
+                        json.dumps(changed, sort_keys=True, separators=(",", ":"),
+                                   allow_nan=False).encode()).hexdigest()
+                return result
+        for case in ("flat", "collinear", "duplicate_polygons"):
+            with self.subTest(case=case):
+                bad = capture_scene(GeometryTamper(material, case), material)
+                self.assertFalse(bad["proof_copper_material_verified"])
+                self.assertFalse(bad["proof_copper_shader_verified"])
+                self.assertIsNone(bad["proof_copper_shader_revision"])
+
     def test_copper_slot_missing_ambiguous_hidden_or_wrong_material_fails_proof(self):
         material = self.file.with_name("shuvi41-proof-material.blend")
         material.write_bytes(b"BLENDER-v430")

@@ -33,6 +33,44 @@ def _near_vector(actual, expected, *, tolerance=0.0002):
                     for value, target in zip(actual, expected)))
 
 
+def _copper_mesh_has_genuine_3d_faces(vertices: list, faces: list) -> bool:
+    """Supplementary pyramid look cannot certify a collapsed/flat fake mesh.
+
+    Independent readback verifies actual local-space 3D extent and at
+    least five polygons with nonzero area, not merely five face records
+    whose SHA may legitimately describe wholly degenerate geometry.
+    """
+    from math import isfinite
+
+    if len(vertices) < 5 or len(faces) < 5:
+        return False
+    for axis in range(3):
+        values = [point[axis] for point in vertices]
+        if (not all(isfinite(v) and abs(v) <= 1_000_000 for v in values)
+                or max(values) - min(values) < 0.05):
+            return False
+    nondegenerate = 0
+    seen_polygons = set()
+    for face in faces:
+        polygon_key = tuple(sorted(face))
+        if polygon_key in seen_polygons:
+            continue
+        seen_polygons.add(polygon_key)
+        points = [vertices[i] for i in face]
+        origin = points[0]
+        normal_area_sq = 0.0
+        for index in range(1, len(points) - 1):
+            a = [points[index][k] - origin[k] for k in range(3)]
+            b = [points[index + 1][k] - origin[k] for k in range(3)]
+            cross = [a[1] * b[2] - a[2] * b[1],
+                     a[2] * b[0] - a[0] * b[2],
+                     a[0] * b[1] - a[1] * b[0]]
+            normal_area_sq += sum(component * component for component in cross)
+        if normal_area_sq > 1e-10:
+            nondegenerate += 1
+    return nondegenerate >= 5
+
+
 def _proof_camera(item, is_active):
     transform, camera = item.get("transform"), item.get("camera")
     visibility = item.get("visibility")
@@ -273,7 +311,7 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
                     if (item["materials"] == ["Shuvi41ProofCopper"]
                             and item["material_slot_count"] == 1
                             and item["visibility"].get("hide_render") is False
-                            and len(vertices) >= 5 and len(faces) >= 5):
+                            and _copper_mesh_has_genuine_3d_faces(vertices, faces)):
                         proof_copper_material_verified_count += 1
             objects.append(stable)
         offset += len(items)

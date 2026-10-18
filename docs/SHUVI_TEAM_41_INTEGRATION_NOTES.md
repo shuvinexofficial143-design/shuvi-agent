@@ -1458,3 +1458,24 @@ This is a genuine source/reopen integrity check but does not substitute
 for actual licensed Windows Blender host acceptance or manual visual QA.
 The previous native permissions, job ownership and artifact delivery
 remain unchanged.
+
+## Team-41 — actual nondegenerate saved Copper geometry
+
+The optional Copper look checkpoint previously allowed a source
+claim based on a material slot name and five vertex/five face records.
+These counts could be satisfied by flattened points, collinear faces
+or repeated identical polygon records, even with a perfectly valid
+SHA-256 of those degenerate arrays. The new independent read-only
+capture requires this **specific fixed proof mesh** to have finite
+bounded 3D local extents of at least 0.05 along X/Y/Z and at least
+five **distinct** polygons with nonzero triangle-fan area.
+It runs after typed vertex/face count and SHA readback verification
+and before the supplementary copper shader verification. Other
+legitimately planar or empty Blender objects remain supported; this
+stronger shape requirement is deliberately restricted to the fixed
+Copper acceptance asset, not arbitrary user geometry.
+
+Three source regression cases recompute truthful SHAs for flattened,
+collinear and duplicate-faced examples and confirm none are promoted
+to persisted Copper proof or shader attestation. Real host acceptance
+and rendered visual quality are still unverified.

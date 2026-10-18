@@ -55,7 +55,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 23 tests/);
+  assert.match(result.stderr,/Ran 24 tests/);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
@@ -115,4 +115,17 @@ test("saved meshes reconcile authenticated upstream datablock metadata with full
     "test_saved_mesh_datablock_counts_match_actual_inspected_geometry",
     "test_missing_or_oversized_saved_mesh_metadata_fails_before_mesh_probe"
   ])assert.ok(source.includes(token),token);
+});
+
+test("persisted supplementary copper material cannot pass with flattened, collinear or duplicate fake faces",()=>{
+  const helperSource=readFileSync(helper,"utf8");
+  for(const word of [
+    "def _copper_mesh_has_genuine_3d_faces(vertices: list, faces: list) -> bool:",
+    "max(values) - min(values) < 0.05",
+    "polygon_key = tuple(sorted(face))",
+    "normal_area_sq > 1e-10",
+    "return nondegenerate >= 5",
+    "_copper_mesh_has_genuine_3d_faces(vertices, faces)",
+    "test_persisted_copper_mesh_requires_unique_nondegenerate_3d_faces",
+  ])assert.ok(helperSource.includes(word),word);
 });
