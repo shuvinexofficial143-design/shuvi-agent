@@ -3,7 +3,7 @@
 // Does not download binaries, execute a shell, or accept a model-chosen path.
 import {spawnSync,execFileSync} from "node:child_process";
 import {createHash} from "node:crypto";
-import {existsSync,readFileSync,statSync,mkdirSync} from "node:fs";
+import {existsSync,readFileSync,statSync,mkdirSync,writeFileSync} from "node:fs";
 import {createUnsignedReleaseEvidence,verifyUnsignedReleaseEvidence} from "./native-pinned-release-manifest.mjs";
 import {resolve,join} from "node:path";
 
@@ -50,10 +50,50 @@ const payload=spawnSync("powershell.exe",[
   "-ManifestPath",manifestPath,
   "-NsiBundleDirectory",nsis,
   "-SidecarPath",sidecar
-],{stdio:"inherit",shell:false,windowsHide:true});
+],{encoding:"utf8",stdio:"pipe",shell:false,windowsHide:true,maxBuffer:512*1024});
 if(payload.error||payload.status!==0){
-  throw Error("Actual compressed NSIS worker payload mismatches pinned SHA or is uninspectable.");
+  throw Error("Actual compressed NSIS worker payload mismatches pinned SHA or is uninspectable: "+String(payload.stderr||"").slice(0,500));
 }
+// M63: the ACTUAL packed main EXE is content-attested independently of the
+// compiled fixed worker, allowing the disposable CI installer test to prove
+// it installed exactly the MAIN EXE found inside this immutable NSIS.
+let proven;
+try{proven=JSON.parse(payload.stdout.trim());}
+catch{throw Error("NSIS extraction returned no typed package content evidence.");}
+const expectedKeys=[
+  "schemaVersion","actualNsisPayloadExtracted","exactPackedWorkerSha256Matched",
+  "realPackedReadOnlyWorkerExecuted","badDigestAndReplayRejected",
+  "singlePackedDesktopExeFound","packedMainExeBytes","packedMainExeSha256",
+  "packedWorkerSha256","installerSha256","signingVerified",
+  "installedWindowsVerified","mainApplicationVerified",
+  "ownerDesktopEndToEndVerified","autoRetryAuthorized"
+].sort();
+if(!proven||JSON.stringify(Object.keys(proven).sort())!==JSON.stringify(expectedKeys)
+  ||proven.schemaVersion!==1||proven.actualNsisPayloadExtracted!==true
+  ||proven.exactPackedWorkerSha256Matched!==true
+  ||proven.realPackedReadOnlyWorkerExecuted!==true
+  ||proven.badDigestAndReplayRejected!==true
+  ||proven.singlePackedDesktopExeFound!==true
+  ||!Number.isSafeInteger(proven.packedMainExeBytes)
+  ||proven.packedMainExeBytes<1024||proven.packedMainExeBytes>512*1024*1024
+  ||typeof proven.packedMainExeSha256!=="string"
+  ||!/^[0-9a-f]{64}$/.test(proven.packedMainExeSha256)
+  ||proven.packedWorkerSha256!==manifest.workerSha256
+  ||proven.installerSha256!==manifest.installerSha256
+  ||proven.signingVerified!==false||proven.installedWindowsVerified!==false
+  ||proven.mainApplicationVerified!==false
+  ||proven.ownerDesktopEndToEndVerified!==false
+  ||proven.autoRetryAuthorized!==false){
+  throw Error("NSIS extracted main app or worker content evidence invalid/incomplete.");
+}
+const packedMainWitnessPath=join(manifestDir,"m63-packed-main-"+target+".json");
+writeFileSync(packedMainWitnessPath,JSON.stringify({
+  schemaVersion:1,target,installerSha256:manifest.installerSha256,
+  packedMainExeSha256:proven.packedMainExeSha256,
+  packedMainExeBytes:proven.packedMainExeBytes,
+  signingVerified:false,ownerWindowsVerified:false,applicationVerified:false
+},null,2)+"\n",{encoding:"utf8",flag:"wx"});
+console.log("M63 immutable packed main EXE content witness: "+packedMainWitnessPath);
 console.log("Pinned Shuvi SHA worker integrity guard embedded for target "+target+".");
 console.log("Unsigned NSIS release witness: "+manifestPath);
 console.log("Installer SHA-256: "+manifest.installerSha256);
