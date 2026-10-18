@@ -35,6 +35,8 @@ test("M62 requires a unique real NSIS uninstaller and cleanup; cannot forge owne
  assert.match(run,/uninstallers\.length!==1/);
  assert.match(run,/invocation\(uninstaller,\["\/S"\],90000\)/);
  assert.match(run,/uninstalled=true/);
+ assert.match(run,/existsSync\(join\(installDir,"shuvi\.exe"\)\)/);
+ assert.match(run,/existsSync\(join\(installDir,"shuvi-readonly-hash-worker\.exe"\)\)/);
  assert.match(run,/rmSync\(root,\{recursive:true,force:true/);
  assert.match(run,/actualOwnerWindowsInstallationVerified:false/);
  assert.match(run,/mainDesktopAppLaunchedAndVerified:false/);
