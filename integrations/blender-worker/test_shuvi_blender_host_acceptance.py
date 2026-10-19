@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 import shuvi_blender_host_acceptance as host
+import shuvi_blender_host_reverify as review
 
 
 class HostAcceptanceHarnessTests(unittest.TestCase):
@@ -334,7 +335,7 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             pixels = set()
             for filter_mode in range(5):
                 target.write_bytes(self._png_fixture("render", filter_mode=filter_mode))
-                pixels.add(host._check_png(target))
+                pixels.add(review._check_png(target))
             self.assertEqual(len(pixels), 1, "PNG filter encoding cannot change pixel proof")
 
     def test_valid_crc_and_zlib_cannot_promote_invisible_or_monochrome_render(self):
@@ -343,7 +344,7 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             for alpha, flat in ((0, False), (255, True)):
                 target.write_bytes(self._png_fixture("render", alpha=alpha, flat=flat))
                 with self.assertRaisesRegex(ValueError, "visible pixel"):
-                    host._check_png(target)
+                    review._check_png(target)
 
     def test_copper_must_change_decoded_pixels_not_just_png_compression_hash(self):
         with tempfile.TemporaryDirectory(prefix="shuvi41-pixel-change-") as temp:
