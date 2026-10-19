@@ -103,6 +103,29 @@ jobs:
         env:
           SHUVI_M62_EPHEMERAL_CI: "1"
         run: node scripts/windows-m62-real-nsis-install-acceptance.mjs
+      - name: Stage exact tested unsigned installer and matching manifest
+        shell: pwsh
+        run: |
+          $manifests = @(Get-ChildItem -LiteralPath .shuvi-release -Filter 'shuvi-pinned-nsis-*.json' -File)
+          if ($manifests.Count -ne 1) { throw 'Expected exactly one pinned NSIS manifest after M62 verification.' }
+          $manifest = Get-Content -LiteralPath $manifests[0].FullName -Raw | ConvertFrom-Json
+          $nsisDir = Join-Path $PWD "src-tauri\target\$($manifest.target)\release\bundle\nsis"
+          $installer = Join-Path $nsisDir $manifest.installerFilename
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'Verified NSIS installer is missing.' }
+          $actualSha = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha -ne $manifest.installerSha256) { throw 'Tested installer SHA-256 differs from the pinned manifest.' }
+          $stage = Join-Path $PWD '.shuvi-test-installer'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item -LiteralPath $installer -Destination (Join-Path $stage $manifest.installerFilename) -Force
+          Copy-Item -LiteralPath $manifests[0].FullName -Destination (Join-Path $stage $manifests[0].Name) -Force
+      - name: Upload exact unsigned test installer and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHUVI42-UNSIGNED-TEST-INSTALLER
+          path: .shuvi-test-installer/*
+          if-no-files-found: error
+          retention-days: 3
+          include-hidden-files: true
       - name: Upload only UNSIGNED NSIS/M63/M62 JSON content witnesses
         if: always()
         uses: actions/upload-artifact@v4
