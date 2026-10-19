@@ -50,6 +50,13 @@ test('Original user objective is immutable against model plan substitution',()=>
   assert.match(admitDashboardMasterProposal(goal,{...propose('premiere_launch'),plan:{objective:'Blender kholo'}}).reason,/replace the original user objective/);
   assert.equal(admitDashboardMasterProposal(goal,{...propose('premiere_launch'),plan:{objective:goal}}).ok,true);
 });
+test('Hindi Notepad launch omits model-authored objective without weakening the exact-objective fence',()=>{
+  const goal='नोटपैड खोलो';
+  const launch=propose('launch_app',{program:'notepad.exe',args:[]});
+  assert.equal(admitDashboardMasterProposal(goal,launch).ok,true);
+  assert.match(admitDashboardMasterProposal(goal,{...launch,plan:{objective:'Notepad खोलने के लिए आवेदन शुरू करें'}}).reason,/replace the original user objective/);
+  assert.equal(admitDashboardMasterProposal(goal,{...launch,plan:{objective:goal}}).ok,true);
+});
 test('Refuses invalid original brief, proposals and conflicting executable targets',()=>{
   for(const goal of ['', ' ', null, 'a'.repeat(2501)])assert.equal(deriveMasterGoalContract(goal),null);
   assert.equal(admitDashboardMasterProposal('Premiere kholo',{tool:'premiere_launch'}).ok,false);

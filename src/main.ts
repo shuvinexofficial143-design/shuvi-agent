@@ -1546,6 +1546,10 @@ function friendlyAssistantText(content: string): string {
       return `I need permission to use ${value.tool.replaceAll("_", " ")} before I continue.`;
     }
   } catch {
+    // Duplicate or malformed provider envelopes are not normal Chat prose.
+    if ((trimmed.match(/"tool"\s*:/g) ?? []).length > 0) {
+      return "The AI returned tool data that Shuvi could not safely display or prepare. No Windows action was prepared or executed.";
+    }
     // Normal assistant text that happens to start with "{".
   }
 

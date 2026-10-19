@@ -77,7 +77,7 @@ async function setup(reply){
    case "list_providers":return [{id:"xkiro",name:"xKiro"}];
    case "remote_agent_status":return {enabled:false};
    case "chat":return reply;
-   case "prepare_tool":return {id:"pending-1",kind:"whatsapp_desktop_open",summary:"Open WhatsApp Desktop",risk:"medium",detail:"No messages sent"};
+   case "prepare_tool":return {id:"pending-1",kind:reply.tool_proposal?.tool??"whatsapp_desktop_open",summary:"Action requires approval",risk:"medium",detail:"No action executed"};
    default:throw Error("unexpected native call "+name);
   }
  };
@@ -113,5 +113,32 @@ test("JSON-like text without parsed proposal visibly explains no action and does
  assert.equal(s.commands.includes("prepare_tool"),false);
  const feedback=s.els.find(e=>e.className==="shuvi-native-action-feedback");
  assert.equal(feedback.hidden,false);
- assert.match(feedback.textContent,/not recognized as a valid native action/);
+ assert.match(feedback.textContent,/without requesting a Windows action|not recognized as a valid native action/);
+});
+test("Hindi Notepad launch prepares Allow once without executing and hides provider JSON",async()=>{
+ const proposal={tool:"launch_app",arguments:{program:"notepad.exe",args:[]}};
+ const raw=JSON.stringify(proposal);
+ const s=await setup({content:raw,provider:"xkiro",model:"model/master",tool_proposal:proposal});
+ const ans=await s.client.send("नोटपैड खोलो","notepad-hi",0);
+ assert.equal(ans.ok,true);
+ assert.equal(s.commands.filter(x=>x==="chat").length,1);
+ assert.equal(s.commands.filter(x=>x==="prepare_tool").length,1);
+ assert.equal(s.commands.includes("execute_action"),false);
+ const approval=s.els.find(e=>e.attributes["aria-label"]==="Windows action needs your approval");
+ assert.ok(approval);
+ assert.equal(approval.hidden,false);
+ assert.ok(approval.children.some(e=>e.textContent==="Allow once"));
+ assert.match(s.client.getReplies("notepad-hi")[0],/permission to use launch app/);
+ assert.doesNotMatch(s.client.getReplies("notepad-hi")[0],/notepad\.exe|Notepad खोलने/);
+});
+test("Hindi Notepad paraphrased objective remains blocked before preparation",async()=>{
+ const proposal={tool:"launch_app",arguments:{program:"notepad.exe",args:[]},
+  plan:{objective:"Notepad खोलने के लिए आवेदन शुरू करें",step:"launch",success_criteria:"process exists"}};
+ const s=await setup({content:JSON.stringify(proposal),provider:"xkiro",model:"model/master",tool_proposal:proposal});
+ const ans=await s.client.send("नोटपैड खोलो","notepad-bad-objective",0);
+ assert.equal(ans.ok,true);
+ assert.equal(s.commands.filter(x=>x==="chat").length,1);
+ assert.equal(s.commands.includes("prepare_tool"),false);
+ assert.equal(s.commands.includes("execute_action"),false);
+ assert.match(s.client.getReplies("notepad-bad-objective")[0],/replace the original user objective/);
 });

@@ -26,7 +26,7 @@ import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 import {cleanObservedLabel} from "./native-observation-text.mjs";
-import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native-error-redaction.mjs";
+import {redactNativeError,redactNativeOutput,redactNativeMessage,nativeAssistantDisplay} from "./native-error-redaction.mjs";
 import {validPreparedApproval} from "./native-prepared-approval.mjs";
 import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
 import type {NativeTaskBudget} from "./native-task-budget.mjs";
@@ -551,7 +551,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     return;
    }
   }
-  const answer=redactNativeMessage(response.content).slice(0,9000);
+  const answer=nativeAssistantDisplay(response.content,response.tool_proposal).slice(0,9000);
   // An audited step may be followed by an explicit name/folder question.
   const followupRoot=nextClarificationRoot(task.objective,answer,Boolean(response.tool_proposal),task.route.role);
   if(followupRoot)taskGoalRoots.set(task.threadId,followupRoot);
@@ -1088,7 +1088,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
     });
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
-    const reply=redactNativeMessage(response.content).slice(0,12000);
+    const reply=nativeAssistantDisplay(response.content,response.tool_proposal).slice(0,12000);
     histories.set(threadId,[...messages,{role:"assistant",content:reply}].slice(-22));
     const nextRoot=nextClarificationRoot(effectiveObjective,reply,Boolean(response.tool_proposal),route.role);
     if(nextRoot)taskGoalRoots.set(threadId,nextRoot);
@@ -1164,7 +1164,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       // The paid model response already arrived. A separate Windows prepare failure
       // cannot turn that successful AI response into an unsent draft/retry.
       const notice="Windows tool preparation failed or its outcome is unknown. No execute command was sent. Do not resend this paid AI message just to retry the tool.";
-      const acknowledgedReply=reply+"\n\n"+notice;
+      const proposalError=redactNativeError(error);
+      const acknowledgedReply=reply+"\n\n"+
+       (proposalError.includes("replace the original user objective")
+        ? "Unsafe Master task proposal blocked: "+proposalError+" No native action prepared."
+        : notice);
       updateReply(threadId,promptIndex,acknowledgedReply);
       refreshState("AI replied; Windows tool preparation needs attention. No action executed by Shuvi.");
       return {ok:true,reply:acknowledgedReply};

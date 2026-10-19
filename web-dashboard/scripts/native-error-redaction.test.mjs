@@ -66,3 +66,14 @@ test("Batch 81 redact password and refresh/client secrets from diagnostics",()=>
  ])assert.doesNotMatch(redacted(input),new RegExp(token));
  assert.match(redacted("UI matching failed"),/UI matching failed/);
 });
+
+test("Native Chat hides raw and duplicate tool JSON while retaining approval wording",async()=>{
+ const {nativeAssistantDisplay}=await import("../src/native-error-redaction.mjs");
+ const raw=JSON.stringify({tool:"launch_app",arguments:{program:"notepad.exe",args:[]}});
+ const display=nativeAssistantDisplay(raw,{tool:"launch_app"});
+ assert.match(display,/permission to use launch app/);
+ assert.doesNotMatch(display,/notepad\.exe/);
+ const duplicate=nativeAssistantDisplay(raw+raw,null);
+ assert.match(duplicate,/No Windows action was prepared or executed/);
+ assert.doesNotMatch(duplicate,/notepad\.exe/);
+});

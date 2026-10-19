@@ -195,8 +195,8 @@ const MAX_GIT_FINGERPRINT_UNTRACKED_FILES: usize = 256;
 
 const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
 If the user's request requires a computer action, choose ONE tool and respond ONLY with a JSON object:
-{"tool":"tool_name","arguments":{...},"reason":"short explanation","plan":{"objective":"overall task","step":"what this one action is meant to accomplish","success_criteria":"observable result that proves this step worked"}}
-For a genuinely one-step task, plan may be omitted. For a multi-step task, keep objective stable across steps and make success_criteria observable from tool output or a follow-up inspection. Never claim future plan steps have already run.
+{"tool":"tool_name","arguments":{...},"reason":"short explanation","plan":{"objective":"copy the exact original user request without translation or paraphrase","step":"what this one action is meant to accomplish","success_criteria":"observable result that proves this step worked"}}
+For a genuinely one-step launch_app request, omit plan entirely; do not invent, translate or paraphrase a plan objective. If a plan is needed for a multi-step task, copy the exact original owner text byte-for-byte in plan.objective, keep it stable across steps, and make success_criteria observable from tool output or a follow-up inspection. Never claim future plan steps have already run.
 For a request to OPEN or LAUNCH Adobe Premiere Pro, choose premiere_launch with empty arguments {} as the FIRST tool, not premiere_detect. premiere_launch independently discovers the installed executable and launches it; a preliminary detection wastes time and a second paid model request. Use premiere_detect only when the user explicitly wants to inspect installation/path/readiness without opening Premiere. After launch, propose a separate ui_find or other non-mutating inspection to verify the actual window before claiming success. All actions must still require Allow once and a matching native audit.
 For any UI task, start with ui_windows when the app identity is uncertain, and use ui_discover to read actual UI labels, roles and AutomationIds before ui_click/ui_set_value. Interpret different button wording from observed controls rather than guessing exact selector strings. If Accessibility lacks controls, inspect_screen with window set to the observed target application title is available for an explicitly selected vision-capable model (including xKiro, whose public catalog must report capabilities.vision=true); never silently change paid models or repeat the same failed selector. Ambiguous controls must not be clicked.
 
@@ -22176,6 +22176,22 @@ mod task_graph_transport_tests {
         assert!(parse_tool_proposal(&format!("{detect}{{garbled")).is_none());
         assert!(parse_tool_proposal(&format!("{detect}do it {{\"tool\":\"launch_app\"}}")).is_none());
         assert!(parse_tool_proposal("Premiere Pro open karo").is_none());
+    }
+
+    #[test]
+    fn hindi_notepad_launch_keeps_objective_for_frontend_fence_and_allows_plan_free_action() {
+        let goal="नोटपैड खोलो";
+        let launch=json!({"tool":"launch_app","arguments":{"program":"notepad.exe","args":[]}}).to_string();
+        let proposal=parse_tool_proposal(&launch).expect("simple launch_app proposal");
+        assert_eq!(proposal.tool,"launch_app");
+        assert!(proposal.plan.is_none(),"simple launch must not require model-authored plan metadata");
+
+        let changed=json!({"tool":"launch_app","arguments":{"program":"notepad.exe","args":[]},
+            "plan":{"objective":"Notepad खोलने के लिए आवेदन शुरू करें","step":"launch","success_criteria":"process exists"}}).to_string();
+        let changed_proposal=parse_tool_proposal(&changed).expect("changed objective remains typed data");
+        assert_eq!(changed_proposal.plan.as_ref().unwrap().objective,"Notepad खोलने के लिए आवेदन शुरू करें");
+        assert_ne!(changed_proposal.plan.as_ref().unwrap().objective,goal,
+            "the frontend immutable-objective gate must see changed text and reject it");
     }
 
     #[test]

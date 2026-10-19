@@ -18,3 +18,25 @@ function sanitize(input,limit){
 export const redactNativeError=input=>sanitize(input,2400);
 export const redactNativeOutput=input=>sanitize(input,7000);
 export const redactNativeMessage=input=>sanitize(input,12000);
+
+// Provider tool JSON is an internal control envelope, not normal Chat prose.
+// Keep the structured proposal on the approval path, but never echo raw or
+// duplicated JSON into the owner-facing native conversation.
+export function nativeAssistantDisplay(input,proposal=null){
+ const safe=redactNativeMessage(input);
+ const tool=proposal&&typeof proposal.tool==="string"?proposal.tool.trim():"";
+ const trimmed=safe.trim();
+ if(tool&&trimmed.startsWith("{") )
+  return "I need permission to use "+tool.replaceAll("_"," ")+" before I continue.";
+ if(trimmed.startsWith("{")&&trimmed.endsWith("}")){
+  try{
+   const value=JSON.parse(trimmed);
+   if(value&&typeof value.tool==="string")
+    return "The AI proposed "+value.tool.replaceAll("_"," ")+
+     ", but Shuvi did not prepare it. No Windows action was prepared or executed.";
+  }catch{/* malformed provider JSON is still not normal prose */}
+ }
+ if(/\"tool\"\s*:/.test(trimmed))
+  return "The AI returned tool data that Shuvi could not safely display or prepare. No Windows action was prepared or executed.";
+ return safe;
+}
