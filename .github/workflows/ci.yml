@@ -14,6 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch read-only comparison refs for analyzer regressions
+        run: |
+          git fetch --no-tags origin \
+            refs/heads/phase1/safety-reconciliation-oct9:refs/remotes/origin/phase1/safety-reconciliation-oct9 \
+            refs/heads/feature/shuvi37-master-autonomy:refs/remotes/origin/feature/shuvi37-master-autonomy \
+            refs/heads/feature/shuvi38-native-scheduler:refs/remotes/origin/feature/shuvi38-native-scheduler \
+            refs/heads/feature/shuvi39-windows-vision:refs/remotes/origin/feature/shuvi39-windows-vision \
+            refs/heads/feature/shuvi40-adobe-editing:refs/remotes/origin/feature/shuvi40-adobe-editing \
+            refs/heads/feature/shuvi41-blender-worker:refs/remotes/origin/feature/shuvi41-blender-worker
       - uses: actions/setup-node@v4
         with:
           node-version: 22
