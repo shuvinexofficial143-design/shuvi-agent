@@ -1324,3 +1324,92 @@ test("Shuvi39 rejects forged new native root on second audited discovery; no add
  assert.equal(s.staged.length,5,"sixth native UI click must not be prepared");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,5);
 });
+
+// Notepad deterministic readback tests
+test("Notepad: verified launch_app triggers deterministic ui_windows readback",async()=>{
+  const notepadLaunch={content:JSON.stringify({tool:"launch_app",arguments:{program:"notepad.exe"}}),
+    provider:"xkiro",model:"model/master",tool_proposal:{tool:"launch_app",arguments:{program:"notepad.exe"}}};
+  const s=setup({first:notepadLaunch,uuidPreparedIds:true,stdoutFor:{ui_windows:JSON.stringify([
+    {Name:"Untitled - Notepad",ProcessName:"notepad",ProcessId:1234,NativeWindowHandle:5678}
+  ])}});
+  await until(()=>s.transport.connected(),"native ready");
+  await s.transport.send("Open Notepad","notepad-simple-open",0);
+  assert.equal(s.staged.length,1);
+  assert.equal(s.staged[0].proposal.tool,"launch_app");
+  s.allow.listeners.get("click")();
+  await until(()=>s.staged.length===2,"second separately approved window readback");
+  assert.equal(s.staged[1].proposal.tool,"ui_windows");
+  assert.deepEqual(s.staged[1].proposal.arguments,{});
+  assert.equal(s.chatInputs.length,1,"zero model calls spent on deterministic second step");
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+  await until(()=>s.allow.disabled===false,"window approval ready");
+  s.allow.listeners.get("click")();
+  await until(()=>s.transport.getReplies("notepad-simple-open")[0]?.includes("OPENING VERIFIED"),
+    "independently accepted Notepad opening");
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
+  assert.equal(s.chatInputs.length,1,"never purchases a model call to recheck a verified narrow opening");
+  assert.equal(s.staged.length,2,"no third prepared Windows action");
+  assert.match(s.transport.getReplies("notepad-simple-open")[0],/Notepad window OPENING VERIFIED/);
+  assert.match(s.transport.getReplies("notepad-simple-open")[0],/PID 1234/);
+  assert.match(s.transport.getReplies("notepad-simple-open")[0],/HWND 5678/);
+  const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
+  assert.deepEqual(phases.slice(-2),["audit_verified","paused"]);
+});
+
+test("Notepad: Hindi simple launch triggers deterministic readback",async()=>{
+  const notepadLaunch={content:JSON.stringify({tool:"launch_app",arguments:{program:"notepad.exe"}}),
+    provider:"xkiro",model:"model/master",tool_proposal:{tool:"launch_app",arguments:{program:"notepad.exe"}}};
+  const s=setup({first:notepadLaunch,uuidPreparedIds:true,stdoutFor:{ui_windows:JSON.stringify([
+    {Name:"Untitled - Notepad",ProcessName:"notepad",ProcessId:1234,NativeWindowHandle:5678}
+  ])}});
+  await until(()=>s.transport.connected(),"native ready");
+  await s.transport.send("नोटपैड खोलो","notepad-hindi-open",0);
+  assert.equal(s.staged.length,1);
+  s.allow.listeners.get("click")();
+  await until(()=>s.staged.length===2,"second separately approved window readback");
+  assert.equal(s.staged[1].proposal.tool,"ui_windows");
+  assert.equal(s.chatInputs.length,1,"zero model calls for Hindi Notepad");
+  s.allow.listeners.get("click")();
+  await until(()=>s.transport.getReplies("notepad-hindi-open")[0]?.includes("OPENING VERIFIED"),
+    "Hindi Notepad opening verified");
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
+  assert.equal(s.chatInputs.length,1);
+});
+
+test("Notepad: ambiguous window does not trigger completion",async()=>{
+  const notepadLaunch={content:JSON.stringify({tool:"launch_app",arguments:{program:"notepad.exe"}}),
+    provider:"xkiro",model:"model/master",tool_proposal:{tool:"launch_app",arguments:{program:"notepad.exe"}}};
+  const s=setup({first:notepadLaunch,second:{content:"Need to check app identity.",tool_proposal:null,
+    provider:"xkiro",model:"model/master"},uuidPreparedIds:true,
+    stdoutFor:{ui_windows:JSON.stringify([
+      {Name:"Untitled - Notepad",ProcessName:"explorer",ProcessId:1234,NativeWindowHandle:5678}
+    ])}});
+  await until(()=>s.transport.connected(),"native ready");
+  await s.transport.send("Open Notepad","notepad-ambiguous-window",0);
+  s.allow.listeners.get("click")();
+  await until(()=>s.staged.length===2,"separate window inspection");
+  await until(()=>s.allow.disabled===false,"window approval ready");
+  s.allow.listeners.get("click")();
+  await until(()=>s.chatInputs.length===2,"unverified window invokes Master replan");
+  assert.doesNotMatch(s.transport.getReplies("notepad-ambiguous-window")[0]??"",/OPENING VERIFIED/);
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
+});
+
+test("Oversized Hindi objective pauses before a second paid model request without substituting a truncated goal",async()=>{
+ const goal="Premiere me naya project banao " + "नया डेटा ".repeat(195);
+ assert.ok(goal.length<2500,"still a valid original Master objective");
+ const s=setup({first:launch});
+ await until(()=>s.transport.connected(),"native ready");
+ const initial=await s.transport.send(goal,"long-hindi-context",0);
+ assert.equal(initial.ok,true);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("long-hindi-context")[0]?.includes("safe continuation context"),
+   "context-limit pause after audited launch");
+ assert.equal(s.chatInputs.length,1,"no paid continuation request after unsafe context");
+ assert.equal(s.staged.length,1,"no new Windows tool prepared");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
+ assert.equal(phases.at(-1),"paused","durable pause recorded");
+ assert.doesNotMatch(s.transport.getReplies("long-hindi-context")[0],/OPENING VERIFIED/);
+});

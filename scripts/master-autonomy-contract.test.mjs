@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {deriveMasterGoalContract,initialMasterInspectionDAG,
-  admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from '../src/master-autonomy-contract.mjs';
+  admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal,
+  isSimpleNotepadLaunch, nextNotepadReadbackProposal} from '../src/master-autonomy-contract.mjs';
 const propose=(tool,argumentsValue={})=>({tool,arguments:argumentsValue});
 
 for(const input of ['Open Premiere Pro','premiere kholo','प्रीमियर खोलो']){
@@ -56,6 +57,13 @@ test('Hindi Notepad launch omits model-authored objective without weakening the 
   assert.equal(admitDashboardMasterProposal(goal,launch).ok,true);
   assert.match(admitDashboardMasterProposal(goal,{...launch,plan:{objective:'Notepad खोलने के लिए आवेदन शुरू करें'}}).reason,/replace the original user objective/);
   assert.equal(admitDashboardMasterProposal(goal,{...launch,plan:{objective:goal}}).ok,true);
+  for(const bad of [
+    {program:'calc.exe',args:[]},
+    {program:'notepad.exe',args:['C:/private.txt']},
+    {program:'notepad.exe',args:[],shell:true},
+    {path:'C:/Windows/notepad.exe'}
+  ])assert.equal(admitDashboardMasterProposal(goal,propose('launch_app',bad)).ok,false,
+    'an uncomplicated Notepad request must not authorize other binaries or arguments');
 });
 test('Refuses invalid original brief, proposals and conflicting executable targets',()=>{
   for(const goal of ['', ' ', null, 'a'.repeat(2501)])assert.equal(deriveMasterGoalContract(goal),null);
@@ -86,6 +94,21 @@ test('Successful audited launch selects only a new, separately approved observat
   assert.equal(nextMasterReadbackProposal('Premiere me naya project banao','premiere_launch'),null,
     'do not mistake a project creation goal for app opening');
   assert.equal(nextMasterReadbackProposal('Open Blender','blender_inspect'),null);
+
+  // Notepad deterministic readback tests
+  assert.equal(isSimpleNotepadLaunch('Open Notepad'), true);
+  assert.equal(isSimpleNotepadLaunch('notepad'), true);
+  assert.equal(isSimpleNotepadLaunch('Please open Notepad'), true);
+  assert.equal(isSimpleNotepadLaunch('नोटपैड खोलो'), true);
+  assert.equal(isSimpleNotepadLaunch('Open Notepad and edit'), false, 'additional operations disqualify simple launch');
+  assert.equal(isSimpleNotepadLaunch('Create a file in Notepad'), false, 'additional operations disqualify simple launch');
+  assert.equal(isSimpleNotepadLaunch(''), false);
+  assert.equal(isSimpleNotepadLaunch('Open Notepad and create a test file'.repeat(10)), false, 'too long disqualifies simple launch');
+
+  assert.deepEqual(nextNotepadReadbackProposal('Open Notepad', 'launch_app'), {tool:'ui_windows',arguments:{}});
+  assert.equal(nextNotepadReadbackProposal('Open Notepad', 'ui_windows'), null);
+  assert.equal(nextNotepadReadbackProposal('Open Notepad and edit', 'launch_app'), null, 'project creation goal does not get deterministic readback');
+  assert.equal(nextNotepadReadbackProposal('Open Premiere Pro', 'launch_app'), null, 'Premiere uses DAG, not Notepad contract');
 });
 test('Native continuation stages observed-window proposal without a second model request',()=>{
   const ui=readFileSync(new URL('../web-dashboard/src/native-agent.ts',import.meta.url),'utf8');

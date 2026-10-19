@@ -4,6 +4,7 @@ import {cleanObservedLabel} from "./native-observation-text.mjs";
 // A project dialog or launched process cannot complete the user's original goal.
 const knownApps=[
  ["premiere",/\bpremi(?:ere|re|er)\b|प्रीमियर|प्रिमियर/iu,/\bpremiere\b/i],
+ ["notepad",/\bnotepad\b|नोटपैड|नोटपैड/iu,/\bnotepad\b/i],
  ["photoshop",/\bphotoshop\b|फोटोशॉप/iu,/\bphotoshop\b/i],
  ["after-effects",/\bafter[\s-]?effects?\b|आफ्टर इफेक्ट/iu,/\bafter[\s-]?effects?\b/i],
  ["blender",/\bblender\b|ब्लेंडर/iu,/\bblender\b/i],

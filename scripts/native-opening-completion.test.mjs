@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {strictlySimplePremiereOpening,verifiedSimplePremiereOpening} from "../web-dashboard/src/native-opening-completion.mjs";
+import {strictlySimplePremiereOpening,strictlySimpleNotepadOpening,verifiedSimplePremiereOpening,
+ verifiedSimpleNotepadOpening,verifiedSimpleOpening} from "../web-dashboard/src/native-opening-completion.mjs";
 import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,taskSummary} from "../web-dashboard/src/native-task-progress.mjs";
 
 const A="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
@@ -86,13 +87,42 @@ test("Native UI progress records narrow window-only completion, not project/edit
 });
 test("Native dashboard accepts only exact Rust audit and durably pauses BEFORE terminal message",()=>{
  const ui=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
- assert.match(ui,/const simpleOpening=verified\?verifiedSimplePremiereOpening\(/);
+ assert.match(ui,/const simpleOpening=verified\?verifiedSimpleOpening\(/);
  assert.match(ui,/taskEvidence\.get\(current\.threadId\)\?\?null,true/);
  const capture=ui.indexOf("const simpleOpening=verified?");
  const checkpoint=ui.indexOf('await persistRecovery(finalBudget,"paused",current.action.id)',capture);
- const finish=ui.indexOf("completeAuditedOpening(getTask(current.threadId))",capture);
+ const finish=ui.indexOf("completeAuditedOpening(getTask(current.threadId),appName)",capture);
  const paid=ui.indexOf("await continueAfterVerifiedAction(current,result)",capture);
  assert.ok(capture>=0&&checkpoint>capture&&finish>checkpoint&&paid>finish);
- assert.match(ui,/if\(simpleOpening\)\{\s*const finalBudget/);
+ assert.match(ui,/if\(simpleOpening\)\{\s*const appName=[^\n]+;\s*const finalBudget/);
  assert.match(ui,/Project creation, file import, editing, save and export remain UNVERIFIED/);
+});
+
+test("Notepad opening is strictly scoped and recognizes Hindi without allowing extra work",()=>{
+ for(const goal of ["Open Notepad","Please open Notepad","नोटपैड खोलो","कृपया नोटपैड खोल दो","Notepad kholo"])
+  assert.equal(strictlySimpleNotepadOpening(goal),true,goal);
+ for(const goal of ["notepad","Open Notepad and edit","नोटपैड खोलो और लिखो","Create a file in Notepad","Open Premiere"])
+  assert.equal(strictlySimpleNotepadOpening(goal),false,goal);
+});
+
+test("Notepad needs a distinct audited launch_app and exact independent OS window",()=>{
+ const observed=windowResult([{Name:"Untitled - Notepad",ProcessName:"notepad.exe",ProcessId:19444,NativeWindowHandle:5678}]);
+ const proof={audited:2,lastTool:"ui_windows",seenIds:new Set([A,B]),observations:[
+  {id:A,tool:"launch_app",kind:"tool_execution"},
+  {id:B,tool:"ui_windows",kind:"read_only"}
+ ]};
+ const result=verifiedSimpleNotepadOpening("नोटपैड खोलो",B,observed,proof,true);
+ assert.equal(result?.window.pid,19444);
+ assert.equal(result?.window.hwnd,5678);
+ assert.equal(result?.scope,"notepad_window");
+ assert.deepEqual(verifiedSimpleOpening("नोटपैड खोलो",B,observed,proof,true),result);
+ for(const bad of [
+  [{Name:"Untitled - Notepad",ProcessName:"explorer.exe",ProcessId:19444,NativeWindowHandle:5678}],
+  [{Name:"Untitled - Notepad",ProcessName:"",ProcessId:19444,NativeWindowHandle:5678}],
+  [{Name:"Untitled - Notepad",ProcessName:"notepad.exe",ProcessId:19444,NativeWindowHandle:5678},
+   {Name:"Untitled - Notepad",ProcessName:"notepad.exe",ProcessId:222,NativeWindowHandle:999}]
+ ])assert.equal(verifiedSimpleNotepadOpening("नोटपैड खोलो",B,windowResult(bad),proof,true),null);
+ assert.equal(verifiedSimpleNotepadOpening("नोटपैड खोलो",B,observed,proof,false),null);
+ assert.equal(verifiedSimpleNotepadOpening("नोटपैड खोलो",A,observed,proof,true),null);
+ assert.equal(verifiedSimpleNotepadOpening("Open Notepad and save",B,observed,proof,true),null);
 });

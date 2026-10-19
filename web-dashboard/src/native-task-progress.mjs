@@ -19,14 +19,15 @@ export function verifyTask(s,id,tool,audited){
   usedActionIds:[...(s.usedActionIds??[]),id].slice(-48),pending:null,reason:null};
 }
 // A completed opening is narrower than a completed arbitrary Windows task.
-export function completeAuditedOpening(s){
+export function completeAuditedOpening(s,appName="Premiere"){
  if(!s||s.phase!=="planning"||s.pending||s.verified<2||
-    s.tools.at(-1)!=="ui_windows"||!s.tools.includes("premiere_launch"))return s;
- return {...s,phase:"window_verified",reason:null};
+    s.tools.at(-1)!=="ui_windows"||(!s.tools.includes("premiere_launch")&&!s.tools.includes("launch_app")))return s;
+ if(!["Premiere","Notepad"].includes(appName))return s;
+ return {...s,phase:"window_verified",windowApp:appName,reason:null};
 }
 export function pauseTask(s,reason){
  if(!s)return s;
- const reasons=["denied","unknown_outcome","confirmed_read_failure","model_failed","prepare_failed","no_next_tool","repeated_tool","no_tool","awaiting_clarification"];
+ const reasons=["denied","unknown_outcome","confirmed_read_failure","model_failed","prepare_failed","no_next_tool","repeated_tool","no_tool","awaiting_clarification","context_limit_exceeded"];
  return {...s,phase:"paused",pending:null,reason:reasons.includes(reason)?reason:"unknown_outcome"};
 }
 export function taskSummary(s){
@@ -34,7 +35,7 @@ export function taskSummary(s){
  const next=s.pending?" · Step "+s.pending.step+" "+s.pending.tool+
   (s.phase==="executing"?" executing":" awaiting Allow once"):"";
  const stop=s.phase==="paused"?" · Paused ("+s.reason+")":"";
- if(s.phase==="window_verified")return s.verified+" audited native step(s) · Requested Premiere window opening VERIFIED at last inspection; project/edit/export NOT verified.";
+ if(s.phase==="window_verified")return s.verified+" audited native step(s) · Requested "+(s.windowApp??"Premiere")+" window opening VERIFIED at last inspection; project/edit/export NOT verified.";
  return s.verified+" audited native step(s)"+next+stop+
   (s.pending?" · Worker lane: "+workerForTool(s.pending.tool):"")+
   " · Overall task unverified.";

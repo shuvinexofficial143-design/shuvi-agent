@@ -8,9 +8,10 @@ import {admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackPr
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
-import {verifiedSimplePremiereOpening} from "./native-opening-completion.mjs";
+import {buildBoundedContinuationContext,isWithinRustLimit} from "./native-continuation-context.mjs";
+import {verifiedSimpleOpening} from "./native-opening-completion.mjs";
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
-import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./native-action-loop.mjs";
+import {actionFingerprint,seenAfterAuditedChange} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
 import {taskClarificationKind,extendTaskClarification,nextClarificationRoot} from "./native-task-clarification.mjs";
 import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
@@ -467,6 +468,39 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
   const plannedReadback=nextMasterReadbackProposal(task.objective,result.tool);
   const taskBudget=taskBudgets.get(task.threadId);
+  // Validate the exact objective and Rust-bound context BEFORE consuming a
+  // paid-request reservation. Deterministic readback needs no model context.
+  let orchestrator="";
+  if(taskBudget&&!plannedReadback){
+   try{
+    // The real Rust runtime returns UUID action IDs. Legacy native bridges
+    // may expose other opaque receipts; never invent a UUID for model context.
+    const contextActionId=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task.action.id)
+     ?task.action.id:null;
+    orchestrator=buildBoundedContinuationContext(
+     task.objective,result.tool,contextActionId,String(task.step),
+     "Current approved step: "+task.step+". "+masterAutonomyGuidance(task.objective)+" "+taskContext(getTask(task.threadId))+" "+masterGoalContext(task.objective)+
+      " For inspect_screen ALWAYS include window with the actual observed target app title from ui_windows, even if Shuvi chat is foreground for permission; window:'desktop' only after an explicit full-desktop request. Never automatically switch paid vision provider. Never repeat identical Windows actions.",
+     evidenceSummary(taskEvidence.get(task.threadId)??null),
+     redactNativeMessage(goalEvidenceLabel(task.objective,verifiedWindows.get(task.threadId)??null)),
+     redactNativeMessage(summarizeWindowObservation(result,true)),
+     uiReplanGuidance(task.recoveryFrom,result.tool)+" "+taskGoalContext(task.objective),
+     pendingUiReadback.get(task.threadId)?.readbackRequired??null
+    );
+    if(!isWithinRustLimit(orchestrator)||
+       !orchestrator.includes("Original user request: "+task.objective))
+     throw Error("Continuation context cannot preserve the exact original task within 2900 UTF-8 bytes");
+   }catch(error){
+    const journalOk=await persistRecovery(taskBudget,"paused",task.action.id);
+    haltTask(task.threadId,journalOk?"context_limit_exceeded":"recovery_journal_failed");
+    appendReply(task.threadId,task.promptIndex,
+     "Task paused: safe continuation context could not preserve the complete objective. "+
+     redactNativeError(error)+" No model request or new Windows action sent."+
+     (journalOk?"":" Recovery journal needs owner inspection before any new task."));
+    showActionFeedback("Continuation context safety limit; task paused without a paid request.");
+    return;
+   }
+  }
   // After a VERIFIED launch, an independent ui_windows observation is the
   // deterministic next proposal; it spends no model tokens and STILL needs
   // a fresh Rust prepared UUID and owner Allow once.
@@ -507,28 +541,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const prev=histories.get(task.threadId)||[];
   const reportBudget=["ui_windows","ui_discover","ui_find"].includes(result.tool)?10800:4000;
   const messages:NativeChatMessage[]=[...prev.slice(-18),{role:"user",content:report.slice(0,reportBudget)}];
-  const orchestrator=masterAutonomyGuidance(task.objective)+" "+
-   "Continue the ORIGINAL computer task, not just its last inspection step. "+
-   "Objective: "+task.objective.slice(0,500)+". "+
-   "Current approved step: "+task.step+". "+
-   "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
-   evidenceSummary(taskEvidence.get(task.threadId)??null)+" "+
-   redactNativeMessage(goalEvidenceLabel(task.objective,verifiedWindows.get(task.threadId)??null))+" "+
-   redactNativeMessage(summarizeWindowObservation(result,true))+" "+
-   uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
-   (pendingUiReadback.get(task.threadId)?.readbackRequired?
-    "Prior UI mutation has an audited execution receipt but its visible effect is NOT verified. Observe same HWND/PID via separately approved ui_windows then ui_find or ui_discover before further UI mutation. ":"")+
-   actionLoopGuidance()+" "+taskGoalContext(task.objective)+" "+
-   "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
-   "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
-   "After any launch, use ui_windows or a suitable separate inspection to verify that the app/window exists. "+
-    "For UI tasks use ui_windows to discover real process/window identity and ui_discover for observed button labels/roles before proposing UI mutation. If lookup fails, do not blindly repeat guessed labels; use read-only discovery and ask for clarification on ambiguity. For inspect_screen ALWAYS include window with the actual observed target app title from ui_windows, even if Shuvi chat is foreground for permission; window:'desktop' ONLY on an explicit request for the full desktop. Never automatically switch paid vision provider. "+
-   "Propose ONE next typed action as JSON. Never re-execute a previous identical action, "+
-   "never claim completion based only on a detection/launch request. Every new action requires user approval. "+
-    masterGoalContext(task.objective);
+
   let response:NativeChatResponse;
   if(plannedReadback){
-   response={content:"Verified Premiere launch: stage a separate Windows window inspection. The application is not yet confirmed open; owner approval and native audit still required.",
+   response={content:"Audited application launch: stage a separate Windows window inspection. The application is not yet confirmed open; owner approval and native audit still required.",
     provider:task.route.provider,model:task.route.model,tool_proposal:plannedReadback};
    refreshState("Audited launch: preparing deterministic window readback, without a paid model request.");
   }else{
@@ -875,32 +891,33 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      appendReply(current.threadId,current.promptIndex,label+(output?"\n"+output:""));
      showActionFeedback(label+(output?" "+output:""));
      refreshState(label);
-     // An EXACT "Open Premiere" task can close after two separately approved
+     // An EXACT "Open Premiere" or "Open Notepad" task can close after two separately approved
      // native actions (launcher then OS-window inspection) with two exact
      // Rust executed audits. Do not purchase an unnecessary third AI turn.
      // No project, editing or export task may use window-only acceptance.
-     const simpleOpening=verified?verifiedSimplePremiereOpening(
+     const simpleOpening=verified?verifiedSimpleOpening(
        current.objective,current.action.id,result,
        taskEvidence.get(current.threadId)??null,true):null;
      clearPending();
      if(simpleOpening){
+      const appName=simpleOpening.scope==="premiere_window"?"Premiere":"Notepad";
       const finalBudget=taskBudgets.get(current.threadId);
       if(!finalBudget||!await persistRecovery(finalBudget,"paused",current.action.id)){
        haltTask(current.threadId,"recovery_journal_failed");
        appendReply(current.threadId,current.promptIndex,
-        "Premiere window was observed with a Rust audit, but terminal recovery could not be saved. No completion status or paid retry was issued.");
+        appName+" window was observed with a Rust audit, but terminal recovery could not be saved. No completion status or paid retry was issued.");
        return;
       }
-      updateTask(current.threadId,completeAuditedOpening(getTask(current.threadId)));
-      const completedMessage="Requested Premiere window OPENING VERIFIED at last audited OS inspection: "+
+      updateTask(current.threadId,completeAuditedOpening(getTask(current.threadId),appName));
+      const completedMessage="Requested "+appName+" window OPENING VERIFIED at last audited OS inspection: "+
        redactNativeMessage(simpleOpening.window.title)+" (PID "+simpleOpening.window.pid+
        ", HWND "+simpleOpening.window.hwnd+"). The native launcher and window inspection "+
        "had different approved action IDs. No extra AI model request. "+
-       "Project creation, file import, editing, save and export remain UNVERIFIED.";
+       (appName==="Premiere"?"Project creation, file import, editing, save and export remain UNVERIFIED.":"File creation, editing, and save remain UNVERIFIED.");
       appendReply(current.threadId,current.promptIndex,completedMessage);
       showActionFeedback(completedMessage);
       goalStatus.textContent=completedMessage;
-      refreshState("Premiere window opening verified; no additional paid model call.");
+      refreshState(appName+" window opening verified; no additional paid model call.");
       return;
      }
      if(verified)await continueAfterVerifiedAction(current,result);

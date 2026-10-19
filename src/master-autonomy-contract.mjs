@@ -5,7 +5,8 @@
 const EDITORS = Object.freeze({
   premiere: /\b(?:premiere|premire|premier|premar|primiere)\b|प्रीमियर|प्रिमियर/iu,
   after_effects: /\bafter[ -]?effects?\b|आफ्टर[ -]?इफेक्ट्स?|आफ्टर\s*इफेक्ट/iu,
-  blender: /\bblender\b|ब्लेंडर/iu
+  blender: /\bblender\b|ब्लेंडर/iu,
+  notepad: /\bnotepad\b|नोटपैड/iu
 });
 const PROJECT = /\b(?:project|projeckt|projct|projectfile)\b|प्रोजेक्ट/iu;
 const CREATE = /\b(?:create|make|new|banao|banana|banado|bnado|naya|nayi)\b|नया|नई|बनाओ|बनाना|बना\s*दो/iu;
@@ -57,13 +58,37 @@ export function initialMasterInspectionDAG(goal) {
   ])});
 }
 
+// Notepad deterministic readback contract for simple launch verification
+// Returns a ui_windows proposal after an audited launch_app for Notepad
+const SIMPLE_NOTEPAD_ENGLISH = /^(?:(?:please\s+)?(?:open|launch|start)\s+)?notepad(?:\s+(?:kholo|khol\s*do|kholdo))?$/iu;
+const SIMPLE_NOTEPAD_HINDI = /^(?:कृपया\s+)?नोटपैड\s+(?:खोलो|खोल\s*दो)$/u;
+
+export function isSimpleNotepadLaunch(goal) {
+  if (typeof goal !== 'string' || !goal.trim() || goal.length > 120) return false;
+  const normalized = goal.trim().replace(/[.!?।]+\s*$/u, "").trim();
+  return SIMPLE_NOTEPAD_ENGLISH.test(normalized)||SIMPLE_NOTEPAD_HINDI.test(normalized);
+}
+
+export function nextNotepadReadbackProposal(goal, auditedTool) {
+  // Only trigger deterministic readback for simple Notepad launch requests
+  if (!isSimpleNotepadLaunch(goal)) return null;
+  const g=deriveMasterGoalContract(goal);
+  if(!g||g.apps.length!==1||g.apps[0]!=='notepad'||!g.opening)return null;
+  if (auditedTool !== 'launch_app') return null;
+  return {tool: 'ui_windows', arguments: {}};
+}
+
 // The first verified launch can be followed by its deterministic inspection
 // without another paid Master request. This only returns a *proposal* for
 // normal native prepare/Allow once/audit; it NEVER executes a UI inspection.
 export function nextMasterReadbackProposal(goal, auditedTool) {
+  // Try Premiere DAG first
   const graph=initialMasterInspectionDAG(goal);
-  if (!graph || auditedTool!==graph.steps[0].expected_tool) return null;
-  return {tool:graph.steps[1].expected_tool,arguments:{}};
+  if (graph && auditedTool===graph.steps[0].expected_tool) {
+    return {tool:graph.steps[1].expected_tool,arguments:{}};
+  }
+  // Try Notepad deterministic readback
+  return nextNotepadReadbackProposal(goal, auditedTool);
 }
 
 // Scope is checked before *both* initial and follow-up native preparations.
@@ -89,8 +114,10 @@ export function admitDashboardMasterProposal(goal, proposal) {
     const foreign = Object.keys(TOOLS).find(app => app !== g.apps[0] && TOOLS[app].test(proposal.tool));
     if (foreign) return fail('Tool targets '+foreign+' but the original task names only '+g.apps[0]+'. Ask for a new explicit user instruction.');
   }
-  if(g.apps.length===1 && g.opening && !g.project && !g.editing && !g.exportFile &&
-      !OPENING_ONLY_TOOLS.has(proposal.tool))
+  const pureOpening=g.apps.length===1&&g.opening&&!g.project&&!g.editing&&!g.exportFile;
+  const narrowNotepadLaunch=pureOpening&&g.apps[0]==='notepad'&&isSimpleNotepadLaunch(g.original);
+  if(pureOpening&&!OPENING_ONLY_TOOLS.has(proposal.tool)&&
+      !(proposal.tool==='launch_app'&&narrowNotepadLaunch))
     return fail('Opening an editor does not authorize an unrelated process, file mutation, or export.');
   if (proposal.tool === 'launch_app' && g.apps.length === 1) {
     // launch_app may only be grounded by the existing native observed-target
@@ -99,6 +126,13 @@ export function admitDashboardMasterProposal(goal, proposal) {
     let serialized;
     try { serialized = JSON.stringify(proposal.arguments).slice(0,4096).toLowerCase(); }
     catch { return fail('Invalid or circular launch arguments.'); }
+    if(narrowNotepadLaunch){
+      const args=proposal.arguments;
+      if(args.program!=='notepad.exe'||
+         (args.args!==undefined&&(!Array.isArray(args.args)||args.args.length!==0))||
+         Object.keys(args).some(key=>!['program','args'].includes(key)))
+        return fail('A simple Notepad opening authorizes only notepad.exe without arguments.');
+    }
     if (Object.keys(EDITORS).some(other => other !== app &&
         new RegExp(other === 'after_effects' ? 'after[ _-]?effects|afterfx' : other).test(serialized)))
       return fail('Launch target conflicts with the named editor.');
