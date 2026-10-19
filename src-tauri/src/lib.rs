@@ -21534,10 +21534,16 @@ async fn execute_action(
         }else if let ToolAction::BlenderRunPlan {
             python_exe,blender_exe,blend_file,expected_blend_sha256,output_dir,allow_render,plan
         }=&action.action {
+            // Re-check the exact approved .blend bytes immediately before the
+            // native owned-plan launch; the owned-plan API binds plan/output
+            // evidence separately and intentionally does not take this field.
+            blender_input_checkpoint::inspect(
+                blend_file.as_deref(),expected_blend_sha256.as_deref()
+            )?;
             native_blender_owned_plan::execute(
                 &app,state.inner(),&mut native_slot,&action_id,
                 python_exe,blender_exe,blend_file.as_deref(),
-                expected_blend_sha256.as_deref(),output_dir,plan,*allow_render,
+                output_dir,plan,*allow_render,
             ).map(|evidence|ActionResult{
                 success:true,tool:tool.clone(),
                 stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
