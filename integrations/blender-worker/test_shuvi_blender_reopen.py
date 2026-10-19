@@ -905,6 +905,9 @@ class ReopenTests(unittest.TestCase):
                              hashlib.sha256(self.file.read_bytes()).hexdigest())
             self.assertTrue(proof["mesh_geometry_verified"])
             self.assertEqual(proof["mesh_count"], 1)
+            self.assertEqual(proof["animated_object_count"], 0)
+            self.assertEqual(proof["animation_point_count"], 0)
+            self.assertFalse(proof["animation_keyframes_independently_verified"])
             self.assertEqual(proof["mesh_fingerprint"], original["mesh_fingerprint"])
             self.assertFalse(calls[0]["policy"].allow_mutations)
             client.BlenderController = lambda _transport: FakeController(

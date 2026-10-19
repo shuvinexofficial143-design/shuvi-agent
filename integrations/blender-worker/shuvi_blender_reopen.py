@@ -650,7 +650,7 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
             "mesh_geometry_verified": True, "mesh_count": reopened["mesh_count"],
             "animated_object_count": reopened["animated_object_count"],
             "animation_point_count": reopened["animation_point_count"],
-            "animation_keyframes_independently_verified": reopened["animated_object_count"] > 0,
+            "animation_keyframes_independently_verified": reopened["animation_point_count"] > 0,
             "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"],
             "active_camera_name": reopened["active_camera_name"],
             "proof_camera_verified": reopened["proof_camera_verified"],
