@@ -93,6 +93,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Real Blender eight-stage trial did not pass; partial files retained' }
           $reports = @(Get-ChildItem -LiteralPath $out -Recurse -File -Filter acceptance-report.json)
           if ($reports.Count -ne 1) { throw 'Expected exactly one real-host acceptance report' }
+          $trial = Get-Content -LiteralPath $reports[0].FullName -Raw | ConvertFrom-Json
+          if ($trial.status -ne 'real_blender_upstream_acceptance_passed' -or
+              $trial.real_host_acceptance_verified -ne $true -or
+              $trial.blender_launch_performed -ne $true -or
+              $trial.completed_stages.Count -ne 8 -or
+              $trial.motion_pair_pixels_differ -ne $true) {
+            throw 'Real Blender host report does not affirm the full eight-stage launch and proof'
+          }
           & python -B integrations/blender-worker/shuvi_blender_host_acceptance.py --verify-report $reports[0].FullName
           if ($LASTEXITCODE -ne 0) { throw 'Independent offline artifact reverify failed' }
 

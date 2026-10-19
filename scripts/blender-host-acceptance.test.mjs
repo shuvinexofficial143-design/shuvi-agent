@@ -18,6 +18,8 @@ test("Blender real-host harness cannot launch by ordinary import or read-only pr
   assert.match(host,/if parent == Path\(parent\.anchor\)/);
   assert.match(host,/if not _no_links\(upstream\) or not _no_links\(repo\)/);
   assert.match(host,/tempfile\.mkdtemp\(/);
+  assert.match(host,/report\["blender_launch_performed"\] = True/);
+  assert.match(host,/report\["post_trial_artifacts_rehashed"\] = False/);
   assert.match(host,/prefix="shuvi41-live-acceptance-"/);
   assert.doesNotMatch(host,/shell=True|os\.system\(|\beval\(|\bexec\(/);
 });

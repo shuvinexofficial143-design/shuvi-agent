@@ -167,3 +167,16 @@ retained **unsigned claim** and current files; it cannot replay historic
 keyframes without authorized Blender, certify artistic motion quality, or
 authenticate who produced the report. This development milestone invokes no
 live Blender/Windows session and never merges or deploys.
+
+## Real disposable Windows runner proof
+
+A deliberately one-shot, feature-branch-only GitHub Actions Windows 2022 runner
+retrieves official SHA-256-verified portable Blender 4.3.2, checks out the
+pinned upstream source outside the clean Shuvi checkout, and opts into the
+full eight-stage test. The report now marks `blender_launch_performed=true`
+only after an actual authenticated session opens, and revokes any premature
+success flags if the final offline SHA/pixel recheck fails. Separately,
+`--verify-report` continues to advertise `blender_launch_performed=false`
+because read-only *reverification* itself starts no new Blender process.
+Artifacts are seven-day disposable CI proof files, not desktop deployment or
+native Shuvi owner-action approval.

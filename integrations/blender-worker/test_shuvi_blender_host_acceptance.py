@@ -503,6 +503,7 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
                                            "--output-parent", str(root)]), 1)
             report = json.loads(output.getvalue())
             self.assertEqual(report["status"], "failed_or_partial_outcome_unknown")
+            self.assertFalse(report["real_host_acceptance_verified"])
             self.assertFalse(report.get("post_trial_artifacts_rehashed", False))
             self.assertFalse(report["automatic_retry_allowed"])
 

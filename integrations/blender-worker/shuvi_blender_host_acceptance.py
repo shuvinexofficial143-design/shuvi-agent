@@ -254,6 +254,9 @@ def run_trial(blender_exe: Path, upstream: Path, output: Path, report: dict,
 
     # One authenticated writer session MUST execute both modeling stages.
     with _session(blender_exe, output, None, False) as running:
+        # Set this only after the real authenticated Blender session starts.
+        # A readiness probe, refused launch, or startup failure stays false.
+        report["blender_launch_performed"] = True
         controller = BlenderController(running.client)
         first = scene(controller)
         stage1 = record("model1", controller, first["revision"], None, False)
@@ -434,6 +437,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         # Retain ALL partial .blend and PNG files for inspection; never retry.
         report["status"] = "failed_or_partial_outcome_unknown"
+        # A failed post-trial recheck must revoke any earlier claimed success.
+        report["real_host_acceptance_verified"] = False
+        report["post_trial_artifacts_rehashed"] = False
+        report["motion_pair_pixels_differ"] = False
         report["error_type"] = type(exc).__name__
         report["error"] = str(exc)[:500]
     finally:
