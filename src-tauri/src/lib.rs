@@ -21532,12 +21532,12 @@ async fn execute_action(
                 stderr:String::new(),exit_code:Some(0)
             })
         }else if let ToolAction::BlenderRunPlan {
-            python_exe,blender_exe,blend_file,output_dir,allow_render,plan
+            python_exe,blender_exe,blend_file,expected_blend_sha256,output_dir,allow_render,plan
         }=&action.action {
             native_blender_owned_plan::execute(
                 &app,state.inner(),&mut native_slot,&action_id,
                 python_exe,blender_exe,blend_file.as_deref(),
-                output_dir,plan,*allow_render,
+                expected_blend_sha256.as_deref(),output_dir,plan,*allow_render,
             ).map(|evidence|ActionResult{
                 success:true,tool:tool.clone(),
                 stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),

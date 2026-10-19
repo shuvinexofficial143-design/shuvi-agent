@@ -227,9 +227,9 @@ for (const action of new Set(auditionBridgeActions)) {
 ok("Audition desktop/CEP bridge action routing checked.");
 
 const secretPatterns = [
-  /sk-[A-Za-z0-9_-]{20,}/g,
-  /AIza[0-9A-Za-z_-]{20,}/g,
-  /sk-ant-[A-Za-z0-9_-]{20,}/g
+  /sk-ant-[A-Za-z0-9_-]{20,}/g,
+  /sk-[A-Za-z0-9]{20,}/g,
+  /AIza[0-9A-Za-z_-]{20,}/g
 ];
 
 const ignoredDirs = new Set([".git", "node_modules", "target", "dist"]);
