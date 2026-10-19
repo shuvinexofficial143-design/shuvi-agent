@@ -16,6 +16,8 @@ EXPECTED_OPS = {
     "render": ["render.configure", "scene.inspect", "render.execute"],
     "look": ["scene.inspect", "objects.list", "material.create_assign", "scene.inspect", "file.checkpoint"],
     "look_render": ["render.configure", "scene.inspect", "render.execute"],
+    "motion": ["objects.list", "animation.insert_keyframe", "animation.insert_keyframe",
+               "scene.inspect", "animation.set_frame", "file.checkpoint"],
 }
 
 
@@ -198,6 +200,38 @@ class AcceptanceRecipeTests(unittest.TestCase):
         self.assertEqual(cfg["expected_scene_revision"], REV)
         self.assertEqual(steps[-1]["request"]["payload"]["name"], scenario.STAGE3)
         self.assertEqual(steps[-1]["bindings"][0]["source_step"], "configured_scene")
+
+    def test_source_bound_motion_has_two_typed_keys_and_independent_final_frame(self):
+        steps = scenario.build("motion", REV)["steps"]
+        self.assertEqual(len(steps), 6)
+        self.assertEqual(steps[0]["request"]["payload"]["expected_revision"], REV)
+        self.assertEqual(steps[1]["request"]["payload"]["frame"], 1)
+        self.assertEqual(steps[2]["request"]["payload"]["frame"], 24)
+        self.assertEqual(steps[2]["request"]["payload"]["transform"]["location"],
+                         [0.0, 0.0, 1.5])
+        self.assertEqual(steps[1]["request"]["payload"]["interpolation"], "LINEAR")
+        self.assertEqual(steps[2]["request"]["payload"]["interpolation"], "LINEAR")
+        self.assertEqual(steps[2]["bindings"][0]["source_path"],
+                         ["data", "after", "object_id"])
+        self.assertEqual(steps[2]["bindings"][1]["source_path"],
+                         ["data", "after", "revision"])
+        self.assertEqual(steps[4]["request"]["operation"], "animation.set_frame")
+        self.assertEqual(steps[4]["bindings"][0]["source_step"], "post_keys_scene")
+        self.assertEqual(steps[-1]["request"]["payload"]["name"], scenario.MOTION)
+        self.assertEqual(steps[-1]["bindings"][0]["source_path"],
+                         ["data", "after", "revision"])
+
+    def test_motion_plan_cli_never_launches_and_requires_stage2_source(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(scenario.main(["--stage", "motion",
+                                            "--scene-revision", REV]), 0)
+        answer = json.loads(stdout.getvalue())
+        self.assertTrue(answer["requires_new_session_loading_verified_stage2"])
+        self.assertTrue(answer["supplementary_not_three_stage_acceptance"])
+        self.assertTrue(answer["requires_separate_native_owner_approval"])
+        self.assertFalse(answer["render_action_approval_required"])
+        self.assertEqual(answer["output_file"], scenario.MOTION)
 
     def test_stale_or_malformed_revision_is_rejected_before_plan(self):
         for bad in ("", "0" * 63, "g" * 64, "F" * 64, None, 1):

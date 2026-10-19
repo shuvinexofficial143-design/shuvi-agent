@@ -21,6 +21,7 @@ from shuvi_blender_agent.appearance import CreateDevice, MaterialAssign
 from shuvi_blender_agent.models import PageQuery
 from shuvi_blender_agent.plans import Plan, PlanRunner
 from shuvi_blender_agent.rendering import FileAction, RenderConfig
+from shuvi_blender_agent.animation import InsertKeyframe, SetFrame
 
 from shuvi_blender_acceptance import build
 
@@ -29,6 +30,7 @@ VALID_OPERATIONS = {
     "mesh.create", "mesh.inspect", "mesh.translate_vertices",
     "objects.list", "scene.inspect", "file.checkpoint",
     "render.configure", "render.execute", "device.create", "material.create_assign",
+    "animation.insert_keyframe", "animation.set_frame",
 }
 
 
@@ -52,6 +54,7 @@ class ContractController:
         self.calls = []
         self.saved = {}
         self.render_ready = False
+        self.current_frame = 1
         self.active_camera = next((n for n, o in self.objects.items()
                                    if o.get("type") == "CAMERA" and o.get("settings", {}).get("make_active")), None)
         self.key_light = next((n for n, o in self.objects.items() if o.get("type") == "LIGHT"), None)
@@ -79,6 +82,10 @@ class ContractController:
             TranslateVertices.parse(value)
         elif op == "objects.list":
             PageQuery.parse(value)
+        elif op == "animation.insert_keyframe":
+            InsertKeyframe.parse(value)
+        elif op == "animation.set_frame":
+            SetFrame.parse(value)
         elif op == "render.configure":
             RenderConfig.parse(value)
         elif op == "render.execute":
@@ -221,6 +228,38 @@ class ContractController:
                     "slot_material": payload["name"],
                 }
             }}, verified=True)
+        if op == "animation.insert_keyframe":
+            target = payload["target"]
+            obj = self.objects.get(target["expected_name"])
+            if (obj is None or obj.get("type") != "MESH"
+                    or obj["object_id"] != target["object_id"]
+                    or obj["revision"] != target["expected_revision"]):
+                return self._result_failure(request, "wrong or stale animation target")
+            keys = obj.setdefault("keyframes", {})
+            if payload["frame"] in keys:
+                return self._result_failure(request, "animation keyframe may not be overwritten")
+            keys[payload["frame"]] = {
+                "transform": copy.deepcopy(payload["transform"]),
+                "interpolation": payload["interpolation"],
+            }
+            obj["revision"] = digest({
+                "previous": obj["revision"], "keyframe": payload["frame"],
+                "transform": payload["transform"],
+            })
+            self._advance("insert verified keyframe")
+            return self._result(request, {"after": copy.deepcopy(obj)}, verified=True)
+        if op == "animation.set_frame":
+            if payload["expected_scene_revision"] != self.rev:
+                return self._result_failure(request, "stale animation scene revision")
+            self.current_frame = payload["frame"]
+            for obj in self.objects.values():
+                keyed = obj.get("keyframes", {}).get(self.current_frame)
+                if keyed:
+                    obj["transform"] = copy.deepcopy(keyed["transform"])
+            self._advance("set final Blender timeline frame")
+            return self._result(request, {
+                "after": {"revision": self.rev, "frames": {"current": self.current_frame}}
+            }, verified=True)
         if op == "file.checkpoint":
             if payload["expected_scene_revision"] != self.rev:
                 return self._result_failure(request, "stale checkpoint scene revision")
@@ -296,6 +335,63 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         snapshot["shader_revision"] = revision(snapshot)
         self.assertEqual(verify_shuvi41_copper_shader(snapshot),
                          snapshot["shader_revision"])
+
+    def test_real_upstream_plan_runner_executes_motion_keys_and_saved_timeline(self):
+        """Real upstream typed parsing and bindings; the controller is a fixture."""
+        from shuvi_blender_agent.animation import InsertKeyframe, SetFrame
+        recipe = build("motion", START_REV)
+        plan = Plan.from_dict(recipe)
+        self.assertEqual(len(plan.steps), 6)
+        prior = ContractController()
+        prior.objects["Shuvi41ProofMesh"] = {
+            "object_id": prior.session + ":mesh",
+            "name": "Shuvi41ProofMesh", "type": "MESH",
+            "revision": digest({"new": "mesh"}),
+            "geometry": {"vertices": [[0,0,0]], "faces": []},
+        }
+        report = PlanRunner(prior).run(plan)
+        self.assertEqual(len(prior.saved), 1)
+        self.assertEqual(prior.calls, [
+            "objects.list", "animation.insert_keyframe",
+            "animation.insert_keyframe", "scene.inspect",
+            "animation.set_frame", "file.checkpoint",
+        ])
+        self.assertEqual(prior.current_frame, 24)
+        keys = prior.saved["shuvi41-proof-motion.blend"]["geometry"]["Shuvi41ProofMesh"]["keyframes"]
+        self.assertEqual(set(keys), {1, 24})
+        self.assertEqual(keys[1]["transform"]["location"], [0.0, 0.0, 0.0])
+        self.assertEqual(keys[24]["transform"]["location"], [0.0, 0.0, 1.5])
+        self.assertEqual(keys[24]["interpolation"], "LINEAR")
+        self.assertEqual(report.results["checkpoint"].status, Status.VERIFIED)
+        self.assertIn("animation.insert_keyframe", prior.checked_operations)
+        self.assertIn("animation.set_frame", prior.checked_operations)
+        self.assertEqual(prior.saved["shuvi41-proof-motion.blend"]["geometry"]
+                         ["Shuvi41ProofMesh"]["transform"]["location"], [0.0, 0.0, 1.5])
+
+    def test_real_motion_runner_denies_missing_target_or_stale_first_key(self):
+        recipe = build("motion", START_REV)
+        empty = ContractController()
+        report = PlanRunner(empty).run(Plan.from_dict(recipe))
+        self.assertFalse(empty.saved)
+        self.assertNotIn("file.checkpoint", empty.calls)
+        self.assertNotEqual(report.results["checkpoint"].status
+                            if "checkpoint" in report.results else None, Status.VERIFIED)
+
+        class StaleSecondPose(ContractController):
+            def execute(self, request):
+                if request.operation == "animation.insert_keyframe" and request.payload["frame"] == 24:
+                    obj = self.objects["Shuvi41ProofMesh"]
+                    obj["revision"] = digest({"out_of_band": "object mutation"})
+                return super().execute(request)
+        stale = StaleSecondPose()
+        stale.objects["Shuvi41ProofMesh"] = {
+            "object_id": stale.session + ":mesh", "name": "Shuvi41ProofMesh",
+            "type": "MESH", "revision": digest({"new": "mesh"}),
+            "geometry": {"vertices": [[0,0,0]], "faces": []},
+        }
+        PlanRunner(stale).run(Plan.from_dict(recipe))
+        self.assertFalse(stale.saved)
+        self.assertNotIn("file.checkpoint", stale.calls)
 
     def test_actual_upstream_parser_accepts_three_fixed_production_recipes(self):
         for stage in ("model1", "model2", "render", "look", "look_render"):

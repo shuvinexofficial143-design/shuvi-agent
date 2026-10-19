@@ -56,6 +56,9 @@ test("reserved example output names enforce matching typed plan and SHA-pinned i
   assert.ok(lineage.includes('Some("shuvi41-proof-stage2.blend")=>Some("model2")'));
   assert.ok(lineage.includes('Some("shuvi41-proof-render.png")=>Some("render")'));
   assert.ok(lineage.includes('Some("shuvi41-proof-stage1.blend")=>Some("model1")'));
+  assert.ok(lineage.includes('Some("shuvi41-proof-motion.blend")=>Some("motion")'));
+  assert.ok(lineage.includes('"render"|"look"|"motion"=>Some("shuvi41-proof-stage2.blend")'));
+  assert.ok(lineage.includes("fn motion_reserved_output_requires_exact_keyframe_plan_and_stage2_sha_pinned_source("));
   assert.ok(lineage.includes("!exact_recipe_shape(plan,stage)"));
   assert.ok(lineage.includes('if stage=="look_render" && !persistent_session'));
   assert.ok(session.includes('crate::blender_plan_lineage::reserved_output_policy('));

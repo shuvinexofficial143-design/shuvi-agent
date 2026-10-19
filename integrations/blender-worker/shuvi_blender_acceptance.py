@@ -19,7 +19,7 @@ import json
 import re
 from uuid import uuid4
 
-STAGES = ("model1", "model2", "render", "look", "look_render")
+STAGES = ("model1", "model2", "render", "look", "look_render", "motion")
 REVISION = re.compile(r"[a-f0-9]{64}\Z", re.ASCII)
 MESH_NAME = "Shuvi41ProofMesh"
 STAGE1 = "shuvi41-proof-stage1.blend"
@@ -27,6 +27,7 @@ STAGE2 = "shuvi41-proof-stage2.blend"
 STAGE3 = "shuvi41-proof-render.png"
 LOOK = "shuvi41-proof-material.blend"
 MATERIAL_RENDER = "shuvi41-proof-material-render.png"
+MOTION = "shuvi41-proof-motion.blend"
 
 
 def step(name: str, operation: str, payload: dict, bindings: list | None = None) -> dict:
@@ -159,6 +160,47 @@ def _look(revision: str) -> list:
     ]
 
 
+def _motion(revision: str) -> list:
+    """Two real upstream object-transform keys from SHA-pinned Stage 2.
+
+    Six bounded typed requests: discover object, insert frames 1 and 24 with
+    optimistic object revisions, read fresh scene revision, seek final frame,
+    then checkpoint. Separate owner-approved session; no bpy or host launch.
+    """
+    return [
+        step("locate", "objects.list", {
+            "name_prefix": MESH_NAME, "object_type": "MESH",
+            "offset": 0, "limit": 5, "expected_revision": revision,
+        }),
+        step("pose_start", "animation.insert_keyframe", {
+            "target": {"object_id": "BOUND_FROM_LIST",
+                       "expected_name": MESH_NAME, "expected_revision": "BOUND_FROM_LIST"},
+            "frame": 1, "transform": transform(), "interpolation": "LINEAR",
+        }, [
+            bind("locate", ["data", "items", 0, "object_id"], ["target", "object_id"]),
+            bind("locate", ["data", "items", 0, "revision"], ["target", "expected_revision"]),
+        ]),
+        step("pose_end", "animation.insert_keyframe", {
+            "target": {"object_id": "BOUND_FROM_START",
+                       "expected_name": MESH_NAME, "expected_revision": "BOUND_FROM_START"},
+            "frame": 24,
+            "transform": {**transform(), "location": [0.0, 0.0, 1.5]},
+            "interpolation": "LINEAR",
+        }, [
+            bind("pose_start", ["data", "after", "object_id"], ["target", "object_id"]),
+            bind("pose_start", ["data", "after", "revision"], ["target", "expected_revision"]),
+        ]),
+        step("post_keys_scene", "scene.inspect", {}),
+        step("choose_final_frame", "animation.set_frame", {
+            "frame": 24, "expected_scene_revision": "BOUND_FROM_SCENE",
+        }, [bind("post_keys_scene", ["data", "revision"], ["expected_scene_revision"])]),
+        step("checkpoint", "file.checkpoint", {
+            "name": MOTION, "expected_scene_revision": "BOUND_FROM_FINAL_FRAME",
+        }, [bind("choose_final_frame", ["data", "after", "revision"],
+                 ["expected_scene_revision"])]),
+    ]
+
+
 def _render(revision: str, filename: str = STAGE3) -> list:
     # Model1 saves an active camera and Model2 adds a key light.
     # This stage loads their checkpoint via a new separately approved session.
@@ -187,6 +229,7 @@ def build(stage: str, expected_scene_revision: str) -> dict:
         "render": _render,
         "look": _look,
         "look_render": lambda revision: _render(revision, MATERIAL_RENDER),
+        "motion": _motion,
     }[stage](expected_scene_revision)
     assert 1 <= len(steps) <= 6
     return {"timeout_ms": 90000, "steps": steps}
@@ -210,9 +253,10 @@ def main(argv: list[str] | None = None) -> int:
         "must_use_current_session_inspect_revision": True,
         "render_action_approval_required": args.stage in ("render", "look_render"),
         "output_file": {"model1": STAGE1, "model2": STAGE2, "render": STAGE3,
-                        "look": LOOK, "look_render": MATERIAL_RENDER}[args.stage],
-        "requires_new_session_loading_verified_stage2": args.stage in ("render", "look"),
-        "supplementary_not_three_stage_acceptance": args.stage in ("look", "look_render"),
+                        "look": LOOK, "look_render": MATERIAL_RENDER,
+                        "motion": MOTION}[args.stage],
+        "requires_new_session_loading_verified_stage2": args.stage in ("render", "look", "motion"),
+        "supplementary_not_three_stage_acceptance": args.stage in ("look", "look_render", "motion"),
         "requires_new_session_loading_verified_material": args.stage == "look_render",
         "plan": plan,
     }, separators=(",", ":")))

@@ -11,6 +11,7 @@ const STAGE2:&str="shuvi41-proof-stage2.blend";
 const RENDER:&str="shuvi41-proof-render.png";
 const LOOK:&str="shuvi41-proof-material.blend";
 const MATERIAL_RENDER:&str="shuvi41-proof-material-render.png";
+const MOTION:&str="shuvi41-proof-motion.blend";
 
 fn binding(source:&str,source_path:Value,target_path:Value)->Value{
     json!({"source_step":source,"source_path":source_path,"target_path":target_path})
@@ -114,6 +115,47 @@ fn look()->Vec<Value>{
         }),vec![binding("post_look_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
     ]
 }
+// Optional source-bound, two-key object-animation proof. The motion stage
+// is NOT part of the original three-stage modeling/render acceptance chain.
+fn motion(rev:&str)->Vec<Value>{
+    vec![
+        step("locate","objects.list",json!({
+            "name_prefix":MESH,"object_type":"MESH",
+            "offset":0,"limit":5,"expected_revision":rev,
+        }),vec![]),
+        step("pose_start","animation.insert_keyframe",json!({
+            "target":{"object_id":"BOUND_FROM_LIST","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_LIST"},
+            "frame":1,"transform":transform(),"interpolation":"LINEAR",
+        }),vec![
+            binding("locate",json!(["data","items",0,"object_id"]),json!(["target","object_id"])),
+            binding("locate",json!(["data","items",0,"revision"]),json!(["target","expected_revision"])),
+        ]),
+        step("pose_end","animation.insert_keyframe",json!({
+            "target":{"object_id":"BOUND_FROM_START","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_START"},
+            "frame":24,"transform":json!({
+                "location":[0.0,0.0,1.5],"rotation_euler":[0.0,0.0,0.0],
+                "scale":[1.0,1.0,1.0]
+            }),"interpolation":"LINEAR",
+        }),vec![
+            binding("pose_start",json!(["data","after","object_id"]),json!(["target","object_id"])),
+            binding("pose_start",json!(["data","after","revision"]),json!(["target","expected_revision"])),
+        ]),
+        step("post_keys_scene","scene.inspect",json!({}),vec![]),
+        step("choose_final_frame","animation.set_frame",json!({
+            "frame":24,"expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![
+            binding("post_keys_scene",json!(["data","revision"]),json!(["expected_scene_revision"])),
+        ]),
+        step("checkpoint","file.checkpoint",json!({
+            "name":MOTION,"expected_scene_revision":"BOUND_FROM_FINAL_FRAME",
+        }),vec![
+            binding("choose_final_frame",json!(["data","after","revision"]),
+                json!(["expected_scene_revision"])),
+        ]),
+    ]
+}
 fn render(rev:&str,filename:&str)->Vec<Value>{
     vec![
         step("configure","render.configure",json!({
@@ -138,6 +180,7 @@ pub(crate) fn expected_plan(stage:&str,revision:&str)->Option<Value>{
         "render"=>render(revision,RENDER),
         "look_render"=>render(revision,MATERIAL_RENDER),
         "look"=>look(),
+        "motion"=>motion(revision),
         _=>return None,
     };
     Some(json!({"timeout_ms":90_000,"steps":steps}))
@@ -152,13 +195,14 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
         return Err("Native Blender recipe needs a fresh lowercase scene revision from session inspect.".into());
     }
     let plan=expected_plan(stage,revision)
-        .ok_or("Native Blender recipe only accepts model1, model2, look, render or look_render.")?;
+        .ok_or("Native Blender recipe only accepts model1, model2, look, render, look_render or motion.")?;
     let (output,requires_render)=match stage{
         "model1"=>(STAGE1,false),
         "model2"=>(STAGE2,false),
         "render"=>(RENDER,true),
         "look_render"=>(MATERIAL_RENDER,true),
         "look"=>(LOOK,false),
+        "motion"=>(MOTION,false),
         _=>unreachable!("expected_plan already filtered known stages"),
     };
     if serde_json::to_vec(&plan).map_err(|_|"Cannot serialize typed Blender recipe.")?.len()>65536{
@@ -181,8 +225,8 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
         "render_action_approval_required":requires_render,
         "must_use_current_session_inspect_revision":true,
         "requires_separate_native_owner_approval":true,
-        "requires_new_session_loading_verified_stage2":stage=="render" || stage=="look",
-        "supplementary_not_three_stage_acceptance":stage=="look" || stage=="look_render",
+        "requires_new_session_loading_verified_stage2":stage=="render" || stage=="look" || stage=="motion",
+        "supplementary_not_three_stage_acceptance":stage=="look" || stage=="look_render" || stage=="motion",
         "requires_new_session_loading_verified_material":stage=="look_render",
         "action_approved":false,
         "blender_launch_performed":false,
@@ -204,6 +248,7 @@ mod tests{
             ("render",3,"render.execute",true),
             ("look",5,"file.checkpoint",false),
             ("look_render",3,"render.execute",true),
+            ("motion",6,"file.checkpoint",false),
         ]{
             let r=build(stage,&"a".repeat(64)).unwrap();
             assert_eq!(r["mode"],"PLAN_ONLY_NO_BLENDER_LAUNCH");
@@ -215,16 +260,16 @@ mod tests{
             assert_eq!(r["plan_executed"],false);
             assert_eq!(r["real_blender_runtime_verified"],false);
             assert_eq!(r["requires_separate_native_owner_approval"],true);
-            assert_eq!(r["requires_new_session_loading_verified_stage2"],stage=="render" || stage=="look");
+            assert_eq!(r["requires_new_session_loading_verified_stage2"],stage=="render" || stage=="look" || stage=="motion");
             assert_eq!(r["requires_new_session_loading_verified_material"],stage=="look_render");
-            assert_eq!(r["supplementary_not_three_stage_acceptance"],stage=="look" || stage=="look_render");
+            assert_eq!(r["supplementary_not_three_stage_acceptance"],stage=="look" || stage=="look_render" || stage=="motion");
         }
     }
     #[test]
     fn fresh_action_and_request_ids_never_repeat_within_or_across_plans(){
         let mut ids=HashSet::new();
         for _ in 0..3{
-            for stage in ["model1","model2","render","look","look_render"]{
+            for stage in ["model1","model2","render","look","look_render","motion"]{
                 let recipe=build(stage,&"b".repeat(64)).unwrap();
                 for step in recipe["plan"]["steps"].as_array().unwrap(){
                     for key in ["request_id","command_id"]{
@@ -238,7 +283,7 @@ mod tests{
     }
     #[test]
     fn result_bindings_reference_prior_steps_with_valid_destinations(){
-        for stage in ["model1","model2","render","look","look_render"]{
+        for stage in ["model1","model2","render","look","look_render","motion"]{
             let recipe=build(stage,&"c".repeat(64)).unwrap();
             let mut seen=HashSet::new();
             for step in recipe["plan"]["steps"].as_array().unwrap(){
@@ -298,6 +343,27 @@ mod tests{
         assert_eq!(r["plan"]["steps"][2]["bindings"][0]["source_step"],"configured_scene");
         assert!(crate::blender_plan_lineage::receipt_matches(
             &json!({"approved_plan_lineage":r["plan_preview_lineage"]}),"render").is_err());
+    }
+    #[test]
+    fn optional_motion_proves_two_cas_keyframes_before_bound_save(){
+        let r=build("motion",&"a".repeat(64)).unwrap();
+        assert_eq!(r["plan_preview_lineage"]["acceptance_stage"],"motion");
+        assert_eq!(r["output_file"],MOTION);
+        assert_eq!(r["render_action_approval_required"],false);
+        assert_eq!(r["requires_new_session_loading_verified_stage2"],true);
+        assert_eq!(r["supplementary_not_three_stage_acceptance"],true);
+        let p=&r["plan"]["steps"];
+        assert_eq!(p.as_array().unwrap().len(),6);
+        assert_eq!(p[0]["request"]["payload"]["expected_revision"],"a".repeat(64));
+        assert_eq!(p[1]["request"]["payload"]["frame"],1);
+        assert_eq!(p[2]["request"]["payload"]["frame"],24);
+        assert_eq!(p[2]["request"]["payload"]["transform"]["location"],json!([0.0,0.0,1.5]));
+        assert_eq!(p[2]["bindings"][1]["source_path"],json!(["data","after","revision"]));
+        assert_eq!(p[4]["request"]["operation"],"animation.set_frame");
+        assert_eq!(p[5]["bindings"][0]["source_path"],json!(["data","after","revision"]));
+        let mut tampered=r["plan"].clone();
+        tampered["steps"][2]["request"]["payload"]["frame"]=json!(30);
+        assert_eq!(blender_plan_lineage::derive(&tampered).unwrap()["acceptance_stage"],"other");
     }
     #[test]
     fn acceptance_modeling_plan_contains_expected_mesh_edit_and_stage_files(){

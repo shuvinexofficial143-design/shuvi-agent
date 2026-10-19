@@ -103,6 +103,38 @@ fn valid_stage(steps:&[&Value],ops:&[String])->&'static str{
                 && checkpoint.get("name").and_then(Value::as_str)==Some("shuvi41-proof-material.blend")
                 && checkpoint_binding(steps[4],"post_look_scene"){"look"}else{"other"}
         },
+        ["objects.list","animation.insert_keyframe","animation.insert_keyframe",
+         "scene.inspect","animation.set_frame","file.checkpoint"]=>{
+            let locate=payload(steps,0);
+            let start=payload(steps,1);
+            let end=payload(steps,2);
+            let frame=payload(steps,4);
+            let checkpoint=payload(steps,5);
+            if name(steps[0]).ok()==Some("locate")
+                && locate.get("name_prefix").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
+                && locate.get("object_type").and_then(Value::as_str)==Some("MESH")
+                && locate.get("offset").and_then(Value::as_u64)==Some(0)
+                && locate.get("limit").and_then(Value::as_u64)==Some(5)
+                && locate.get("expected_revision").and_then(Value::as_str)
+                    .is_some_and(|v|v.len()==64&&v.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase()))
+                && name(steps[1]).ok()==Some("pose_start")
+                && name(steps[2]).ok()==Some("pose_end")
+                && start.get("frame").and_then(Value::as_u64)==Some(1)
+                && end.get("frame").and_then(Value::as_u64)==Some(24)
+                && start.pointer("/target/expected_name").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
+                && end.pointer("/target/expected_name").and_then(Value::as_str)==Some("Shuvi41ProofMesh")
+                && has_binding(steps[1],"locate",json!(["data","items",0,"object_id"]),json!(["target","object_id"]))
+                && has_binding(steps[1],"locate",json!(["data","items",0,"revision"]),json!(["target","expected_revision"]))
+                && has_binding(steps[2],"pose_start",json!(["data","after","object_id"]),json!(["target","object_id"]))
+                && has_binding(steps[2],"pose_start",json!(["data","after","revision"]),json!(["target","expected_revision"]))
+                && name(steps[3]).ok()==Some("post_keys_scene")
+                && name(steps[4]).ok()==Some("choose_final_frame")
+                && frame.get("frame").and_then(Value::as_u64)==Some(24)
+                && has_binding(steps[4],"post_keys_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))
+                && checkpoint.get("name").and_then(Value::as_str)==Some("shuvi41-proof-motion.blend")
+                && has_binding(steps[5],"choose_final_frame",json!(["data","after","revision"]),json!(["expected_scene_revision"]))
+                {"motion"}else{"other"}
+        },
         ["render.configure","scene.inspect","render.execute"]=>{
             let config=payload(steps,0);
             if config.get("width").and_then(Value::as_u64)==Some(64)
@@ -132,6 +164,11 @@ fn valid_stage(steps:&[&Value],ops:&[String])->&'static str{
 fn exact_recipe_shape(plan:&Value,stage:&str)->bool{
     let revision=if stage=="look"{
         "a".repeat(64) // the look plan has no embedded initial revision
+    }else if stage=="motion"{
+        match plan.pointer("/steps/0/request/payload/expected_revision").and_then(Value::as_str){
+            Some(s) if s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase())=>s.to_owned(),
+            _=>return false
+        }
     }else{
         match plan.pointer("/steps/0/request/payload/expected_scene_revision").and_then(Value::as_str){
             Some(s) if s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase())=>s.to_owned(),
@@ -299,6 +336,7 @@ pub(crate) fn reserved_output_policy(
             Some("shuvi41-proof-render.png")=>Some("render"),
             Some("shuvi41-proof-material.blend")=>Some("look"),
             Some("shuvi41-proof-material-render.png")=>Some("look_render"),
+            Some("shuvi41-proof-motion.blend")=>Some("motion"),
             _=>None
         };
         if let Some(expected)=matched {
@@ -321,7 +359,7 @@ pub(crate) fn reserved_output_policy(
         return Err("Fixed second Blender stage requires verified Stage 1 in the same persistent session.".into());
     }
     let source_name=match stage{
-        "render"|"look"=>Some("shuvi41-proof-stage2.blend"),
+        "render"|"look"|"motion"=>Some("shuvi41-proof-stage2.blend"),
         "look_render"=>Some("shuvi41-proof-material.blend"),
         _=>None
     };
@@ -358,9 +396,29 @@ mod tests{
         assert!(receipt_matches(&json!({"approved_plan_lineage":forged}),"render").is_err());
     }
     #[test]
+    fn motion_reserved_output_requires_exact_keyframe_plan_and_stage2_sha_pinned_source(){
+        let rev="c".repeat(64);
+        let plan=crate::blender_acceptance_recipe::expected_plan("motion",&rev).unwrap();
+        let lineage=derive(&plan).unwrap();
+        assert_eq!(lineage["acceptance_stage"],"motion");
+        reserved_output_policy(&plan,&lineage,Some("/proofs/shuvi41-proof-stage2.blend"),
+            false,true).unwrap();
+        assert!(reserved_output_policy(&plan,&lineage,None,false,true).is_err());
+        assert!(reserved_output_policy(&plan,&lineage,Some("/proofs/different.blend"),false,true).is_err());
+        let mut altered=plan.clone();
+        altered["steps"][2]["request"]["payload"]["frame"]=json!(99);
+        assert_eq!(derive(&altered).unwrap()["acceptance_stage"],"other");
+        assert!(reserved_output_policy(&altered,&derive(&altered).unwrap(),
+            Some("/proofs/shuvi41-proof-stage2.blend"),false,true).is_err());
+        let mut aliased=plan.clone();
+        aliased["steps"][5]["request"]["payload"]["name"]=json!("shuvi41-proof-motion.blend.");
+        assert!(reserved_output_policy(&aliased,&derive(&aliased).unwrap(),
+            Some("/proofs/shuvi41-proof-stage2.blend"),false,true).is_err());
+    }
+    #[test]
     fn strict_template_rejects_hidden_mutations_and_unsafe_material_render_substitutions(){
         let revision="b".repeat(64);
-        for stage in ["model1","model2","render","look","look_render"]{
+        for stage in ["model1","model2","render","look","look_render","motion"]{
             let original=crate::blender_acceptance_recipe::expected_plan(stage,&revision).unwrap();
             assert_eq!(derive(&original).unwrap()["acceptance_stage"],stage);
             let mut altered=original.clone();
