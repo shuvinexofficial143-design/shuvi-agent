@@ -210,10 +210,24 @@ pub(crate) fn expected_plan(stage:&str,revision:&str)->Option<Value>{
     Some(json!({"timeout_ms":90_000,"steps":steps}))
 }
 
+/// Single native ToolAction parser/build allowlist. Keep dispatch and recipe
+/// production in sync: supplementary stages are still plan-only and require
+/// separately approved source-pinned sessions and render permission.
+pub(crate) const SUPPORTED_STAGES:[&str;8]=[
+    "model1","model2","render","look","look_render",
+    "motion","motion_frame1","motion_frame24",
+];
+pub(crate) fn supports_stage(stage:&str)->bool{
+    SUPPORTED_STAGES.contains(&stage)
+}
+
 /// A plan-only preview: all UUIDs are fresh on each call, and callers must
 /// explicitly request a distinct owner-approved BlenderSessionPlan action.
 /// This never opens a session or asserts prior native action authorization.
 pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
+    if !supports_stage(stage){
+        return Err("Native Blender recipe stage is not one of eight fixed approved recipes.".into());
+    }
     if revision.len()!=64 ||
         !revision.bytes().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase()){
         return Err("Native Blender recipe needs a fresh lowercase scene revision from session inspect.".into());
@@ -268,7 +282,25 @@ mod tests{
     use super::*;
     use std::collections::HashSet;
     #[test]
-    fn three_native_recipes_match_approved_stage_lineage_without_execution(){
+    fn native_toolaction_stage_allowlist_is_exactly_the_eight_real_recipes(){
+        assert_eq!(SUPPORTED_STAGES,[
+            "model1","model2","render","look","look_render",
+            "motion","motion_frame1","motion_frame24",
+        ]);
+        for stage in SUPPORTED_STAGES{
+            assert!(supports_stage(stage));
+            let receipt=build(stage,&"f".repeat(64)).unwrap();
+            assert_eq!(receipt["stage"],stage);
+            assert_eq!(receipt["action_approved"],false);
+            assert_eq!(receipt["plan_executed"],false);
+        }
+        for wrong in ["","Motion","motion_frame25","arbitrary.python.run","render.execute"]{
+            assert!(!supports_stage(wrong));
+            assert!(build(wrong,&"f".repeat(64)).is_err());
+        }
+    }
+    #[test]
+    fn eight_native_recipes_match_approved_stage_lineage_without_execution(){
         for (stage,count,last,render) in [
             ("model1",6,"file.checkpoint",false),
             ("model2",6,"file.checkpoint",false),

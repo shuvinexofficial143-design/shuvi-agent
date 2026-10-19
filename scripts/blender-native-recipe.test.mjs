@@ -28,6 +28,32 @@ test("read-only acceptance recipe is surfaced through native typed tool action w
   assert.match(rust,/"real_blender_runtime_verified":false/);
 });
 
+test("native ToolAction parser now exposes every built-in model, material and motion recipe",()=>{
+  const stages=[
+    "model1","model2","render","look","look_render",
+    "motion","motion_frame1","motion_frame24",
+  ];
+  assert.ok(lib.includes("if !blender_acceptance_recipe::supports_stage(&stage)"));
+  assert.ok(rust.includes("pub(crate) const SUPPORTED_STAGES:[&str;8]"));
+  assert.ok(rust.includes("pub(crate) fn supports_stage(stage:&str)->bool"));
+  assert.ok(rust.includes("if !supports_stage(stage)"));
+  const prompt=lib.slice(lib.indexOf("- blender_build_acceptance_recipe:"),
+    lib.indexOf("- blender_review_acceptance_chain:"));
+  for(const stage of stages){
+    assert.ok(prompt.includes(stage), "agent lacks recipe discovery: "+stage);
+    assert.ok(rust.includes('"'+stage+'"'), "missing builder stage: "+stage);
+  }
+  const parser=lib.slice(lib.indexOf('"blender_build_acceptance_recipe" => {'),
+    lib.indexOf('"blender_review_acceptance_chain" => {'));
+  assert.ok(parser.includes("blender_acceptance_recipe::supports_stage(&stage)"));
+  assert.ok(parser.includes("RiskLevel::Low"));
+  assert.ok(parser.includes("New SHA-pinned source sessions"));
+  assert.ok(lib.includes("fn every_fixed_blender_recipe_prepares_a_low_risk_plan_only_native_action("));
+  assert.ok(lib.includes("fn unsupported_blender_recipes_and_uninspected_revisions_fail_before_approval("));
+  assert.ok(!parser.includes('matches!(stage.as_str(),"model1"|"model2"|"render")'),
+    "three-stage-only native dispatch would strand material and motion plans");
+});
+
 test("native recipe is fixed, typed, bounded and never invokes a process or reads user files",()=>{
   assert.doesNotMatch(rust,/Command::new|std::process|std::fs|subprocess|bpy|eval\(/);
   assert.match(rust,/Uuid::new_v4\(\)/);
@@ -47,7 +73,7 @@ test("native recipe is fixed, typed, bounded and never invokes a process or read
 
 test("native Rust tests explicitly cover stage shape, dynamic UUIDs, stale revision and bindings",()=>{
   for(const name of [
-    "three_native_recipes_match_approved_stage_lineage_without_execution",
+    "eight_native_recipes_match_approved_stage_lineage_without_execution",
     "fresh_action_and_request_ids_never_repeat_within_or_across_plans",
     "result_bindings_reference_prior_steps_with_valid_destinations",
     "invalid_or_stale_shaped_revision_and_unrecognized_stages_denied",

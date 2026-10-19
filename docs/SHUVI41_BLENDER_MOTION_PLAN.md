@@ -180,3 +180,24 @@ success flags if the final offline SHA/pixel recheck fails. Separately,
 because read-only *reverification* itself starts no new Blender process.
 Artifacts are seven-day disposable CI proof files, not desktop deployment or
 native Shuvi owner-action approval.
+
+## Native eight-stage ToolAction dispatcher parity
+
+A read-only source audit after the successful disposable Windows acceptance
+identified a native dispatch mismatch: the Rust recipe builder already
+implemented all eight fixed recipes, but Shuvi's user-facing
+`blender_build_acceptance_recipe` proposal gate still accepted only
+`model1`, `model2`, and `render`. That gate is now unified with the
+builder's explicit eight-stage allowlist. Native ToolAction routing and the
+agent's advertised schema now support `look`, `look_render`,
+`motion`, `motion_frame1`, and `motion_frame24` as well.
+
+Native Rust regressions prepare all eight plan-only ToolActions through the
+**ordinary permission-staging entry point** and confirm their low-risk
+read-only classification, canonical scene-revision checks and rejection of
+unsupported stages. No plan is auto-approved or executed by the test.
+Rendering still requires separately approved render-enabled sessions/actions,
+and supplementary stage inputs must remain SHA-pinned and independently
+verified. The disposable real-Blender host CI reruns on native dispatcher
+changes, but it does **not** impersonate a Shuvi Desktop owner's approval;
+the user's actual Desktop/Adobe acceptance remains a distinct live step.

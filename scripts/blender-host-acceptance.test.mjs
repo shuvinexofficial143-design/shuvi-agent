@@ -97,6 +97,7 @@ test("real Windows Blender CI is tied to the triggering SHA and reruns when work
     ".github/workflows/blender-upstream-contract-ci.yml",
     "'integrations/blender-worker/**'",
     "'src-tauri/src/blender_*.rs'",
+    "src-tauri/src/lib.rs",
     "'scripts/blender-*.test.mjs'",
   ]) assert.ok(real.includes(path), "missing host CI change trigger: "+path);
   for(const proof of [

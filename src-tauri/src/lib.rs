@@ -215,7 +215,7 @@ Available tools:
 - blender_session_inspect: {"session_id":"exact UUID returned by blender_session_start"} — read-only authenticated health and scene revision.
 - blender_session_objects: {"session_id":"exact UUID","expected_scene_revision":"fresh scene_revision from inspect","offset":0,"limit":5,"name_prefix":"","object_type":null} — read-only authenticated paginated discovery, at most 5 object IDs/names/types/revisions with no edits; re-inspect if scene changes.
 - blender_session_plan: {"session_id":"exact UUID","expected_scene_revision":"exact scene_revision from blender_session_inspect","allow_render":false,"plan":{"timeout_ms":90000,"steps":[...]}} — HIGH RISK: up to six typed Blender operations ending in verified .blend checkpoint or PNG; render needs action-level approval and prior session policy ceiling; never automatically retry.
-- blender_build_acceptance_recipe: {"stage":"model1|model2|render","expected_scene_revision":"exact fresh sha256 from blender_session_inspect"} — read-only native plan-only recipe generator, no Blender launch or action approval. To execute, submit the returned plan through a DISTINCT owner-approved blender_session_plan with same current session/revision. Render requires a NEW source-hash-verified session.
+- blender_build_acceptance_recipe: {"stage":"model1|model2|render|look|look_render|motion|motion_frame1|motion_frame24","expected_scene_revision":"exact fresh sha256 from blender_session_inspect"} — read-only native plan-only recipe generator, no Blender launch or action approval. To execute, submit the returned plan through a DISTINCT owner-approved blender_session_plan with same current session/revision. Render requires a NEW source-hash-verified session.
 - blender_review_acceptance_chain: {"approved_output_dir":"existing absolute output folder","receipts":[{...native Blender stage1 receipt...},{...native Blender stage2 receipt...},{...native Blender render receipt...}]} — read-only 3-stage on-disk SHA/mesh/session consistency review; does NOT prove historic action approval, that render loaded stage2, or live creative quality
 - blender_verify_artifact_manifest: {"approved_output_dir":"existing absolute folder containing exact output","manifest":{"schema_version":1,"producer":"shuvi41.blender","source_action_id":"canonical UUID","artifact":{...},"evidence":{...},"handoff":{...}}} — read-only, re-hash current .blend/PNG bytes and confirm path within the caller-selected output folder; prior approval/reopen are NOT re-authenticated and no import occurs
 - blender_session_close: {"session_id":"exact UUID"} — retire only that owned process and its authenticated Blender child.
@@ -3814,8 +3814,8 @@ fn stage_tool(
         }
         "blender_build_acceptance_recipe" => {
             let stage=arg_string(&proposal.arguments,"stage")?;
-            if !matches!(stage.as_str(),"model1"|"model2"|"render") {
-                return Err("Native Blender plan recipe stage must be model1, model2 or render.".into());
+            if !blender_acceptance_recipe::supports_stage(&stage) {
+                return Err("Native Blender recipe stage must be model1, model2, render, look, look_render, motion, motion_frame1 or motion_frame24.".into());
             }
             let expected_scene_revision=arg_string(&proposal.arguments,"expected_scene_revision")?;
             if expected_scene_revision.len()!=64 ||
@@ -3824,7 +3824,7 @@ fn stage_tool(
             }
             (ToolAction::BlenderBuildAcceptanceRecipe{stage,expected_scene_revision},
                 "Build Blender acceptance plan preview".into(),
-                "Read only: generate exact typed, bounded model1/model2/render plan with fresh UUIDs. Never starts Blender, edits a project or grants approval. A separate high-risk approved blender_session_plan action is always required.".into(),
+                "Read only: generate one of eight fixed typed modeling/material/motion/frame-render plan previews with fresh UUIDs. Never launches Blender or grants approval. New SHA-pinned source sessions and separate high-risk blender_session_plan approvals (including render permission where required) remain mandatory.".into(),
                 RiskLevel::Low)
         }
         "blender_review_acceptance_chain" => {
@@ -19946,5 +19946,56 @@ mod task_graph_transport_tests {
         let proposal = parse_tool_proposal(&text).expect("known typed tool");
         assert!(proposal.plan.is_none());
         assert!(proposal.task_graph.is_some());
+    }
+}
+
+#[cfg(test)]
+mod blender_recipe_native_dispatch_regressions {
+    use super::*;
+
+    #[test]
+    fn every_fixed_blender_recipe_prepares_a_low_risk_plan_only_native_action() {
+        let state=ActionState::default();
+        let revision="a".repeat(64);
+        for stage in blender_acceptance_recipe::SUPPORTED_STAGES {
+            let proposal=parse_tool_proposal(&json!({
+                "tool":"blender_build_acceptance_recipe",
+                "arguments":{"stage":stage,"expected_scene_revision":revision.as_str()}
+            }).to_string()).expect("accepted Blender tool proposal");
+            let pending=stage_tool(proposal,None,&state).expect("native stage dispatch");
+            assert_eq!(pending.kind,"blender_build_acceptance_recipe");
+            assert!(matches!(pending.risk,RiskLevel::Low));
+            assert!(pending.detail.contains("separate high-risk blender_session_plan"));
+            let held=state.pending.lock().unwrap();
+            let action=&held.get(&pending.id).expect("prepared action").action;
+            match action {
+                ToolAction::BlenderBuildAcceptanceRecipe{
+                    stage:actual,expected_scene_revision:actual_revision
+                }=>{
+                    assert_eq!(actual.as_str(),stage);
+                    assert_eq!(actual_revision,&revision);
+                }
+                _=>panic!("Blender recipe parser produced an execution action"),
+            }
+        }
+        assert_eq!(state.pending.lock().unwrap().len(),8);
+    }
+
+    #[test]
+    fn unsupported_blender_recipes_and_uninspected_revisions_fail_before_approval() {
+        let state=ActionState::default();
+        for stage in ["","Motion","motion_frame25","arbitrary.python.run"] {
+            let proposal=parse_tool_proposal(&json!({
+                "tool":"blender_build_acceptance_recipe",
+                "arguments":{"stage":stage,"expected_scene_revision":"b".repeat(64)}
+            }).to_string()).expect("recognized tool name");
+            assert!(stage_tool(proposal,None,&state).is_err());
+        }
+        let proposal=parse_tool_proposal(&json!({
+            "tool":"blender_build_acceptance_recipe",
+            "arguments":{"stage":"motion","expected_scene_revision":"B".repeat(64)}
+        }).to_string()).expect("recognized tool name");
+        assert!(stage_tool(proposal,None,&state).is_err());
+        assert!(state.pending.lock().unwrap().is_empty());
     }
 }
