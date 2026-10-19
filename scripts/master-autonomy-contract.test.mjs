@@ -100,6 +100,16 @@ test('Successful audited launch selects only a new, separately approved observat
   assert.equal(isSimpleNotepadLaunch('notepad'), true);
   assert.equal(isSimpleNotepadLaunch('Please open Notepad'), true);
   assert.equal(isSimpleNotepadLaunch('नोटपैड खोलो'), true);
+  for(const phrase of ['notepad open karo','Notepad open kar do','notepad launch karo',
+    'notepad start karo','notepad kholo','नोटपैड ओपन करो']){
+    assert.equal(isSimpleNotepadLaunch(phrase),true,phrase);
+    assert.equal(admitDashboardMasterProposal(phrase,propose('launch_app',{program:'notepad.exe',args:[]})).ok,true,phrase);
+    assert.deepEqual(nextMasterReadbackProposal(phrase,'launch_app'),{tool:'ui_windows',arguments:{}},phrase);
+    assert.equal(admitDashboardMasterProposal(phrase,propose('launch_app',{program:'calc.exe',args:[]})).ok,false,phrase);
+  }
+  for(const phrase of ['notepad open karo aur file save karo','notepad open karo and write password',
+    'notepad open karo then launch calc.exe','notepad open karo aur edit karo'])
+    assert.equal(isSimpleNotepadLaunch(phrase),false,phrase);
   assert.equal(isSimpleNotepadLaunch('Open Notepad and edit'), false, 'additional operations disqualify simple launch');
   assert.equal(isSimpleNotepadLaunch('Create a file in Notepad'), false, 'additional operations disqualify simple launch');
   assert.equal(isSimpleNotepadLaunch(''), false);

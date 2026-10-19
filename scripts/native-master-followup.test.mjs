@@ -1376,6 +1376,27 @@ test("Notepad: Hindi simple launch triggers deterministic readback",async()=>{
   assert.equal(s.chatInputs.length,1);
 });
 
+test("Notepad: actual Windows Hinglish 'notepad open karo' gets a separate readback without a second AI call",async()=>{
+  const notepadLaunch={content:JSON.stringify({tool:"launch_app",arguments:{program:"notepad.exe"}}),
+    provider:"xkiro",model:"model/master",tool_proposal:{tool:"launch_app",arguments:{program:"notepad.exe"}}};
+  const s=setup({first:notepadLaunch,uuidPreparedIds:true,stdoutFor:{ui_windows:JSON.stringify([
+    {Name:"Untitled - Notepad",ProcessName:"notepad.exe",ProcessId:4952,NativeWindowHandle:5678}
+  ])}});
+  await until(()=>s.transport.connected(),"native ready");
+  await s.transport.send("notepad open karo","notepad-hinglish-open",0);
+  s.allow.listeners.get("click")();
+  await until(()=>s.staged.length===2,"model-free separately approved window inventory");
+  assert.equal(s.staged[1].proposal.tool,"ui_windows");
+  assert.equal(s.chatInputs.length,1,"the second native approval must not spend another xKiro request");
+  await until(()=>s.allow.disabled===false,"readback approval ready");
+  s.allow.listeners.get("click")();
+  await until(()=>s.transport.getReplies("notepad-hinglish-open")[0]?.includes("OPENING VERIFIED"),
+    "strict Notepad evidence acceptance");
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
+  assert.equal(s.chatInputs.length,1);
+  assert.match(s.transport.getReplies("notepad-hinglish-open")[0],/PID 4952/);
+});
+
 test("Notepad: ambiguous window does not trigger completion",async()=>{
   const notepadLaunch={content:JSON.stringify({tool:"launch_app",arguments:{program:"notepad.exe"}}),
     provider:"xkiro",model:"model/master",tool_proposal:{tool:"launch_app",arguments:{program:"notepad.exe"}}};

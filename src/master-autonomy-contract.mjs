@@ -12,7 +12,7 @@ const PROJECT = /\b(?:project|projeckt|projct|projectfile)\b|प्रोजे�
 const CREATE = /\b(?:create|make|new|banao|banana|banado|bnado|naya|nayi)\b|नया|नई|बनाओ|बनाना|बना\s*दो/iu;
 const EXPORT = /\b(?:export|render|final\s*video)\b|एक्सपोर्ट|रेंडर|फाइनल\s*वीडियो/iu;
 const EDIT = /\b(?:edit|editing|trim|captions?|transitions?|colour|color|timeline|b-?roll|vfx)\b|एडिट|कैप्शन|टाइमलाइन|ट्रांज़िशन|कटिंग/iu;
-const OPEN = /\b(?:open|launch|start|kholo|kholna|kholdo|khol\s*do)\b|खोलो|खोलना|खोल\s*दो/iu;
+const OPEN = /\b(?:open|launch|start|kholo|kholna|kholdo|khol\s*do)\b|खोलो|खोलना|खोल\s*दो|ओपन/iu;
 const OBJ = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const TOOLS = Object.freeze({
   premiere: /^premiere_/,
@@ -60,8 +60,8 @@ export function initialMasterInspectionDAG(goal) {
 
 // Notepad deterministic readback contract for simple launch verification
 // Returns a ui_windows proposal after an audited launch_app for Notepad
-const SIMPLE_NOTEPAD_ENGLISH = /^(?:(?:please\s+)?(?:open|launch|start)\s+)?notepad(?:\s+(?:kholo|khol\s*do|kholdo))?$/iu;
-const SIMPLE_NOTEPAD_HINDI = /^(?:कृपया\s+)?नोटपैड\s+(?:खोलो|खोल\s*दो)$/u;
+const SIMPLE_NOTEPAD_ENGLISH = /^(?:(?:please\s+)?(?:open|launch|start)\s+)?notepad(?:\s+(?:kholo|khol\s*do|kholdo|open\s+kar(?:\s+do|o)|launch\s+karo|start\s+karo))?$/iu;
+const SIMPLE_NOTEPAD_HINDI = /^(?:कृपया\s+)?नोटपैड\s+(?:खोलो|खोल\s*दो|ओपन\s+करो)$/u;
 
 export function isSimpleNotepadLaunch(goal) {
   if (typeof goal !== 'string' || !goal.trim() || goal.length > 120) return false;

@@ -59,3 +59,37 @@ test("failed managed browser startup tears down the spawned tree and reaps the r
     assert.match(cleanup,/fs::remove_dir_all\(&profile_dir\)/);
   }
 });
+
+test("browser launcher handoff may bind only the one live root with Shuvi's fresh profile and verified executable",()=>{
+  const start=rust.indexOf("fn exact_profile_browser_root(");
+  const end=rust.indexOf("fn prune_inactive_browser_profiles(",start);
+  const block=rust.slice(start,end);
+  assert.ok(start>0&&end>start);
+  assert.match(block,/fs::canonicalize\(executable\)/);
+  assert.match(block,/fs::canonicalize\(path\)/);
+  assert.match(block,/--user-data-dir=/);
+  assert.match(block,/process\.cmd\(\)/);
+  assert.match(block,/--type=/);
+  assert.match(block,/process\.start_time\(\) == 0/);
+  assert.match(block,/match matches\.as_slice\(\)/);
+  assert.match(block,/\[pid\] => Ok\(\*pid\)/);
+  assert.match(block,/Multiple processes claim/);
+  assert.match(block,/No uniquely identified live browser root/);
+});
+
+test("browser start retains exact OS PID binding after launcher handoff and never uses the exited launcher's PID",()=>{
+  const start=rust.indexOf("ToolAction::BrowserStart { browser, url } =>");
+  const end=rust.indexOf("ToolAction::BrowserNavigate",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/let direct_registration = register_managed_process\(state, child_pid\)/);
+  assert.match(block,/managed_process_identity_matches\(state, child_pid\)/);
+  assert.match(block,/child\.try_wait\(\)/);
+  assert.match(block,/exact_profile_browser_root\(&executable, &profile_dir\)/);
+  assert.match(block,/register_managed_process\(state, replacement\)/);
+  assert.match(block,/managed_process_identity_matches\(state, replacement\)/);
+  assert.match(block,/unregister_managed_process\(state, tracked_pid\)/);
+  assert.match(block,/sessions\.insert\(\s*tracked_pid,/);
+  assert.match(block,/root PID \{tracked_pid\}/);
+  assert.doesNotMatch(block,/sessions\.insert\(\s*child_pid,/);
+  assert.match(block,/terminate_managed_process_tree\(replacement\)/);
+});

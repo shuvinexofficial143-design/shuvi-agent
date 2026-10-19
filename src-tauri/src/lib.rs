@@ -3084,6 +3084,41 @@ fn find_browser_executable(browser: &str) -> Result<std::path::PathBuf, String> 
     }
 }
 
+// Chromium/Edge can hand off the freshly spawned launcher to a different
+// browser root before CDP has a page ready. Never adopt an arbitrary existing
+// browser: a fallback root must use the exact executable Shuvi discovered and
+// the unguessable, per-launch profile directory that Shuvi itself created.
+// The profile's DevToolsActivePort and target are checked by BrowserStart
+// before this function can be called. Ambiguity or unreadable OS identity
+// fails closed instead of silently binding a foreign browser process.
+fn exact_profile_browser_root(executable: &Path, profile_dir: &Path) -> Result<u32, String> {
+    let expected_exe = fs::canonicalize(executable)
+        .map_err(|_| "Managed browser executable identity cannot be verified.".to_string())?;
+    let expected_profile = format!("--user-data-dir={}", profile_dir.display());
+    let mut system = System::new_all();
+    system.refresh_all();
+    let matches = system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let observed_exe = process.exe().and_then(|path| fs::canonicalize(path).ok())?;
+            if !observed_exe.to_string_lossy().eq_ignore_ascii_case(&expected_exe.to_string_lossy())
+                || process.start_time() == 0
+                || process.cmd().iter().any(|argument| argument.to_string_lossy().starts_with("--type="))
+                || !process.cmd().iter().any(|argument| argument.to_string_lossy().as_ref() == expected_profile.as_str())
+            {
+                return None;
+            }
+            Some(pid.as_u32())
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [pid] => Ok(*pid),
+        [] => Err("No uniquely identified live browser root matches Shuvi's exact new profile and executable.".into()),
+        _ => Err("Multiple processes claim Shuvi's new browser profile; refusing ambiguous browser ownership.".into()),
+    }
+}
+
 fn prune_inactive_browser_profiles(
     state: &ActionState,
     profiles_root: &Path,
@@ -11092,19 +11127,61 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                 return Err("Managed browser started, but no stable page target became available for Shuvi to bind.".into());
             };
 
-            if let Err(error) = register_managed_process(state, child_pid) {
-                let _ = terminate_managed_process_tree(child_pid);
-                let _ = child.wait();
-                let _ = fs::remove_dir_all(&profile_dir);
-                return Err(format!(
-                    "Browser was stopped before it could remain untracked: {error}"
-                ));
-            }
+            // Directly spawned PID is preferred. If its OS identity has
+            // disappeared while waiting for CDP (Edge/Chrome launcher handoff),
+            // adopt ONLY the unique live root with Shuvi's own fresh profile.
+            // A missing/ambiguous process is never counted as an audited launch.
+            let direct_registration = register_managed_process(state, child_pid);
+            let direct_bound = direct_registration.is_ok()
+                && managed_process_identity_matches(state, child_pid).unwrap_or(false)
+                && matches!(child.try_wait(), Ok(None));
+            let tracked_pid = if direct_bound {
+                child_pid
+            } else {
+                unregister_managed_process(state, child_pid);
+                let replacement = exact_profile_browser_root(&executable, &profile_dir);
+                let replacement = match replacement {
+                    Ok(pid) => pid,
+                    Err(error) => {
+                        let _ = terminate_managed_process_tree(child_pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = fs::remove_dir_all(&profile_dir);
+                        return Err(format!("Browser was stopped before it could remain untracked: {error}"));
+                    }
+                };
+                // Do not leave a separately running launcher outside the RAM
+                // and termination tree of an adopted browser root.
+                if replacement != child_pid && !matches!(child.try_wait(), Ok(Some(_))) {
+                    let _ = terminate_managed_process_tree(replacement);
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&profile_dir);
+                    return Err("Browser launcher is still running and cannot safely transfer process ownership.".into());
+                }
+                if let Err(error) = register_managed_process(state, replacement) {
+                    let _ = terminate_managed_process_tree(replacement);
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&profile_dir);
+                    return Err(format!("Browser was stopped before it could remain untracked: {error}"));
+                }
+                if !managed_process_identity_matches(state, replacement).unwrap_or(false) {
+                    unregister_managed_process(state, replacement);
+                    let _ = terminate_managed_process_tree(replacement);
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&profile_dir);
+                    return Err("Browser root identity disappeared before native registration was verified.".into());
+                }
+                replacement
+            };
 
             match state.browser_sessions.lock() {
                 Ok(mut sessions) => {
                     sessions.insert(
-                        child_pid,
+                        tracked_pid,
                         BrowserSession {
                             port,
                             target_id: target_id.clone(),
@@ -11113,7 +11190,8 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                     );
                 }
                 Err(_) => {
-                    unregister_managed_process(state, child_pid);
+                    unregister_managed_process(state, tracked_pid);
+                    let _ = terminate_managed_process_tree(tracked_pid);
                     let _ = terminate_managed_process_tree(child_pid);
                     let _ = child.wait();
                     let _ = fs::remove_dir_all(&profile_dir);
@@ -11125,7 +11203,7 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                 success: true,
                 tool,
                 stdout: format!(
-                    "Started Shuvi-managed {browser} with root PID {child_pid}, local DevTools port {port}, and one bound page target. Use this PID for browser DOM tools. Browser subprocesses are included in Shuvi's RAM accounting."
+                    "Started Shuvi-managed {browser} with root PID {tracked_pid}, local DevTools port {port}, and one bound page target. Use this PID for browser DOM tools. Browser subprocesses are included in Shuvi's RAM accounting."
                 ),
                 stderr: String::new(),
                 exit_code: Some(0),
