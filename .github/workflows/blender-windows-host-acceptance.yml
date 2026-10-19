@@ -1,0 +1,106 @@
+name: Shuvi41 Disposable Windows Blender Acceptance
+
+on:
+  push:
+    branches:
+      - feature/shuvi41-blender-worker
+    paths:
+      - .github/workflows/blender-windows-host-acceptance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shuvi41-disposable-blender-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  eight-stage-real-blender:
+    if: github.ref == 'refs/heads/feature/shuvi41-blender-worker'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out only the reviewed Shuvi feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/shuvi41-blender-worker
+          persist-credentials: false
+
+      - name: Prepare pinned, clean upstream outside Shuvi checkout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $upstream = Join-Path $env:RUNNER_TEMP 'shuvi41-upstream'
+          git clone --quiet --no-checkout https://github.com/shuvinexofficial143-design/shuvi-blender-agent.git $upstream
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream clone failed' }
+          git -C $upstream checkout --quiet --detach 96b88c2513152f772399f247989ef602d5e0a7d7
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned upstream checkout failed' }
+          $head = (git -C $upstream rev-parse HEAD).Trim()
+          if ($head -ne '96b88c2513152f772399f247989ef602d5e0a7d7') {
+            throw 'Upstream SHA differs from pinned approval'
+          }
+          $branch = (git branch --show-current).Trim()
+          if ($branch -ne 'feature/shuvi41-blender-worker') {
+            throw 'Shuvi checkout is not on the isolated feature branch'
+          }
+          if ((git status --porcelain) -or (git -C $upstream status --porcelain)) {
+            throw 'Both source checkouts must be clean before real Blender launch'
+          }
+
+      - name: Download and SHA-verify official portable Blender 4.3.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'blender-4.3.2-windows-x64.zip'
+          $sum = Join-Path $env:RUNNER_TEMP 'blender-4.3.2.sha256'
+          $mirror = 'https://mirror.blender.org/release/Blender4.3/'
+          & curl.exe --fail --location --retry 3 --retry-delay 5 --output $zip ($mirror + 'blender-4.3.2-windows-x64.zip')
+          if ($LASTEXITCODE -ne 0) { throw 'Official Blender archive unavailable' }
+          & curl.exe --fail --location --retry 3 --retry-delay 5 --output $sum ($mirror + 'blender-4.3.2.sha256')
+          if ($LASTEXITCODE -ne 0) { throw 'Official Blender checksum unavailable' }
+          if ((Get-Item -LiteralPath $zip).Length -ne 405138423) {
+            throw 'Unexpected Blender archive size'
+          }
+          $line = Get-Content -LiteralPath $sum | Where-Object { $_ -match 'blender-4[.]3[.]2-windows-x64[.]zip' } | Select-Object -First 1
+          if (-not $line -or $line -notmatch '([0-9a-fA-F]{64})') {
+            throw 'Official SHA-256 manifest lacks the required Windows ZIP entry'
+          }
+          $expected = $Matches[1].ToLowerInvariant()
+          $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Blender archive failed official SHA-256 verification' }
+          $install = Join-Path $env:RUNNER_TEMP 'shuvi41-blender-portable'
+          Expand-Archive -LiteralPath $zip -DestinationPath $install -Force
+          $exe = Get-ChildItem -LiteralPath $install -Recurse -File -Filter blender.exe | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw 'Portable Blender executable not found'
+          }
+          "SHUVI41_BLENDER_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Execute separately opted-in eight-stage real Windows Blender host QA
+        shell: pwsh
+        env:
+          SHUVI41_HOST_ACCEPTANCE: disposable-only
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $upstream = Join-Path $env:RUNNER_TEMP 'shuvi41-upstream'
+          $out = Join-Path $env:RUNNER_TEMP 'shuvi41-disposable-host-artifacts'
+          New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
+          & python -B integrations/blender-worker/shuvi_blender_host_acceptance.py --blender-exe $env:SHUVI41_BLENDER_EXE --upstream-root $upstream --output-parent $out
+          if ($LASTEXITCODE -ne 0) { throw 'Real-host readiness probe failed' }
+          & python -B integrations/blender-worker/shuvi_blender_host_acceptance.py --run --include-motion --blender-exe $env:SHUVI41_BLENDER_EXE --upstream-root $upstream --output-parent $out
+          if ($LASTEXITCODE -ne 0) { throw 'Real Blender eight-stage trial did not pass; partial files retained' }
+          $reports = @(Get-ChildItem -LiteralPath $out -Recurse -File -Filter acceptance-report.json)
+          if ($reports.Count -ne 1) { throw 'Expected exactly one real-host acceptance report' }
+          & python -B integrations/blender-worker/shuvi_blender_host_acceptance.py --verify-report $reports[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Independent offline artifact reverify failed' }
+
+      - name: Retain only bounded disposable Blender proof and failure report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shuvi41-disposable-windows-blender-proof
+          path: ${{ runner.temp }}/shuvi41-disposable-host-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
