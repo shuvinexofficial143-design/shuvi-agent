@@ -1,0 +1,471 @@
+//! Deterministic-shape, randomized-ID read-only native Blender acceptance plans.
+//! Generates declarative PlanRunner requests only: no Blender launch, Python,
+//! app/window control, file writes, owner approval, or implicit execution.
+use serde_json::{json,Value};
+use uuid::Uuid;
+use crate::blender_plan_lineage;
+
+const MESH:&str="Shuvi41ProofMesh";
+const STAGE1:&str="shuvi41-proof-stage1.blend";
+const STAGE2:&str="shuvi41-proof-stage2.blend";
+const RENDER:&str="shuvi41-proof-render.png";
+const LOOK:&str="shuvi41-proof-material.blend";
+const MATERIAL_RENDER:&str="shuvi41-proof-material-render.png";
+const MOTION:&str="shuvi41-proof-motion.blend";
+const MOTION_FRAME1:&str="shuvi41-proof-motion-frame001.png";
+const MOTION_FRAME24:&str="shuvi41-proof-motion-frame024.png";
+
+fn binding(source:&str,source_path:Value,target_path:Value)->Value{
+    json!({"source_step":source,"source_path":source_path,"target_path":target_path})
+}
+fn step(name:&str,operation:&str,payload:Value,bindings:Vec<Value>)->Value{
+    json!({"name":name,"request":{
+        "protocol_version":1,"request_id":Uuid::new_v4().to_string(),
+        "command_id":Uuid::new_v4().to_string(),
+        "operation":operation,"payload":payload,"timeout_ms":15_000,
+    },"bindings":bindings})
+}
+fn transform()->Value{
+    json!({"location":[0.0,0.0,0.0],"rotation_euler":[0.0,0.0,0.0],
+        "scale":[1.0,1.0,1.0]})
+}
+fn model1(rev:&str)->Vec<Value>{
+    vec![
+        step("create","mesh.create",json!({
+            "name":MESH,"geometry":{"vertices":[
+                [-1.0,-1.0,0.0],[1.0,-1.0,0.0],[1.0,1.0,0.0],
+                [-1.0,1.0,0.0],[0.0,0.0,1.2]
+            ],"faces":[[3,2,1,0],[0,1,4],[1,2,4],[2,3,4],[3,0,4]]},
+            "transform":transform(),"expected_scene_revision":rev,
+        }),vec![]),
+        step("shape","mesh.translate_vertices",json!({
+            "target":{"object_id":"BOUND_FROM_CREATE","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_CREATE"},
+            "expected_geometry_revision":"BOUND_FROM_MESH_READ",
+            "indices":[4],"delta":[0.0,0.0,0.25],
+        }),vec![
+            binding("create",json!(["data","after","object","object_id"]),json!(["target","object_id"])),
+            binding("create",json!(["data","after","object","revision"]),json!(["target","expected_revision"])),
+            binding("create",json!(["data","after","geometry","geometry_revision"]),json!(["expected_geometry_revision"])),
+        ]),
+        step("post_edit_scene","scene.inspect",json!({}),vec![]),
+        step("camera","device.create",json!({
+            "name":"Shuvi41ProofCamera","kind":"CAMERA",
+            "transform":{"location":[4.0,-6.0,4.0],"rotation_euler":[1.15,0.0,0.58],"scale":[1.0,1.0,1.0]},
+            "settings":{"lens":50.0,"clip_start":0.1,"clip_end":100.0,"make_active":true},
+            "expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![binding("post_edit_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
+        step("post_camera_scene","scene.inspect",json!({}),vec![]),
+        step("checkpoint","file.checkpoint",json!({
+            "name":STAGE1,"expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![
+            binding("post_camera_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))
+        ]),
+    ]
+}
+fn model2(rev:&str)->Vec<Value>{
+    vec![
+        step("light","device.create",json!({
+            "name":"Shuvi41ProofKey","kind":"POINT",
+            "transform":{"location":[2.0,-3.0,5.0],"rotation_euler":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0]},
+            "settings":{"energy":950.0,"color":[1.0,0.94,0.85]},
+            "expected_scene_revision":rev,
+        }),vec![]),
+        step("locate","objects.list",json!({
+            "name_prefix":MESH,"object_type":"MESH","offset":0,"limit":25,
+        }),vec![]),
+        step("mesh_read","mesh.inspect",json!({"object_id":"BOUND_FROM_LIST"}),vec![
+            binding("locate",json!(["data","items",0,"object_id"]),json!(["object_id"]))
+        ]),
+        step("shape_again","mesh.translate_vertices",json!({
+            "target":{"object_id":"BOUND_FROM_LIST","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_LIST"},
+            "expected_geometry_revision":"BOUND_FROM_MESH_READ",
+            "indices":[4],"delta":[0.0,0.0,0.5],
+        }),vec![
+            binding("locate",json!(["data","items",0,"object_id"]),json!(["target","object_id"])),
+            binding("locate",json!(["data","items",0,"revision"]),json!(["target","expected_revision"])),
+            binding("mesh_read",json!(["data","geometry_revision"]),json!(["expected_geometry_revision"])),
+        ]),
+        step("post_edit_scene","scene.inspect",json!({}),vec![]),
+        step("checkpoint","file.checkpoint",json!({
+            "name":STAGE2,"expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![binding("post_edit_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
+    ]
+}
+// Optional fixed material look on a separately SHA-verified, owner-approved
+// Stage-2 source. This is not part of three-stage acceptance evidence.
+fn look()->Vec<Value>{
+    vec![
+        step("scene","scene.inspect",json!({}),vec![]),
+        step("locate","objects.list",json!({
+            "name_prefix":MESH,"object_type":"MESH","offset":0,"limit":5,
+            "expected_revision":"BOUND_FROM_SCENE",
+        }),vec![binding("scene",json!(["data","revision"]),json!(["expected_revision"]))]),
+        step("assign","material.create_assign",json!({
+            "target":{"object_id":"BOUND_FROM_LIST","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_LIST"},
+            "name":"Shuvi41ProofCopper","base_color":[0.8,0.41,0.16,1.0],
+            "metallic":0.65,"roughness":0.31,
+        }),vec![
+            binding("locate",json!(["data","items",0,"object_id"]),json!(["target","object_id"])),
+            binding("locate",json!(["data","items",0,"revision"]),json!(["target","expected_revision"])),
+        ]),
+        step("post_look_scene","scene.inspect",json!({}),vec![]),
+        step("checkpoint","file.checkpoint",json!({
+            "name":LOOK,"expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![binding("post_look_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
+    ]
+}
+// Optional source-bound, two-key object-animation proof. The motion stage
+// is NOT part of the original three-stage modeling/render acceptance chain.
+fn motion(rev:&str)->Vec<Value>{
+    vec![
+        step("locate","objects.list",json!({
+            "name_prefix":MESH,"object_type":"MESH",
+            "offset":0,"limit":5,"expected_revision":rev,
+        }),vec![]),
+        step("pose_start","animation.insert_keyframe",json!({
+            "target":{"object_id":"BOUND_FROM_LIST","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_LIST"},
+            "frame":1,"transform":transform(),"interpolation":"LINEAR",
+        }),vec![
+            binding("locate",json!(["data","items",0,"object_id"]),json!(["target","object_id"])),
+            binding("locate",json!(["data","items",0,"revision"]),json!(["target","expected_revision"])),
+        ]),
+        step("pose_end","animation.insert_keyframe",json!({
+            "target":{"object_id":"BOUND_FROM_START","expected_name":MESH,
+                "expected_revision":"BOUND_FROM_START"},
+            "frame":24,"transform":json!({
+                "location":[0.0,0.0,1.5],"rotation_euler":[0.0,0.0,0.0],
+                "scale":[1.0,1.0,1.0]
+            }),"interpolation":"LINEAR",
+        }),vec![
+            binding("pose_start",json!(["data","after","object_id"]),json!(["target","object_id"])),
+            binding("pose_start",json!(["data","after","revision"]),json!(["target","expected_revision"])),
+        ]),
+        step("post_keys_scene","scene.inspect",json!({}),vec![]),
+        step("choose_final_frame","animation.set_frame",json!({
+            "frame":24,"expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![
+            binding("post_keys_scene",json!(["data","revision"]),json!(["expected_scene_revision"])),
+        ]),
+        step("checkpoint","file.checkpoint",json!({
+            "name":MOTION,"expected_scene_revision":"BOUND_FROM_FINAL_FRAME",
+        }),vec![
+            binding("choose_final_frame",json!(["data","after","revision"]),
+                json!(["expected_scene_revision"])),
+        ]),
+    ]
+}
+// Independently SHA-pinned motion checkpoint -> explicitly owner-approved
+// tiny CPU render at exactly one animated timeline frame. A fresh seek result
+// binds the configuration revision; no unapproved frame switching or render.
+fn motion_frame(rev:&str,frame:u32,filename:&str)->Vec<Value>{
+    vec![
+        step("seek","animation.set_frame",json!({
+            "frame":frame,"expected_scene_revision":rev,
+        }),vec![]),
+        step("configure","render.configure",json!({
+            "width":64,"height":64,"samples":1,
+            "expected_scene_revision":"BOUND_FROM_SEEK",
+        }),vec![binding("seek",json!(["data","after","revision"]),
+            json!(["expected_scene_revision"]))]),
+        step("configured_scene","scene.inspect",json!({}),vec![]),
+        step("render","render.execute",json!({
+            "name":filename,"expected_scene_revision":"BOUND_FROM_CONFIGURED_SCENE",
+        }),vec![binding("configured_scene",json!(["data","revision"]),
+            json!(["expected_scene_revision"]))]),
+    ]
+}
+fn render(rev:&str,filename:&str)->Vec<Value>{
+    vec![
+        step("configure","render.configure",json!({
+            "width":64,"height":64,"samples":1,"expected_scene_revision":rev,
+        }),vec![]),
+        step("configured_scene","scene.inspect",json!({}),vec![]),
+        step("render","render.execute",json!({
+            "name":filename,"expected_scene_revision":"BOUND_FROM_CONFIGURED_SCENE",
+        }),vec![
+            binding("configured_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))
+        ]),
+    ]
+}
+
+/// Generate exact expected typed recipe independently of plan lineage.
+//// Never calls derive: derive can compare untrusted requests against this
+//// source-of-truth shape without recursive dispatch or Blender execution.
+pub(crate) fn expected_plan(stage:&str,revision:&str)->Option<Value>{
+    let steps=match stage{
+        "model1"=>model1(revision),
+        "model2"=>model2(revision),
+        "render"=>render(revision,RENDER),
+        "look_render"=>render(revision,MATERIAL_RENDER),
+        "look"=>look(),
+        "motion"=>motion(revision),
+        "motion_frame1"=>motion_frame(revision,1,MOTION_FRAME1),
+        "motion_frame24"=>motion_frame(revision,24,MOTION_FRAME24),
+        _=>return None,
+    };
+    Some(json!({"timeout_ms":90_000,"steps":steps}))
+}
+
+/// Single native ToolAction parser/build allowlist. Keep dispatch and recipe
+/// production in sync: supplementary stages are still plan-only and require
+/// separately approved source-pinned sessions and render permission.
+pub(crate) const SUPPORTED_STAGES:[&str;8]=[
+    "model1","model2","render","look","look_render",
+    "motion","motion_frame1","motion_frame24",
+];
+pub(crate) fn supports_stage(stage:&str)->bool{
+    SUPPORTED_STAGES.contains(&stage)
+}
+
+/// A plan-only preview: all UUIDs are fresh on each call, and callers must
+/// explicitly request a distinct owner-approved BlenderSessionPlan action.
+/// This never opens a session or asserts prior native action authorization.
+pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
+    if !supports_stage(stage){
+        return Err("Native Blender recipe stage is not one of eight fixed approved recipes.".into());
+    }
+    if revision.len()!=64 ||
+        !revision.bytes().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase()){
+        return Err("Native Blender recipe needs a fresh lowercase scene revision from session inspect.".into());
+    }
+    let plan=expected_plan(stage,revision)
+        .ok_or("Native Blender recipe stage must be a fixed model, material, motion or frame-render recipe.")?;
+    let (output,requires_render)=match stage{
+        "model1"=>(STAGE1,false),
+        "model2"=>(STAGE2,false),
+        "render"=>(RENDER,true),
+        "look_render"=>(MATERIAL_RENDER,true),
+        "look"=>(LOOK,false),
+        "motion"=>(MOTION,false),
+        "motion_frame1"=>(MOTION_FRAME1,true),
+        "motion_frame24"=>(MOTION_FRAME24,true),
+        _=>unreachable!("expected_plan already filtered known stages"),
+    };
+    if serde_json::to_vec(&plan).map_err(|_|"Cannot serialize typed Blender recipe.")?.len()>65536{
+        return Err("Blender recipe exceeds native 64 KiB plan input bound.".into());
+    }
+    // Derive the exact digest and stage classification from the SAME native
+    // module used for approved execution. Refuse to emit a mislabeled plan.
+    let preview=blender_plan_lineage::derive(&plan)?;
+    if preview.get("acceptance_stage").and_then(Value::as_str)!=Some(stage){
+        return Err("Generated Blender recipe failed native acceptance-stage classification.".into());
+    }
+    Ok(json!({
+        "mode":"PLAN_ONLY_NO_BLENDER_LAUNCH",
+        "schema_version":1,
+        "stage":stage,
+        "expected_scene_revision":revision,
+        "output_file":output,
+        "plan":plan,
+        "plan_preview_lineage":preview,
+        "render_action_approval_required":requires_render,
+        "must_use_current_session_inspect_revision":true,
+        "requires_separate_native_owner_approval":true,
+        "requires_new_session_loading_verified_stage2":stage=="render" || stage=="look" || stage=="motion",
+        "supplementary_not_three_stage_acceptance":stage=="look" || stage=="look_render" || stage=="motion" || stage=="motion_frame1" || stage=="motion_frame24",
+        "requires_new_session_loading_verified_motion":stage=="motion_frame1" || stage=="motion_frame24",
+        "requires_new_session_loading_verified_material":stage=="look_render",
+        "action_approved":false,
+        "blender_launch_performed":false,
+        "plan_executed":false,
+        "output_artifact_created":false,
+        "real_blender_runtime_verified":false,
+    }))
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    use std::collections::HashSet;
+    #[test]
+    fn native_toolaction_stage_allowlist_is_exactly_the_eight_real_recipes(){
+        assert_eq!(SUPPORTED_STAGES,[
+            "model1","model2","render","look","look_render",
+            "motion","motion_frame1","motion_frame24",
+        ]);
+        for stage in SUPPORTED_STAGES{
+            assert!(supports_stage(stage));
+            let receipt=build(stage,&"f".repeat(64)).unwrap();
+            assert_eq!(receipt["stage"],stage);
+            assert_eq!(receipt["action_approved"],false);
+            assert_eq!(receipt["plan_executed"],false);
+        }
+        for wrong in ["","Motion","motion_frame25","arbitrary.python.run","render.execute"]{
+            assert!(!supports_stage(wrong));
+            assert!(build(wrong,&"f".repeat(64)).is_err());
+        }
+    }
+    #[test]
+    fn eight_native_recipes_match_approved_stage_lineage_without_execution(){
+        for (stage,count,last,render) in [
+            ("model1",6,"file.checkpoint",false),
+            ("model2",6,"file.checkpoint",false),
+            ("render",3,"render.execute",true),
+            ("look",5,"file.checkpoint",false),
+            ("look_render",3,"render.execute",true),
+            ("motion",6,"file.checkpoint",false),
+            ("motion_frame1",4,"render.execute",true),
+            ("motion_frame24",4,"render.execute",true),
+        ]{
+            let r=build(stage,&"a".repeat(64)).unwrap();
+            assert_eq!(r["mode"],"PLAN_ONLY_NO_BLENDER_LAUNCH");
+            assert_eq!(r["plan"]["steps"].as_array().unwrap().len(),count);
+            assert_eq!(r["plan"]["steps"][count-1]["request"]["operation"],last);
+            assert_eq!(r["plan_preview_lineage"]["acceptance_stage"],stage);
+            assert_eq!(r["render_action_approval_required"],render);
+            assert_eq!(r["action_approved"],false);
+            assert_eq!(r["plan_executed"],false);
+            assert_eq!(r["real_blender_runtime_verified"],false);
+            assert_eq!(r["requires_separate_native_owner_approval"],true);
+            assert_eq!(r["requires_new_session_loading_verified_stage2"],stage=="render" || stage=="look" || stage=="motion");
+            assert_eq!(r["requires_new_session_loading_verified_material"],stage=="look_render");
+            assert_eq!(r["supplementary_not_three_stage_acceptance"],stage=="look" || stage=="look_render" || stage=="motion" || stage=="motion_frame1" || stage=="motion_frame24");
+            assert_eq!(r["requires_new_session_loading_verified_motion"],stage=="motion_frame1" || stage=="motion_frame24");
+        }
+    }
+    #[test]
+    fn fresh_action_and_request_ids_never_repeat_within_or_across_plans(){
+        let mut ids=HashSet::new();
+        for _ in 0..3{
+            for stage in ["model1","model2","render","look","look_render","motion","motion_frame1","motion_frame24"]{
+                let recipe=build(stage,&"b".repeat(64)).unwrap();
+                for step in recipe["plan"]["steps"].as_array().unwrap(){
+                    for key in ["request_id","command_id"]{
+                        let id=step["request"][key].as_str().unwrap();
+                        assert_eq!(Uuid::parse_str(id).unwrap().to_string(),id);
+                        assert!(ids.insert(id.to_string()),"duplicate request or command ID");
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn result_bindings_reference_prior_steps_with_valid_destinations(){
+        for stage in ["model1","model2","render","look","look_render","motion","motion_frame1","motion_frame24"]{
+            let recipe=build(stage,&"c".repeat(64)).unwrap();
+            let mut seen=HashSet::new();
+            for step in recipe["plan"]["steps"].as_array().unwrap(){
+                for binding in step["bindings"].as_array().unwrap(){
+                    let source=binding["source_step"].as_str().unwrap();
+                    assert!(seen.contains(source),"binding must reference an already executed step");
+                    assert!(binding["source_path"].as_array().is_some());
+                    let mut target=&step["request"]["payload"];
+                    for part in binding["target_path"].as_array().unwrap(){
+                        if let Some(i)=part.as_u64(){target=&target[i as usize];}
+                        else{target=&target[part.as_str().unwrap()];}
+                    }
+                    assert!(target.as_str().is_some_and(|s|s.starts_with("BOUND_")));
+                }
+                seen.insert(step["name"].as_str().unwrap());
+            }
+        }
+    }
+    #[test]
+    fn invalid_or_stale_shaped_revision_and_unrecognized_stages_denied(){
+        let bad_revisions=vec![
+            String::new(),"a".to_string(),"g".repeat(64),"A".repeat(64),
+        ];
+        for revision in bad_revisions{
+            assert!(build("model1",&revision).is_err());
+        }
+        assert!(build("arbitrary.python.run",&"f".repeat(64)).is_err());
+    }
+    #[test]
+    fn supplemental_look_has_cas_mesh_identity_and_unique_output(){
+        let recipe=build("look",&"a".repeat(64)).unwrap();
+        let steps=&recipe["plan"]["steps"];
+        assert_eq!(steps.as_array().unwrap().len(),5);
+        assert_eq!(recipe["plan_preview_lineage"]["acceptance_stage"],"look");
+        assert_eq!(steps[1]["request"]["payload"]["expected_revision"],"BOUND_FROM_SCENE");
+        assert_eq!(steps[2]["request"]["payload"]["name"],"Shuvi41ProofCopper");
+        assert_eq!(steps[2]["request"]["payload"]["base_color"],json!([0.8,0.41,0.16,1.0]));
+        assert_eq!(steps[2]["request"]["payload"]["metallic"],0.65);
+        assert_eq!(steps[2]["request"]["payload"]["roughness"],0.31);
+        assert_eq!(steps[4]["bindings"][0]["source_step"],"post_look_scene");
+        assert_eq!(recipe["output_file"],LOOK);
+        assert_eq!(recipe["requires_new_session_loading_verified_stage2"],true);
+        assert_eq!(recipe["render_action_approval_required"],false);
+        assert_eq!(recipe["action_approved"],false);
+        assert!(crate::blender_plan_lineage::receipt_matches(
+            &json!({"approved_plan_lineage":recipe["plan_preview_lineage"]}),"look").is_err());
+    }
+    #[test]
+    fn material_render_is_distinct_from_original_three_stage_acceptance(){
+        let r=build("look_render",&"e".repeat(64)).unwrap();
+        assert_eq!(r["plan_preview_lineage"]["acceptance_stage"],"look_render");
+        assert_eq!(r["requires_new_session_loading_verified_material"],true);
+        assert_eq!(r["requires_new_session_loading_verified_stage2"],false);
+        assert_eq!(r["render_action_approval_required"],true);
+        assert_eq!(r["plan"]["steps"][2]["request"]["payload"]["name"],MATERIAL_RENDER);
+        assert_eq!(r["plan"]["steps"][0]["request"]["payload"]["samples"],1);
+        assert_eq!(r["plan"]["steps"][2]["bindings"][0]["source_step"],"configured_scene");
+        assert!(crate::blender_plan_lineage::receipt_matches(
+            &json!({"approved_plan_lineage":r["plan_preview_lineage"]}),"render").is_err());
+    }
+    #[test]
+    fn optional_motion_proves_two_cas_keyframes_before_bound_save(){
+        let r=build("motion",&"a".repeat(64)).unwrap();
+        assert_eq!(r["plan_preview_lineage"]["acceptance_stage"],"motion");
+        assert_eq!(r["output_file"],MOTION);
+        assert_eq!(r["render_action_approval_required"],false);
+        assert_eq!(r["requires_new_session_loading_verified_stage2"],true);
+        assert_eq!(r["supplementary_not_three_stage_acceptance"],true);
+        let p=&r["plan"]["steps"];
+        assert_eq!(p.as_array().unwrap().len(),6);
+        assert_eq!(p[0]["request"]["payload"]["expected_revision"],"a".repeat(64));
+        assert_eq!(p[1]["request"]["payload"]["frame"],1);
+        assert_eq!(p[2]["request"]["payload"]["frame"],24);
+        assert_eq!(p[2]["request"]["payload"]["transform"]["location"],json!([0.0,0.0,1.5]));
+        assert_eq!(p[2]["bindings"][1]["source_path"],json!(["data","after","revision"]));
+        assert_eq!(p[4]["request"]["operation"],"animation.set_frame");
+        assert_eq!(p[5]["bindings"][0]["source_path"],json!(["data","after","revision"]));
+        let mut tampered=r["plan"].clone();
+        tampered["steps"][2]["request"]["payload"]["frame"]=json!(30);
+        assert_eq!(blender_plan_lineage::derive(&tampered).unwrap()["acceptance_stage"],"other");
+    }
+    #[test]
+    fn optional_motion_frames_seek_before_render_and_require_new_sha_pinned_input(){
+        for (stage,frame,file) in [
+            ("motion_frame1",1,MOTION_FRAME1),
+            ("motion_frame24",24,MOTION_FRAME24),
+        ]{
+            let r=build(stage,&"a".repeat(64)).unwrap();
+            let p=&r["plan"]["steps"];
+            assert_eq!(r["plan_preview_lineage"]["acceptance_stage"],stage);
+            assert_eq!(r["output_file"],file);
+            assert_eq!(r["render_action_approval_required"],true);
+            assert_eq!(r["requires_new_session_loading_verified_motion"],true);
+            assert_eq!(r["action_approved"],false);
+            assert_eq!(p[0]["request"]["payload"]["frame"],frame);
+            assert_eq!(p[0]["request"]["payload"]["expected_scene_revision"],"a".repeat(64));
+            assert_eq!(p[1]["bindings"][0]["source_path"],json!(["data","after","revision"]));
+            assert_eq!(p[1]["bindings"][0]["target_path"],json!(["expected_scene_revision"]));
+            assert_eq!(p[1]["request"]["payload"]["samples"],1);
+            assert_eq!(p[3]["request"]["payload"]["name"],file);
+            let mut tampered=r["plan"].clone();
+            tampered["steps"][0]["request"]["payload"]["frame"]=json!(12);
+            assert_eq!(blender_plan_lineage::derive(&tampered).unwrap()["acceptance_stage"],"other");
+        }
+    }
+    #[test]
+    fn acceptance_modeling_plan_contains_expected_mesh_edit_and_stage_files(){
+        let first=build("model1",&"d".repeat(64)).unwrap();
+        assert_eq!(first["plan"]["steps"][0]["request"]["payload"]["geometry"]["vertices"].as_array().unwrap().len(),5);
+        assert_eq!(first["plan"]["steps"][1]["request"]["payload"]["delta"],json!([0.0,0.0,0.25]));
+        let second=build("model2",&"d".repeat(64)).unwrap();
+        assert_eq!(second["plan"]["steps"][3]["request"]["payload"]["delta"],json!([0.0,0.0,0.5]));
+        assert_eq!(second["output_file"],STAGE2);
+        assert_eq!(first["plan"]["steps"][3]["request"]["operation"],"device.create");
+        assert_eq!(first["plan"]["steps"][3]["request"]["payload"]["settings"]["make_active"],true);
+        assert_eq!(second["plan"]["steps"][0]["request"]["payload"]["kind"],"POINT");
+        assert_eq!(second["plan"]["steps"][0]["request"]["payload"]["settings"]["energy"],950.0);
+        assert_eq!(first["plan"]["steps"][5]["bindings"][0]["source_step"],"post_camera_scene");
+        let png=build("render",&"d".repeat(64)).unwrap();
+        assert_eq!(png["plan"]["steps"][0]["request"]["payload"]["width"],64);
+        assert_eq!(png["output_file"],RENDER);
+    }
+}

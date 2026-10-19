@@ -21,6 +21,7 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--python-plan", required=True, type=Path)
     parser.add_argument("--blender-exe", required=True, type=Path)
     parser.add_argument("--blend-file", type=Path)
+    parser.add_argument("--expected-blend-sha256")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--allow-render", action="store_true")
     args = parser.parse_args(argv)
@@ -36,14 +37,19 @@ def run(argv: list[str] | None = None) -> int:
         parser.error("An existing absolute .blend input is required")
     if not args.output_dir.is_absolute() or not args.output_dir.is_dir():
         parser.error("An existing absolute output directory is required")
+    if (args.blend_file is None) != (args.expected_blend_sha256 is None):
+        parser.error("An exact source SHA-256 must accompany an input .blend")
 
     try:
+        from shuvi_blender_session import inspect_input_source, require_complete_step_report
         from shuvi_blender_agent.client import BlenderController
         from shuvi_blender_agent.plans import Plan, PlanRunner
         from shuvi_blender_agent.process import LaunchConfig, launch
         from shuvi_blender_agent.safety import SafetyPolicy
-        from shuvi_blender_agent.contracts import Status
+        from shuvi_blender_agent.contracts import Request, Status
 
+        source_before = (inspect_input_source(args.blend_file, args.expected_blend_sha256)
+                         if args.blend_file is not None else None)
         plan_json = json.loads(args.python_plan.read_text(encoding="utf-8"))
         plan = Plan.from_dict(plan_json)
         if not 1 <= len(plan.steps) <= MAX_STEPS or plan.timeout_ms > 90_000:
@@ -72,9 +78,20 @@ def run(argv: list[str] | None = None) -> int:
             output_directory=args.output_dir,
         )) as session:
             controller = BlenderController(session.client)
+            if source_before is not None:
+                inspected = controller.execute(Request("scene.inspect", timeout_ms=10_000))
+                if (inspected.status != Status.SUCCEEDED
+                        or not isinstance(inspected.data, dict)
+                        or not isinstance(inspected.data.get("file"), str)
+                        or Path(inspected.data["file"]).resolve(strict=True)
+                        != Path(source_before["path"])):
+                    raise ValueError("Authenticated one-shot Blender did not open the exact source")
+                if inspect_input_source(args.blend_file, args.expected_blend_sha256) != source_before:
+                    raise ValueError("One-shot Blender source changed while opening it")
             report = PlanRunner(controller).run(plan)
+            executed_steps = require_complete_step_report(plan, report)
             last = report.results.get(final_step.name)
-            if not report.completed or last is None or last.status != Status.VERIFIED:
+            if last is None or last.status != Status.VERIFIED:
                 raise ValueError("Plan incomplete; actual Blender mutations may have occurred")
             if not isinstance(last.data, dict) or not isinstance(last.data.get("after"), dict):
                 raise ValueError("Final Blender output evidence missing")
@@ -84,27 +101,55 @@ def run(argv: list[str] | None = None) -> int:
             extension = ".blend" if final_step.request.operation == "file.checkpoint" else ".png"
             if not isinstance(saved, str) or not isinstance(digest, str) or len(digest) != 64:
                 raise ValueError("Final output path/hash evidence missing")
+            # Prove the exact output selected in the approved typed plan,
+            # not just any correctly-hashed file in the approved directory.
+            expected_name = final_step.request.payload.get("name")
+            if (not isinstance(expected_name, str) or not expected_name
+                    or Path(expected_name).name != expected_name
+                    or "/" in expected_name or "\\" in expected_name
+                    or not expected_name.lower().endswith(extension)):
+                raise ValueError("Approved plan output filename is invalid")
             actual = Path(saved).resolve(strict=True)
-            if actual.parent != args.output_dir.resolve(strict=True) or actual.suffix.lower() != extension:
-                raise ValueError("Final output is outside the approved output directory")
-            # The package verifies the exact on-disk format and SHA-256, but
-            # rerun it at the end so the final deliverable is still intact.
+            if (actual.name != expected_name
+                    or actual.parent != args.output_dir.resolve(strict=True)
+                    or actual.suffix.lower() != extension):
+                raise ValueError("Actual artifact differs from approved plan output name or directory")
+            # Capture only read-only, bounded, session-local observable state
+            # after the approved save; launch a DIFFERENT process for reopen.
+            if extension == ".blend":
+                from shuvi_blender_reopen import capture_scene
+                original_scene = capture_scene(controller, actual, require_saved_file=False)
             from shuvi_blender_agent.files import read_output
             reread = read_output(actual, "BLEND" if extension == ".blend" else "PNG")
             if reread["sha256"] != digest:
                 raise ValueError("Final artifact changed after Blender verification")
-            print(json.dumps({
+            if source_before is not None and (
+                inspect_input_source(args.blend_file, args.expected_blend_sha256) != source_before
+            ):
+                raise ValueError("Blender input checkpoint changed during plan execution")
+        # The mutating session has closed before launching the new read-only
+        # Blender child. Reopen is never an automatic replay of plan mutations.
+        checkpoint_reopen = None
+        if extension == ".blend":
+            from shuvi_blender_reopen import reopen_checkpoint
+            checkpoint_reopen = reopen_checkpoint(args.blender_exe, actual, original_scene)
+            reread = read_output(actual, "BLEND")
+            if reread["sha256"] != digest:
+                raise ValueError("Checkpoint changed while verifying reopened scene")
+        print(json.dumps({
                 "protocol_version": 1,
                 "status": "verified",
                 "authenticated_blender_plan": True,
                 "complete": True,
-                "executed_steps": len(report.results),
+                "executed_steps": executed_steps,
                 "final_operation": final_step.request.operation,
                 "artifact": reread,
                 "destructive_allowed": False,
                 "render_approved": args.allow_render,
+                "checkpoint_reopen": checkpoint_reopen,
+                "input_checkpoint": source_before,
             }, ensure_ascii=False))
-            return 0
+        return 0
     except Exception:
         # A timed-out or partly-mutated Blender session must never be retried
         # blindly. No raw exception or bridge secrets are sent to a provider.
