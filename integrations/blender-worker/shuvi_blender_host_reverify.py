@@ -1,7 +1,7 @@
 """Read-only current-byte review of retained Shuvi 41 host-trial outputs.
 
 This does not run Blender or authenticate who produced the unsigned JSON report.
-Passing means the five retained on-disk artifacts still match its bounded
+Passing means the five or eight retained on-disk artifacts still match its bounded
 historical receipts and checkpoint/session lineage; it does NOT approve a
 native Shuvi action, certify visual quality, or prove a real Windows host run.
 """
@@ -268,6 +268,11 @@ def reverify_artifacts(report: dict, output: Path) -> dict:
                 or receipt.get("independent_blender_reopen_verified") is not (kind == "BLEND")
                 or receipt.get("rendered_visual_quality_verified") is not False):
             raise ValueError("Host receipt stage or historical proof type differs")
+        if stage == "motion":
+            if receipt.get("motion_keyframes_independently_verified") is not True:
+                raise ValueError("Motion receipt lacks independently reopened fixed keyframe claim")
+        elif "motion_keyframes_independently_verified" in receipt:
+            raise ValueError("Non-motion stage may not claim fixed motion keyframe evidence")
         source_role = ("look" if stage == "look_render" else
                        "motion" if stage in ("motion_frame1", "motion_frame24") else
                        "model2")
@@ -283,6 +288,8 @@ def reverify_artifacts(report: dict, output: Path) -> dict:
             previous[stage + "_pixels"] = pixels_sha
         current_receipt = {"stage": stage, "sha256": receipt["sha256"],
                            "bytes": receipt["bytes"], "format": kind}
+        if stage == "motion":
+            current_receipt["motion_keyframes_reported_reopened"] = True
         if pixels_sha is not None:
             current_receipt["decoded_rgba_sha256"] = pixels_sha
         checked.append(current_receipt)
@@ -299,6 +306,7 @@ def reverify_artifacts(report: dict, output: Path) -> dict:
         "verified_current_file_count": len(checked),
         "motion_pair_requested": motion_requested,
         "motion_pair_pixels_differ": motion_requested,
+        "motion_keyframes_reported_reopened": motion_requested,
         "current_file_receipts": checked,
         "report_is_unsigned_and_mutable": True,
         "historical_blender_execution_independently_authenticated": False,

@@ -265,6 +265,8 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
                                        else known["motion"],
                 "independent_blender_reopen_verified": kind == "BLEND",
                 "rendered_visual_quality_verified": False,
+                **({"motion_keyframes_independently_verified": True}
+                   if stage == "motion" else {}),
             })
             known[stage] = digest
         return report
@@ -345,6 +347,47 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             path.write_bytes(path.read_bytes() + b"tampered")
             with self.assertRaisesRegex(ValueError, "changed"):
                 host.reverify_artifacts(report, directory)
+
+    def test_motion_checkpoint_requires_specific_reopened_keyframe_semantics(self):
+        """Generic independently reopened .blend is insufficient motion evidence."""
+        with tempfile.TemporaryDirectory(prefix="shuvi41-fixed-motion-") as temp:
+            root = Path(temp)
+            target = root / "shuvi41-proof-motion.blend"
+            data = b"BLENDER-v430" + b"motion-fixture"
+            target.write_bytes(data)
+            sha = hashlib.sha256(data).hexdigest()
+            proof = {"artifact": {"path": str(target), "bytes": len(data),
+                                  "sha256": sha, "format": "BLEND"},
+                     "checkpoint_reopen": {
+                         "verified": True, "read_only": True,
+                         "checkpoint_file_sha256": sha,
+                         "animation_keyframes_independently_verified": True,
+                         "fixed_motion_keyframes_verified": False,
+                     }}
+            reader = lambda file, kind: {"sha256": sha, "bytes": len(data)}
+            with self.assertRaisesRegex(ValueError, "fixed keyframe semantics"):
+                host.verify_artifact(proof, root, target.name, "BLEND", reader)
+            proof["checkpoint_reopen"]["fixed_motion_keyframes_verified"] = True
+            result = host.verify_artifact(proof, root, target.name, "BLEND", reader)
+            self.assertTrue(result["motion_keyframes_independently_verified"])
+
+    def test_opted_motion_report_cannot_claim_semantics_without_receipt(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-motion-claim-") as temp:
+            root = Path(temp)
+            report = self._eight_stage_report(root)
+            checked = host.reverify_artifacts(report, root)
+            self.assertTrue(checked["motion_keyframes_reported_reopened"])
+            receipt = report["completed_stages"][5]
+            receipt.pop("motion_keyframes_independently_verified")
+            with self.assertRaisesRegex(ValueError, "fixed keyframe claim"):
+                host.reverify_artifacts(report, root)
+            receipt["motion_keyframes_independently_verified"] = False
+            with self.assertRaisesRegex(ValueError, "fixed keyframe claim"):
+                host.reverify_artifacts(report, root)
+            receipt["motion_keyframes_independently_verified"] = True
+            report["completed_stages"][6]["motion_keyframes_independently_verified"] = True
+            with self.assertRaisesRegex(ValueError, "Non-motion"):
+                host.reverify_artifacts(report, root)
 
     def test_motion_pair_rejects_same_decoded_pixels_even_with_different_png_bytes(self):
         with tempfile.TemporaryDirectory(prefix="shuvi41-motion-pixels-") as temp:

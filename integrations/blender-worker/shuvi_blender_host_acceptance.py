@@ -188,14 +188,23 @@ def verify_artifact(result: dict, root: Path, basename: str, kind: str, reader) 
         or reopened.get("checkpoint_file_sha256") != sha
     ):
         raise ValueError("Checkpoint lacks independent read-only Blender reopen proof")
+    if basename == "shuvi41-proof-motion.blend" and (
+        not isinstance(reopened, dict)
+        or reopened.get("fixed_motion_keyframes_verified") is not True
+        or reopened.get("animation_keyframes_independently_verified") is not True
+    ):
+        raise ValueError("Motion checkpoint lacks independently reopened fixed keyframe semantics")
     if kind == "PNG" and reopened is not None:
         raise ValueError("PNG falsely carries a .blend reopen proof")
-    return {
+    verified = {
         "status": "host_file_rehashed", "file": str(canonical), "sha256": sha,
         "bytes": size, "format": kind,
         "independent_blender_reopen_verified": kind == "BLEND",
         "rendered_visual_quality_verified": False,
     }
+    if basename == "shuvi41-proof-motion.blend":
+        verified["motion_keyframes_independently_verified"] = True
+    return verified
 
 
 def _session(blender_exe: Path, output: Path, source: Path | None, allow_render: bool):
@@ -307,6 +316,8 @@ def run_trial(blender_exe: Path, upstream: Path, output: Path, report: dict,
             used_session_ids.add(current["session_id"])
             record("motion", controller, current["revision"],
                    stage2_source, False, before)
+            if files["motion"]["blender_session_id"] != current["session_id"]:
+                raise ValueError("Motion result differs from authenticated source session")
         if inspect_input_source(stage2_source, files["model2"]["sha256"]) != before:
             raise ValueError("Stage-2 source bytes changed during motion checkpoint")
         motion_source = Path(files["motion"]["file"])
@@ -320,6 +331,8 @@ def run_trial(blender_exe: Path, upstream: Path, output: Path, report: dict,
                 used_session_ids.add(current["session_id"])
                 record(stage, controller, current["revision"],
                        motion_source, True, before)
+                if files[stage]["blender_session_id"] != current["session_id"]:
+                    raise ValueError("Motion render differs from authenticated source session")
             if inspect_input_source(motion_source, files["motion"]["sha256"]) != before:
                 raise ValueError("Saved motion checkpoint changed while rendering a frame")
 

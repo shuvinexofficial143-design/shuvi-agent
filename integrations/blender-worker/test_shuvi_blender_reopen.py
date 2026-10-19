@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shuvi_blender_reopen import capture_scene, reopen_checkpoint, _stable_checkpoint_bytes, _fixed_stage_geometry_matches
+from shuvi_blender_reopen import (capture_scene, reopen_checkpoint,
+    _stable_checkpoint_bytes, _fixed_stage_geometry_matches,
+    _fixed_motion_keyframes_match)
 from shuvi_blender_session import verify_in_session_stage1
 
 
@@ -778,6 +780,94 @@ class ReopenTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "truncated"):
             capture_scene(controller, self.file)
 
+
+    def test_fixed_motion_requires_real_z_motion_at_exact_frames_and_live_pose(self):
+        """A noisy still render or unrelated keyframe is not the fixed motion proof."""
+        def point(frame, value, interpolation="LINEAR"):
+            return {"frame": float(frame), "value": float(value),
+                    "interpolation": interpolation}
+        def motion_fixture():
+            mesh = {
+                "name": "Shuvi41ProofMesh", "type": "MESH",
+                "transform": {"location": [0.0, 0.0, 1.5]},
+                "animation": {"has_animation_data": True, "action": "Shuvi41ProofMeshAction",
+                              "drivers_count": 0, "nla_track_count": 0,
+                              "channels": [
+                                  {"data_path": path, "index": index,
+                                   "point_count": 2,
+                                   "points": [point(1, start), point(24, finish)]}
+                                  for path, starts, finishes in (
+                                      ("location", (0.0, 0.0, 0.0), (0.0, 0.0, 1.5)),
+                                      ("rotation_euler", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+                                      ("scale", (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)),
+                                  )
+                                  for index, (start, finish) in enumerate(zip(starts, finishes))
+                              ]},
+            }
+            camera = {"name": "Shuvi41ProofCamera", "type": "CAMERA",
+                      "animation": {"has_animation_data": False}}
+            light = {"name": "Shuvi41ProofKey", "type": "LIGHT",
+                     "animation": {"has_animation_data": False}}
+            return {"frames": {"current": 24}}, [mesh, camera, light]
+        def valid(scene, objects, camera=True, light=True, active="Shuvi41ProofCamera"):
+            return _fixed_motion_keyframes_match(
+                scene, objects, proof_camera_verified=camera,
+                proof_key_light_verified=light, active_camera_name=active)
+        scene, objects = motion_fixture()
+        self.assertTrue(valid(scene, objects))
+        for kind in (
+            "seek_not_persisted", "flat_z_animation", "wrong_final_keyframe",
+            "wrong_interpolation", "wrong_live_pose", "missing_action",
+            "untrusted_driver", "untrusted_nla", "duplicate_z_curve",
+            "different_mesh", "another_animated_object", "no_camera", "no_light",
+            "missing_scale_channel", "spurious_xy_motion", "wrong_rotation",
+        ):
+            with self.subTest(kind=kind):
+                scene, objects = motion_fixture()
+                camera, light = True, True
+                animation = objects[0]["animation"]
+                z = next(ch for ch in animation["channels"]
+                         if ch["data_path"] == "location" and ch["index"] == 2)
+                if kind == "seek_not_persisted":
+                    scene["frames"]["current"] = 1
+                elif kind == "flat_z_animation":
+                    z["points"][1]["value"] = 0.0
+                elif kind == "wrong_final_keyframe":
+                    z["points"][1]["frame"] = 25.0
+                elif kind == "wrong_interpolation":
+                    z["points"][1]["interpolation"] = "BEZIER"
+                elif kind == "wrong_live_pose":
+                    objects[0]["transform"]["location"][2] = 0.0
+                elif kind == "missing_action":
+                    animation["has_animation_data"] = False
+                elif kind == "untrusted_driver":
+                    animation["drivers_count"] = 1
+                elif kind == "untrusted_nla":
+                    animation["nla_track_count"] = 1
+                elif kind == "duplicate_z_curve":
+                    animation["channels"].append(copy.deepcopy(z))
+                elif kind == "missing_scale_channel":
+                    animation["channels"].pop()
+                elif kind == "spurious_xy_motion":
+                    animation["channels"][0]["points"][1]["value"] = 0.4
+                elif kind == "wrong_rotation":
+                    animation["channels"][4]["points"][0]["value"] = 1.0
+                elif kind == "different_mesh":
+                    objects[0]["name"] = "Decoy"
+                elif kind == "another_animated_object":
+                    objects[2]["animation"]["has_animation_data"] = True
+                elif kind == "no_camera":
+                    camera = False
+                elif kind == "no_light":
+                    light = False
+                self.assertFalse(valid(scene, objects, camera, light))
+
+        # The real independent reader must invoke the fixed motion invariant.
+        with tempfile.TemporaryDirectory(prefix="shuvi41-motion-reopen-") as temp:
+            target = Path(temp) / "shuvi41-proof-motion.blend"
+            target.write_bytes(b"BLENDER-v430" + b"fixture")
+            with self.assertRaisesRegex(ValueError, "fixed motion"):
+                capture_scene(FakeController(target), target)
 
     def test_animated_checkpoint_keyframes_survive_independent_reopen(self):
         """Previously static fingerprints missed altered or missing action data."""

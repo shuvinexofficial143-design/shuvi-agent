@@ -139,3 +139,31 @@ owner-opt-in host QA harness, never a claim of native user approval.
 
 **This milestone only adds code/tests.** No Windows host was accessed,
 no Blender launched, no render actually produced, and no merge/deploy occurred.
+
+## Saved motion semantics after independent reopen
+
+The opt-in eight-stage host runner now rejects a motion checkpoint that merely
+contains some animation keys or produces two different PNG byte streams. The
+saved `shuvi41-proof-motion.blend` must pass **both** writer-side and new
+read-only Blender-process inspection of the same bounded scene fingerprint,
+plus a fixed motion-specific invariant:
+
+- Exactly one animated `Shuvi41ProofMesh`, with all nine genuine XYZ\n  location/rotation/scale F-curves at frames 1 and 24, using LINEAR\n  interpolation. Its Z location moves from 0 to 1.5 while the other\n  coordinates, rotations, and scales match the fixed authored recipe.
+- The saved scene is at frame 24, its actual mesh transform is approximately
+  (0, 0, 1.5), and the expected camera and key light survive.
+- No animation drivers or NLA tracks may override the expected action;
+  duplicate/conflicting location curves and wrong/missing points are denied.
+- The motion checkpoint's independently reopened proof must expressly include
+  `fixed_motion_keyframes_verified=true`. The eight-stage unsigned report
+  carries a matching motion-only receipt field, and offline verification rejects
+  missing/false flags or flags attached to non-motion stages.
+- Both frame-render stages and the motion-save stage must finish under the
+  same session identity that inspected their authenticated input at launch,
+  besides the existing distinct-session and SHA lineage constraints.
+
+This closes a false-positive mode where different noisy 1-sample still renders
+would otherwise count as motion. The offline verifier can check only the
+retained **unsigned claim** and current files; it cannot replay historic
+keyframes without authorized Blender, certify artistic motion quality, or
+authenticate who produced the report. This development milestone invokes no
+live Blender/Windows session and never merges or deploys.

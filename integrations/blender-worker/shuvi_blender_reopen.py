@@ -125,6 +125,72 @@ def _animation_readback(item: dict, call) -> dict:
         "nla_track_count": inspected["nla_track_count"],
     }
 
+def _fixed_motion_keyframes_match(scene: dict, objects: list[dict], *,
+                                  proof_camera_verified: bool,
+                                  proof_key_light_verified: bool,
+                                  active_camera_name: str | None) -> bool:
+    """Verify the EXACT fixed motion recipe, not merely some animation data.
+
+    The upstream 1-sample render can differ from sampling noise alone. This
+    semantic check runs over already authenticated, independently read-back
+    object/action data, and requires the authored frame-1 -> frame-24 Z motion.
+    """
+    frames = scene.get("frames") if isinstance(scene, dict) else None
+    if (not isinstance(frames, dict) or type(frames.get("current")) is not int
+            or frames["current"] != 24 or not proof_camera_verified
+            or not proof_key_light_verified
+            or active_camera_name != "Shuvi41ProofCamera"):
+        return False
+    meshes = [item for item in objects if item.get("type") == "MESH"
+              and item.get("name") == "Shuvi41ProofMesh"]
+    if len(meshes) != 1 or sum(
+        item.get("animation", {}).get("has_animation_data") is True
+        for item in objects) != 1:
+        return False
+    mesh = meshes[0]
+    if not _near_vector(mesh.get("transform", {}).get("location"), [0.0, 0.0, 1.5]):
+        return False
+    action = mesh.get("animation")
+    if (not isinstance(action, dict) or action.get("has_animation_data") is not True
+            or not isinstance(action.get("action"), str) or not action["action"]
+            or action.get("drivers_count") != 0 or action.get("nla_track_count") != 0
+            or not isinstance(action.get("channels"), list)):
+        return False
+    # The pinned upstream animation.insert_keyframe inserts exactly nine
+    # XYZ transform F-curves per action, not just a single arbitrary Z key.
+    expected = {
+        (path, index): (start, finish)
+        for path, starts, finishes in (
+            ("location", (0.0, 0.0, 0.0), (0.0, 0.0, 1.5)),
+            ("rotation_euler", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ("scale", (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)),
+        )
+        for index, (start, finish) in enumerate(zip(starts, finishes))
+    }
+    if len(action["channels"]) != len(expected):
+        return False
+    seen = set()
+    for channel in action["channels"]:
+        key = (channel.get("data_path"), channel.get("index"))
+        if key not in expected or key in seen:
+            return False
+        seen.add(key)
+        points = channel.get("points")
+        start, finish = expected[key]
+        if (channel.get("point_count") != 2 or not isinstance(points, list)
+                or len(points) != 2):
+            return False
+        for point, frame, value in zip(points, (1.0, 24.0), (start, finish)):
+            if (not isinstance(point, dict)
+                    or type(point.get("frame")) not in (float, int)
+                    or type(point.get("value")) not in (float, int)
+                    or abs(point["frame"] - frame) > 0.0002
+                    or abs(point["value"] - value) > 0.0002
+                    or point.get("interpolation") != "LINEAR"):
+                return False
+    return seen == set(expected)
+
+
 def _near_vector(actual, expected, *, tolerance=0.0002):
     return (isinstance(actual, (list, tuple)) and len(actual) == len(expected)
             and all(type(value) in (int, float) and abs(value - target) <= tolerance
@@ -519,6 +585,15 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         if final_scene.get(field) != scene.get(field):
             raise ValueError("Blender non-object scene settings changed during checkpoint proof")
 
+    fixed_motion_verified = False
+    if saved.name == "shuvi41-proof-motion.blend":
+        fixed_motion_verified = _fixed_motion_keyframes_match(
+            scene, objects, proof_camera_verified=proof_camera_verified,
+            proof_key_light_verified=proof_key_light_verified,
+            active_camera_name=active_camera_name)
+        if not fixed_motion_verified:
+            raise ValueError("Saved fixed motion lacks independently read-back frame-1/24 keyframes")
+
     payload = {
         "scene": {field: scene[field] for field in SCENE_FIELDS},
         "active_camera_name": active_camera_name,
@@ -536,6 +611,7 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             "total_vertices": total_vertices, "total_faces": total_faces,
             "animated_object_count": animated_count,
             "animation_point_count": animation_point_count,
+            "fixed_motion_keyframes_verified": fixed_motion_verified,
             "active_camera_name": active_camera_name,
             "proof_camera_verified": proof_camera_verified,
             "proof_key_light_verified": proof_key_light_verified,
@@ -642,6 +718,11 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
                 or reopened.get("proof_key_light_verified") is not True
                 or reopened.get("active_camera_name") != "Shuvi41ProofCamera"):
             raise ValueError("Saved copper material/look, proof camera or light missing after independent reopen")
+    if saved.name == "shuvi41-proof-motion.blend" and (
+        original.get("fixed_motion_keyframes_verified") is not True
+        or reopened.get("fixed_motion_keyframes_verified") is not True
+    ):
+        raise ValueError("Reopened fixed motion does not preserve required frame-1/24 keyframes")
     return {"verified": True, "checkpoint_file_sha256": reopened_file_sha256,
             "checkpoint_bytes_stable_during_reopen": True,
             "fingerprint": reopened["fingerprint"],
@@ -651,6 +732,7 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
             "animated_object_count": reopened["animated_object_count"],
             "animation_point_count": reopened["animation_point_count"],
             "animation_keyframes_independently_verified": reopened["animation_point_count"] > 0,
+            "fixed_motion_keyframes_verified": reopened["fixed_motion_keyframes_verified"],
             "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"],
             "active_camera_name": reopened["active_camera_name"],
             "proof_camera_verified": reopened["proof_camera_verified"],

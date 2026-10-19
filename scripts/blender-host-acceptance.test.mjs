@@ -42,6 +42,28 @@ test("actual acceptance stages bind checked PlanRunner to SHA/reopened evidence"
   assert.match(fixture,/test_failure_keeps_partial_outputs_and_never_retries/);
 });
 
+test("fixed-motion proof checks exact saved action rather than sampling noise",()=>{
+  const reopen=read("integrations/blender-worker/shuvi_blender_reopen.py");
+  const offline=read("integrations/blender-worker/shuvi_blender_host_reverify.py");
+  const regress=read("integrations/blender-worker/test_shuvi_blender_reopen.py");
+  for(const signal of [
+    "def _fixed_motion_keyframes_match(",
+    'frames["current"] != 24',
+    '"Shuvi41ProofMesh"',
+    '"location"',
+    'len(action["channels"]) != len(expected)',
+    'point.get("interpolation") != "LINEAR"',
+    'saved.name == "shuvi41-proof-motion.blend"',
+    '"fixed_motion_keyframes_verified": reopened["fixed_motion_keyframes_verified"]',
+  ]) assert.ok(reopen.includes(signal),signal);
+  assert.match(host,/reopened\.get\("fixed_motion_keyframes_verified"\) is not True/);
+  assert.match(host,/Motion result differs from authenticated source session/);
+  assert.match(host,/Motion render differs from authenticated source session/);
+  assert.match(offline,/receipt\.get\("motion_keyframes_independently_verified"\) is not True/);
+  assert.match(regress,/test_fixed_motion_requires_real_z_motion_at_exact_frames_and_live_pose/);
+  assert.match(fixture,/test_opted_motion_report_cannot_claim_semantics_without_receipt/);
+});
+
 test("optional motion host trial is gated and verifies actual frame pixel differences",()=>{
   const offline=read("integrations/blender-worker/shuvi_blender_host_reverify.py");
   for(const proof of [
