@@ -89,3 +89,26 @@ test("optional motion host trial is gated and verifies actual frame pixel differ
   assert.match(fixture,/test_motion_pair_rejects_same_decoded_pixels_even_with_different_png_bytes/);
   assert.match(fixture,/test_motion_opt_in_cannot_promote_five_stage_or_reused_session/);
 });
+
+test("real Windows Blender CI is tied to the triggering SHA and reruns when worker code changes",()=>{
+  const real=read(".github/workflows/blender-windows-host-acceptance.yml");
+  for(const path of [
+    "feature/shuvi41-blender-worker",
+    ".github/workflows/blender-upstream-contract-ci.yml",
+    "'integrations/blender-worker/**'",
+    "'src-tauri/src/blender_*.rs'",
+    "'scripts/blender-*.test.mjs'",
+  ]) assert.ok(real.includes(path), "missing host CI change trigger: "+path);
+  for(const proof of [
+    "ref: ${{ github.sha }}",
+    "$headBefore -ne $env:GITHUB_SHA",
+    "git switch --quiet -c feature/shuvi41-blender-worker",
+    "$trial.shuvi_source_sha -ne $env:GITHUB_SHA",
+    "$trial.blender_launch_performed -ne $true",
+    "$trial.completed_stages.Count -ne 8",
+    "--verify-report $reports[0].FullName",
+    "if: github.ref == 'refs/heads/feature/shuvi41-blender-worker'",
+    "retention-days: 7",
+  ]) assert.ok(real.includes(proof), "missing pinned live Windows proof guard: "+proof);
+  assert.ok(!real.includes("ref: feature/shuvi41-blender-worker\n"), "must checkout immutable event SHA");
+});

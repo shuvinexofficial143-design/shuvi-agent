@@ -1,6 +1,6 @@
 # Shuvi 41 — opt-in real Windows Blender host acceptance
 
-This is a **developer-operated, disposable-host verification harness**, not a Shuvi ToolAction or approval bypass. It never changes the Shuvi scheduler, Desktop UI, approved source checkpoints or existing jobs. Its default is a read-only JSON readiness probe. CI runs **only the no-host unit tests**, not Blender.
+This is a **developer-operated, disposable-host verification harness**, not a Shuvi ToolAction or approval bypass. It never changes the Shuvi scheduler, Desktop UI, approved source checkpoints or existing jobs. Its default is a read-only JSON readiness probe. The upstream contract CI runs no-host unit tests. A **separate disposable Windows 2022 real-Blender CI workflow** now runs the full optional eight-stage trial for relevant feature-branch worker/source changes; it uses no user's machine or native Shuvi approval.
 
 ## What it proves when a human explicitly runs it on a real Windows host
 
@@ -81,9 +81,10 @@ evaluate the image aesthetically, or authorize importing into Premiere.
 
 The run path now also executes the same post-trial byte/lineage gate *before*
 accepting a success; a trial with incomplete, missing or mutated proof is
-recorded as failed_or_partial_outcome_unknown with no automatic retry. CI
-covers this using synthetic files only; real Windows Blender execution and
-native Shuvi approval acceptance remain unverified.
+recorded as failed_or_partial_outcome_unknown with no automatic retry. The upstream source CI
+covers this using synthetic files. A separately opted-in disposable Windows
+runner has since executed real Blender 4.3.2 successfully; native Shuvi
+owner-approval execution and Adobe acceptance remain unverified.
 
 
 
@@ -104,3 +105,33 @@ output still records visual_quality_verified=false and does not claim that
 the intended 3D model appears, that material shaders look professional, or
 that real Windows Blender/Adobe integration has been accepted. Live visual
 inspection is a distinct owner-approved step.
+
+## Verified disposable Windows host CI (2026-10-19)
+
+The feature-only workflow
+[`Shuvi41 Disposable Windows Blender Acceptance`](https://github.com/shuvinexofficial143-design/shuvi-agent/actions/workflows/blender-windows-host-acceptance.yml)
+downloads the official SHA-256-verified portable Blender 4.3.2 package on a
+**temporary GitHub Windows Server 2022 runner**, uses the clean pinned upstream
+commit, then deliberately runs `--run --include-motion` with its
+`disposable-only` opt-in. On HEAD
+`5b1db7c9e250ba824cbe4e3f581fb0eaa506bfc2`, the
+[real eight-stage run](https://github.com/shuvinexofficial143-design/shuvi-agent/actions/runs/39212949621)
+completed successfully with all eight saved outputs and
+[independent eight-file proof](https://github.com/shuvinexofficial143-design/shuvi-agent/actions/runs/39212949621/artifacts/12168566682).
+The report confirms real Blender launch, independent .blend reopen/motion
+keyframes, two distinct decoded frame images and independent artifact rehash.
+
+**Follow-up CI hardening:** For future relevant changes to Blender worker code,
+native Blender Rust modules, contract workflow or source tests, the real host
+workflow automatically reruns on this *exact feature branch*. It now checks
+out the **immutable triggering GitHub event commit** (rather than whichever
+branch tip exists when the runner begins), establishes the local feature branch
+without pushing, and requires the recorded trial source SHA to match the
+original event SHA. An unrelated, changed or moving checkout fails closed.
+This is a CI provenance guard, not a cryptographic signature on the unsigned
+JSON report.
+
+The native Shuvi Desktop permission/ToolAction path, actual user's Windows
+machine, Adobe import and artistic approval are still separate tests. Never
+describe this CI trial as approval, deployment, production readiness or native
+UI-to-Blender end-to-end acceptance. This PR remains draft.

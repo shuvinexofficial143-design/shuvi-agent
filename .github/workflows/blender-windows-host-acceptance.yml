@@ -6,6 +6,10 @@ on:
       - feature/shuvi41-blender-worker
     paths:
       - .github/workflows/blender-windows-host-acceptance.yml
+      - .github/workflows/blender-upstream-contract-ci.yml
+      - 'integrations/blender-worker/**'
+      - 'src-tauri/src/blender_*.rs'
+      - 'scripts/blender-*.test.mjs'
   workflow_dispatch:
 
 permissions:
@@ -21,16 +25,25 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
-      - name: Check out only the reviewed Shuvi feature branch
+      - name: Check out immutable Shuvi feature event SHA
         uses: actions/checkout@v4
         with:
-          ref: feature/shuvi41-blender-worker
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Prepare pinned, clean upstream outside Shuvi checkout
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF -ne 'refs/heads/feature/shuvi41-blender-worker') {
+            throw 'Only the exact reviewed Shuvi feature ref may launch the host trial'
+          }
+          $headBefore = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $headBefore -ne $env:GITHUB_SHA) {
+            throw 'Checkout must match immutable triggering event SHA'
+          }
+          git switch --quiet -c feature/shuvi41-blender-worker
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot establish the reviewed local feature branch' }
           $upstream = Join-Path $env:RUNNER_TEMP 'shuvi41-upstream'
           git clone --quiet --no-checkout https://github.com/shuvinexofficial143-design/shuvi-blender-agent.git $upstream
           if ($LASTEXITCODE -ne 0) { throw 'Upstream clone failed' }
@@ -96,6 +109,7 @@ jobs:
           $trial = Get-Content -LiteralPath $reports[0].FullName -Raw | ConvertFrom-Json
           if ($trial.status -ne 'real_blender_upstream_acceptance_passed' -or
               $trial.real_host_acceptance_verified -ne $true -or
+              $trial.shuvi_source_sha -ne $env:GITHUB_SHA -or
               $trial.blender_launch_performed -ne $true -or
               $trial.completed_stages.Count -ne 8 -or
               $trial.motion_pair_pixels_differ -ne $true) {
