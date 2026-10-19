@@ -78,3 +78,9 @@ test("four native unit scenarios cover valid files, swapped sessions, altered da
     "rejects_substituted_render_input_path_sha_size_or_missing_load_proof"
   ])assert.ok(chain.includes("fn "+name+"("),name);
 });
+
+test("real synthetic PNG reverify denies forged host, visual or scene-reopen evidence",()=>{
+  assert.ok(chain.includes("fn render_handoff_rejects_forged_scene_reopen_and_host_quality_claims("));
+  assert.ok(chain.includes("blender_artifact_manifest::reverify(&manifest,&work.0).unwrap()"));
+  assert.ok(manifest.includes("validate_historical_claim_boundaries(manifest)?"));
+});

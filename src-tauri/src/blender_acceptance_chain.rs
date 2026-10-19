@@ -336,6 +336,30 @@ mod tests {
     }
 
     #[test]
+    fn render_handoff_rejects_forged_scene_reopen_and_host_quality_claims(){
+        let work=Workspace::new();
+        let receipt=render_receipt(&work,A3,S3);
+        let manifest=receipt["artifact_manifest"].clone();
+        crate::blender_artifact_manifest::reverify(&manifest,&work.0).unwrap();
+        for (pointer,value) in [
+            ("/evidence/independent_read_only_reopen",json!(true)),
+            ("/evidence/checkpoint_bytes_stable_during_reopen",json!(true)),
+            ("/evidence/mesh_geometry_verified",json!(true)),
+            ("/evidence/fixed_stage_geometry_verified",json!(true)),
+            ("/evidence/material_look_checkpoint_verified",json!(true)),
+            ("/evidence/proof_camera_verified",json!(true)),
+            ("/evidence/scene_fingerprint",json!("a".repeat(64))),
+            ("/handoff/host_live_acceptance_proven",json!(true)),
+            ("/handoff/visual_quality_verified",json!(true)),
+        ]{
+            let mut forged=manifest.clone();
+            *forged.pointer_mut(pointer).unwrap()=value;
+            assert!(crate::blender_artifact_manifest::reverify(
+                &forged,&work.0).is_err(),"{pointer}");
+        }
+    }
+
+    #[test]
     fn matching_three_receipts_review_current_bytes_without_overclaim(){
         let workspace=Workspace::new();
         let value=review(&fixtures(&workspace),&workspace.0).unwrap();

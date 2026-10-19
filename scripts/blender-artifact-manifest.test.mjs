@@ -127,3 +127,22 @@ test("native handoff binds reserved stage names to historical geometry/camera/li
     "fn reserved_stage_checkpoint_needs_real_persisted_shape_camera_and_light()"
   ])assert.ok(rust.includes(t),t);
 });
+
+test("downstream handoff cannot inflate host/import/approval claims or cross-bind the material source session",()=>{
+  assert.ok(rust.includes("fn validate_historical_claim_boundaries(manifest:&Value)"),"missing claim gate");
+  assert.ok(rust.includes("validate_historical_claim_boundaries(manifest)?"),"read-only reverify must call claim gate");
+  assert.ok(rust.includes("fn validate_historical_material_session("),"missing exact owner check");
+  assert.ok(rust.includes("validate_historical_material_session(manifest,material_proof_was_valid)?"),"reverify must enforce origin session");
+  for(const contract of [
+    'handoff.get("host_live_acceptance_proven").and_then(Value::as_bool)!=Some(false)',
+    'handoff.get("visual_quality_verified").and_then(Value::as_bool)!=Some(false)',
+    'handoff.get("target_application")!=Some(&Value::Null)',
+    'evidence.get("destructive_allowed").and_then(Value::as_bool)!=Some(false)',
+    'evidence.get("executed_typed_steps").and_then(Value::as_u64)',
+    'evidence.get("independent_read_only_reopen").and_then(Value::as_bool)!=Some(saved)',
+    'evidence.get("mesh_geometry_verified").and_then(Value::as_bool)!=Some(saved)',
+    'source_owner!=Some(owner)',
+    "fn historical_handoff_rejects_claim_inflation_even_when_file_sha_is_valid(",
+    "fn historical_material_session_must_match_exact_original_handoff_session("
+  ])assert.ok(rust.includes(contract),contract);
+});

@@ -266,6 +266,77 @@ pub(crate) fn build(
 }
 
 
+/// A manifest is user-supplied, historical JSON, not an approval token.
+/// Refuse self-contradictory or inflated permissions before checking the file.
+fn validate_historical_claim_boundaries(manifest:&Value)->Result<(),String>{
+    let handoff=manifest.get("handoff").ok_or("Blender handoff claims are missing.")?;
+    if handoff.get("requires_new_action_approval").and_then(Value::as_bool)!=Some(true)
+        ||handoff.get("import_performed").and_then(Value::as_bool)!=Some(false)
+        ||handoff.get("target_application")!=Some(&Value::Null)
+        ||handoff.get("host_live_acceptance_proven").and_then(Value::as_bool)!=Some(false)
+        ||handoff.get("visual_quality_verified").and_then(Value::as_bool)!=Some(false){
+        return Err("Historical Blender handoff cannot claim approval, host acceptance, visual inspection or an import.".into());
+    }
+    let artifact=manifest.get("artifact").ok_or("Blender handoff artifact missing.")?;
+    let kind=artifact.get("format").and_then(Value::as_str)
+        .ok_or("Blender handoff format missing.")?;
+    let saved=match kind{
+        "BLEND"=>true,
+        "PNG"=>false,
+        _=>return Err("Unsupported Blender handoff artifact format.".into()),
+    };
+    let evidence=manifest.get("evidence").ok_or("Blender handoff proof is missing.")?;
+    if evidence.get("native_file_sha256_readback").and_then(Value::as_bool)!=Some(true)
+        ||evidence.get("destructive_allowed").and_then(Value::as_bool)!=Some(false)
+        ||evidence.get("executed_typed_steps").and_then(Value::as_u64)
+            .is_none_or(|n|!(1..=6).contains(&n))
+        ||evidence.get("independent_read_only_reopen").and_then(Value::as_bool)!=Some(saved)
+        ||evidence.get("checkpoint_bytes_stable_during_reopen").and_then(Value::as_bool)!=Some(saved)
+        ||evidence.get("mesh_geometry_verified").and_then(Value::as_bool)!=Some(saved){
+        return Err("Historical Blender artifact evidence is incomplete or contradicts its output type.".into());
+    }
+    if saved {
+        if artifact.get("image").is_some_and(|v|!v.is_null())
+            ||evidence.get("material_render_source").is_some_and(|v|!v.is_null()){
+            return Err("Saved Blender scene cannot claim PNG image metadata or an unrelated material still source.".into());
+        }
+    } else {
+        if !artifact.get("image").is_some_and(Value::is_object)
+            ||evidence.get("fixed_stage_geometry_verified").and_then(Value::as_bool)!=Some(false)
+            ||evidence.get("material_look_checkpoint_verified").and_then(Value::as_bool)!=Some(false){
+            return Err("PNG cannot masquerade as an independently reopened modeling or material checkpoint.".into());
+        }
+        // Build emits null for scene-only proof on PNG. No read-only file
+        // check can convert a PNG into a scene reopen or geometry receipt.
+        for key in [
+            "checkpoint_file_sha256","scene_fingerprint","object_count",
+            "fixed_stage_name","proof_copper_material_verified",
+            "shader_parameters_independently_verified","proof_copper_shader_revision",
+            "active_camera_name","proof_camera_verified","proof_key_light_verified",
+            "mesh_fingerprint","mesh_count","total_vertices","total_faces"
+        ]{
+            if evidence.get(key).is_some_and(|v|!v.is_null()){
+                return Err(format!("PNG handoff illegally claims historical Blender scene proof: {key}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_historical_material_session(
+    manifest:&Value,material_proof_present:bool
+)->Result<(),String>{
+    if !material_proof_present{return Ok(());}
+    let owner=manifest.get("source_session_id").and_then(Value::as_str)
+        .ok_or("Material render handoff has no originating native session.")?;
+    let source_owner=manifest.pointer("/evidence/material_render_source/source_session_id")
+        .and_then(Value::as_str);
+    if source_owner!=Some(owner){
+        return Err("Material render historical source session conflicts with the Blender handoff owner.".into());
+    }
+    Ok(())
+}
+
 /// Read-only downstream receipt check. Only verifies the file bytes as they
 /// exist NOW; prior action approval, Blender reopen and visual quality are
 /// historical claims and cannot be re-authenticated from JSON alone.
@@ -273,11 +344,10 @@ pub(crate) fn build(
 pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String>{
     if manifest.get("schema_version").and_then(Value::as_u64)!=Some(1)
         ||manifest.get("producer").and_then(Value::as_str)!=Some("shuvi41.blender")
-        ||manifest.get("status").and_then(Value::as_str)!=Some("verified")
-        ||manifest.pointer("/handoff/requires_new_action_approval").and_then(Value::as_bool)!=Some(true)
-        ||manifest.pointer("/handoff/import_performed").and_then(Value::as_bool)!=Some(false) {
+        ||manifest.get("status").and_then(Value::as_str)!=Some("verified") {
         return Err("Blender handoff manifest schema or permission boundaries differ.".into());
     }
+    validate_historical_claim_boundaries(manifest)?;
     let action_id=manifest.get("source_action_id").and_then(Value::as_str)
         .ok_or("Blender handoff source action missing.")?;
     let parsed=Uuid::parse_str(action_id).map_err(|_|"Invalid Blender source action UUID.")?;
@@ -388,6 +458,7 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
     let material_proof_was_valid=validate_historical_material_proof(
         manifest.get("evidence").ok_or("Blender handoff evidence missing.")?,artifact
     )?;
+    validate_historical_material_session(manifest,material_proof_was_valid)?;
     // This native readback re-hashes the actual current file and checks it
     // remains confined within an explicitly selected existing root.
     verify_output(&receipt,approved_root)?;
@@ -711,6 +782,53 @@ mod tests {
         assert!(reverify(&forged,&f.0).is_err());
     }
 
+    #[test]
+    fn historical_handoff_rejects_claim_inflation_even_when_file_sha_is_valid(){
+        let f=Fixture::new();
+        let (path,size,sha)=f.save("blend");
+        let manifest=build(&proof(&path,size,&sha),&f.0,ACTION,Some(SESSION)).unwrap();
+        reverify(&manifest,&f.0).unwrap();
+        for (pointer,value) in [
+            ("/handoff/host_live_acceptance_proven",json!(true)),
+            ("/handoff/visual_quality_verified",json!(true)),
+            ("/handoff/target_application",json!("Adobe After Effects")),
+            ("/handoff/import_performed",json!(true)),
+            ("/handoff/requires_new_action_approval",json!(false)),
+            ("/evidence/native_file_sha256_readback",json!(false)),
+            ("/evidence/destructive_allowed",json!(true)),
+            ("/evidence/executed_typed_steps",json!(0)),
+            ("/evidence/executed_typed_steps",json!(7)),
+            ("/evidence/independent_read_only_reopen",json!(false)),
+            ("/evidence/checkpoint_bytes_stable_during_reopen",json!(false)),
+            ("/evidence/mesh_geometry_verified",json!(false)),
+            ("/evidence/material_render_source",json!({"forged":true})),
+            ("/artifact/image",json!({"width":64,"height":64})),
+        ]{
+            let mut forged=manifest.clone();
+            *forged.pointer_mut(pointer).expect("generated manifest field")=value;
+            assert!(reverify(&forged,&f.0).is_err(),"{pointer}");
+        }
+    }
+
+    #[test]
+    fn historical_material_session_must_match_exact_original_handoff_session(){
+        let correct=json!({"source_session_id":SESSION,
+            "evidence":{"material_render_source":{"source_session_id":SESSION}}});
+        validate_historical_material_session(&correct,true).unwrap();
+        // An ordinary non-material render has no material session history.
+        validate_historical_material_session(&json!({}),false).unwrap();
+        let mut forged=correct.clone();
+        forged["evidence"]["material_render_source"]["source_session_id"]=
+            json!("ed1f188e-5573-4913-b61a-acb286c124f9");
+        assert!(validate_historical_material_session(&forged,true).is_err());
+        let mut forged=correct.clone();
+        forged["source_session_id"]=Value::Null;
+        assert!(validate_historical_material_session(&forged,true).is_err());
+        let mut forged=correct;
+        forged["evidence"]["material_render_source"]["source_session_id"]=Value::Null;
+        assert!(validate_historical_material_session(&forged,true).is_err());
+    }
+    
     #[test]
     fn incomplete_or_untrusted_worker_cannot_claim_handoff(){
         let f=Fixture::new();let (path,size,sha)=f.save("blend");

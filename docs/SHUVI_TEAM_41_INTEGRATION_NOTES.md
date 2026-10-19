@@ -1767,3 +1767,32 @@ Native Rust classification tests and Node control-flow regressions are
 included. This is source/CI watchdog assurance, **not** measurement of an
 actual Windows host, proof that every OS descendant exited, or Blender
 render/application acceptance.
+
+
+## Team-41 — downstream Blender handoff claim and session-lineage hardening (source / CI)
+
+The read-only `blender_verify_artifact_manifest` action already re-hashed
+the actual current .blend/PNG file, checked its approved output root and
+separated historical Blender proof from a fresh host/app acceptance.
+However, a consumer-supplied JSON manifest could contradict itself by
+marking the host, visual QA or a target application as already accepted,
+or by mixing a material PNG's source session UUID with a different
+handoff session, while still passing the byte recheck.
+
+The native read-only reviewer now fails closed on any declared
+`import_performed=true`, `host_live_acceptance_proven=true`,
+`visual_quality_verified=true`, filled `target_application`,
+missing/new action approval, destructive permission, missing native SHA
+readback or invalid 1..6 typed-step receipt count. It also binds
+scene-reopen/geometry flags to **BLEND only**, rejects forged scene
+proof on PNG and unrelated material-source proof on .blend. For
+material stills, the historical source-session UUID must equal the
+parent Shuvi native artifact manifest's exact session UUID.
+
+These checks are intentionally historical-contract consistency only:
+the manifest remains editable JSON, this does not cryptographically
+authenticate prior owner approval, independently rerun Blender or
+authorize Adobe import. New Rust fixtures cover valid generated .blend
+and independently decoded synthetic PNG, inflated claims and mismatched
+material owner; Node tests protect wiring. Previous output/permission
+contracts and completed integration behavior remain intact.
