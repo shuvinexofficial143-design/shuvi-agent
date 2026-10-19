@@ -236,9 +236,9 @@ class ContractController:
                     or obj["revision"] != target["expected_revision"]):
                 return self._result_failure(request, "wrong or stale animation target")
             keys = obj.setdefault("keyframes", {})
-            if payload["frame"] in keys:
+            if str(payload["frame"]) in keys:
                 return self._result_failure(request, "animation keyframe may not be overwritten")
-            keys[payload["frame"]] = {
+            keys[str(payload["frame"])] = {
                 "transform": copy.deepcopy(payload["transform"]),
                 "interpolation": payload["interpolation"],
             }
@@ -253,7 +253,7 @@ class ContractController:
                 return self._result_failure(request, "stale animation scene revision")
             self.current_frame = payload["frame"]
             for obj in self.objects.values():
-                keyed = obj.get("keyframes", {}).get(self.current_frame)
+                keyed = obj.get("keyframes", {}).get(str(self.current_frame))
                 if keyed:
                     obj["transform"] = copy.deepcopy(keyed["transform"])
             self._advance("set final Blender timeline frame")
@@ -350,7 +350,8 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
             "geometry": {"vertices": [[0,0,0]], "faces": []},
         }
         report = PlanRunner(prior).run(plan)
-        self.assertEqual(len(prior.saved), 1)
+        self.assertEqual(len(prior.saved), 1,
+                         {"calls": prior.calls, "report": report.to_dict()})
         self.assertEqual(prior.calls, [
             "objects.list", "animation.insert_keyframe",
             "animation.insert_keyframe", "scene.inspect",
@@ -358,10 +359,10 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         ])
         self.assertEqual(prior.current_frame, 24)
         keys = prior.saved["shuvi41-proof-motion.blend"]["geometry"]["Shuvi41ProofMesh"]["keyframes"]
-        self.assertEqual(set(keys), {1, 24})
-        self.assertEqual(keys[1]["transform"]["location"], [0.0, 0.0, 0.0])
-        self.assertEqual(keys[24]["transform"]["location"], [0.0, 0.0, 1.5])
-        self.assertEqual(keys[24]["interpolation"], "LINEAR")
+        self.assertEqual(set(keys), {"1", "24"})
+        self.assertEqual(keys["1"]["transform"]["location"], [0.0, 0.0, 0.0])
+        self.assertEqual(keys["24"]["transform"]["location"], [0.0, 0.0, 1.5])
+        self.assertEqual(keys["24"]["interpolation"], "LINEAR")
         self.assertEqual(report.results["checkpoint"].status, Status.VERIFIED)
         self.assertIn("animation.insert_keyframe", prior.checked_operations)
         self.assertIn("animation.set_frame", prior.checked_operations)
