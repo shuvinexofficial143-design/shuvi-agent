@@ -943,7 +943,8 @@ mod tests{
         fs::write(&path,b"fake-project").unwrap();
         let (bytes,sha256)=file_hash(&path,MAX_ARTIFACT_BYTES).unwrap();
         let claim=DeliveryArtifact{kind:"premiere_project".into(),
-            path:path.to_string_lossy().into_owned(),bytes,sha256};
+            path:path.to_string_lossy().into_owned(),bytes,sha256,
+            approved_plan_sha256:None};
         assert!(check_artifact(&claim,"premiere_create_project").is_err());
         let _=fs::remove_file(path);
     }
