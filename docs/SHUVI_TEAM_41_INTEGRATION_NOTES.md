@@ -1796,3 +1796,26 @@ authorize Adobe import. New Rust fixtures cover valid generated .blend
 and independently decoded synthetic PNG, inflated claims and mismatched
 material owner; Node tests protect wiring. Previous output/permission
 contracts and completed integration behavior remain intact.
+
+
+## Team-41 — independent offline five-artifact host report re-verification (source / CI)
+
+The opt-in Windows upstream host harness now offers a truly read-only
+`--verify-report` path: no Blender, subprocess, native Shuvi action, output
+mutation or additional host approval is implied. An existing operator-provided
+acceptance-report.json is parsed with duplicate-key/finite-value defenses and
+cross-checked against all five currently retained fixed checkpoint/PNG files.
+The verifier enforces exact stage order/names/size/SHA, Blender file headers,
+complete CRC/deflate/filter validation for the two 64x64 render PNGs, distinct
+source sessions except for Stage1-to-Stage2, and Stage2/material input SHA
+continuity. The live-trial success return path now invokes the same post-trial
+recheck before declaring a pass, so missing/changed proof remains an
+outcome-unknown failure without automatic rerun.
+
+This is **self-consistency of a mutable unsigned historical report**, not a
+cryptographic certificate of Blender provenance, native Rust ToolAction
+approval, Windows Job Object/4GiB watchdog runtime, artistic correctness or
+Premiere import. New no-host Python fixtures exercise five-file success,
+changed output bytes, forged Stage2 session/source links, duplicate report
+keys, invalid PNG deflate with freshly computed CRC/SHA, and false-positive
+trial claims. See docs/SHUVI41_BLENDER_HOST_ACCEPTANCE.md.

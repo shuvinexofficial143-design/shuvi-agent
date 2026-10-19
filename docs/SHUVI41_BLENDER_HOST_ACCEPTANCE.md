@@ -51,3 +51,37 @@ The final report deliberately keeps:
 - visual_quality_verified=false
 
 Do not interpret a CI green check or even a passing direct host trial as proof of a live Shuvi desktop-to-Blender-to-Adobe accepted workflow.
+
+
+## Post-run read-only artifact review (new; does NOT launch Blender)
+
+After a separately owner-approved disposable host trial, an operator can
+recheck the five retained outputs without reopening Blender or running native
+Shuvi actions. Supply the absolute path to the existing report:
+
+~~~powershell
+python -B integrations/blender-worker/shuvi_blender_host_acceptance.py --verify-report "<ABSOLUTE_PATH_TO_shuvi41-live-acceptance-DIR\acceptance-report.json>"
+~~~
+
+This standalone mode does **not** require --run, the opt-in environment variable,
+Git, the pinned upstream source, or Blender. It performs no writes and never
+attempts to repair missing output. It rejects:
+- Missing/replaced .blend or PNG bytes, wrong absolute output paths or linked files.
+- Broken Blender headers, PNG CRC/zlib/filter data, non-64×64 fixed renders.
+- Incorrect five-stage order, missing receipts, mismatched Stage-2 session ID,
+  reused render/material sessions and wrong source SHA lineage.
+- Inflated claims that native permission, Adobe import, or visual QA occurred,
+  and ambiguous/oversized/duplicate-key JSON reports.
+
+A passing result returns current_artifacts_rehashed=true with the actual
+five checked SHA-256 values. **The host report is unsigned and editable:**
+this only verifies that current files agree with its historical claims.
+It cannot prove that Blender generated them, authenticate the remote host,
+evaluate the image aesthetically, or authorize importing into Premiere.
+
+The run path now also executes the same post-trial byte/lineage gate *before*
+accepting a success; a trial with incomplete, missing or mutated proof is
+recorded as failed_or_partial_outcome_unknown with no automatic retry. CI
+covers this using synthetic files only; real Windows Blender execution and
+native Shuvi approval acceptance remain unverified.
+

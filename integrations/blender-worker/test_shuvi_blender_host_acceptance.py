@@ -6,6 +6,9 @@ import hashlib
 import io
 import json
 import os
+import struct
+import uuid
+import zlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -110,6 +113,7 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             with mock.patch.object(host, "readiness", return_value=probe), \
                  mock.patch.dict(os.environ, {host.OPT_IN_ENV: "disposable-only"}), \
                  mock.patch.object(host, "run_trial", side_effect=fake_trial), \
+                 mock.patch.object(host, "reverify_artifacts", return_value={"current_artifacts_rehashed": True}), \
                  contextlib.redirect_stdout(out):
                 code = host.main([
                     "--run", "--blender-exe", str(blender),
@@ -152,6 +156,159 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             self.assertFalse(report["automatic_retry_allowed"])
             self.assertTrue((Path(report["output_directory"]) / "partial.blend").is_file())
             self.assertEqual(len(report["completed_stages"]), 1)
+
+
+    @staticmethod
+    def _png_chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data +
+                struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+
+    def _five_stage_report(self, directory: Path):
+        """Synthetic bytes for offline readback only; never a real Blender proof."""
+        stages = []
+        recorded = {}
+        model_session = str(uuid.uuid4())
+        for stage, filename, kind in host.RECIPE_NAMES:
+            if kind == "BLEND":
+                data = b"BLENDER-v430" + stage.encode("ascii") + b" fixture bytes"
+            else:
+                pixels = b"".join(
+                    b"\x00" + b"".join(bytes((x * 3 % 256, y * 4 % 256, 70, 255))
+                                      for x in range(64))
+                    for y in range(64)
+                )
+                data = (
+                    b"\x89PNG\r\n\x1a\n"
+                    + self._png_chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 6, 0, 0, 0))
+                    + self._png_chunk(b"IDAT", zlib.compress(pixels))
+                    + self._png_chunk(b"IEND", b"")
+                )
+            file = directory / filename
+            file.write_bytes(data)
+            digest = hashlib.sha256(data).hexdigest()
+            source = (None if stage in ("model1", "model2")
+                      else recorded["look" if stage == "look_render" else "model2"])
+            stage_session = (model_session if stage in ("model1", "model2")
+                             else str(uuid.uuid4()))
+            stages.append({
+                "status": "host_file_rehashed", "file": str(file), "sha256": digest,
+                "bytes": len(data), "format": kind, "stage": stage,
+                "input_source_sha256": source, "blender_session_id": stage_session,
+                "independent_blender_reopen_verified": kind == "BLEND",
+                "rendered_visual_quality_verified": False,
+            })
+            recorded[stage] = digest
+        return {
+            "schema_version": 1, "kind": "shuvi41_real_blender_upstream_trial",
+            "status": "real_blender_upstream_acceptance_passed",
+            "probe_only": False, "real_host_acceptance_verified": True,
+            "stage1_stage2_same_real_blender_session": True,
+            "material_shader_preflight_verified": True,
+            "native_shuvi_action_executed": False,
+            "native_owner_approval_reauthenticated": False,
+            "visual_quality_verified": False, "adobe_import_performed": False,
+            "automatic_retry_allowed": False, "output_directory": str(directory),
+            "completed_stages": stages,
+        }
+
+    def test_offline_reverify_works_without_blender_git_or_process_launch(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-offline-review-") as temp:
+            directory = Path(temp)
+            report = self._five_stage_report(directory)
+            (directory / "acceptance-report.json").write_text(json.dumps(report))
+            output = io.StringIO()
+            with mock.patch.object(host.subprocess, "run", side_effect=AssertionError("never launch")), \
+                 mock.patch.object(host.tempfile, "mkdtemp", side_effect=AssertionError("never write")), \
+                 contextlib.redirect_stdout(output):
+                self.assertEqual(host.main([
+                    "--verify-report", str(directory / "acceptance-report.json")
+                ]), 0)
+            result = json.loads(output.getvalue())
+            self.assertTrue(result["current_artifacts_rehashed"])
+            self.assertEqual(result["verified_current_file_count"], 5)
+            self.assertFalse(result["historical_blender_execution_independently_authenticated"])
+            self.assertFalse(result["blender_launch_performed"])
+            self.assertFalse(result["native_shuvi_action_executed"])
+
+    def test_offline_reverify_rejects_corruption_session_and_source_lineage(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-offline-review-") as temp:
+            directory = Path(temp)
+            report = self._five_stage_report(directory)
+            self.assertEqual(host.reverify_artifacts(report, directory)[
+                "verified_current_file_count"], 5)
+            second = report["completed_stages"][1]
+            original_session = second["blender_session_id"]
+            second["blender_session_id"] = str(uuid.uuid4())
+            with self.assertRaisesRegex(ValueError, "same host session"):
+                host.reverify_artifacts(report, directory)
+            second["blender_session_id"] = original_session
+            render = report["completed_stages"][2]
+            prior = render["input_source_sha256"]
+            render["input_source_sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "lineage"):
+                host.reverify_artifacts(report, directory)
+            render["input_source_sha256"] = prior
+            filename = directory / "shuvi41-proof-stage1.blend"
+            filename.write_bytes(filename.read_bytes() + b"tampered")
+            with self.assertRaisesRegex(ValueError, "changed since host report"):
+                host.reverify_artifacts(report, directory)
+
+    def test_offline_reverify_denies_png_with_valid_crc_but_broken_deflate(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-offline-review-") as temp:
+            directory = Path(temp)
+            report = self._five_stage_report(directory)
+            entry = report["completed_stages"][2]
+            target = Path(entry["file"])
+            original = target.read_bytes()
+            ihdr_end = 8 + 12 + 13
+            broken = (original[:ihdr_end] +
+                      self._png_chunk(b"IDAT", b"not a valid zlib stream") +
+                      self._png_chunk(b"IEND", b""))
+            target.write_bytes(broken)
+            entry["sha256"] = hashlib.sha256(broken).hexdigest()
+            entry["bytes"] = len(broken)
+            with self.assertRaisesRegex((ValueError, zlib.error), "PNG|zlib"):
+                host.reverify_artifacts(report, directory)
+
+    def test_host_trial_cannot_promote_an_incomplete_five_stage_success_claim(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-no-false-green-") as temp:
+            root = Path(temp)
+            blender = root / "blender.exe"
+            blender.write_bytes(b"fixture")
+            upstream = root / "upstream"
+            upstream.mkdir()
+            output = io.StringIO()
+            def incomplete(exe, src, location, report):
+                report["status"] = "real_blender_upstream_acceptance_passed"
+                report["real_host_acceptance_verified"] = True
+                # A forged success without five current outputs must fail closed.
+            with (mock.patch.object(host, "readiness", return_value={
+                      "ready": True, "schema_version": 1}),
+                  mock.patch.dict(os.environ, {host.OPT_IN_ENV: "disposable-only"}),
+                  mock.patch.object(host, "run_trial", side_effect=incomplete),
+                  contextlib.redirect_stdout(output)):
+                self.assertEqual(host.main(["--run", "--blender-exe", str(blender),
+                                           "--upstream-root", str(upstream),
+                                           "--output-parent", str(root)]), 1)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["status"], "failed_or_partial_outcome_unknown")
+            self.assertFalse(report.get("post_trial_artifacts_rehashed", False))
+            self.assertFalse(report["automatic_retry_allowed"])
+
+    def test_offline_reverify_rejects_unsanctioned_status_and_duplicate_json_keys(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-offline-review-") as temp:
+            directory = Path(temp)
+            report = self._five_stage_report(directory)
+            report["visual_quality_verified"] = True
+            with self.assertRaisesRegex(ValueError, "contract mismatch"):
+                host.reverify_artifacts(report, directory)
+            report["visual_quality_verified"] = False
+            path = directory / "acceptance-report.json"
+            data = json.dumps(report)
+            path.write_text(data.replace('"schema_version": 1,',
+                                        '"schema_version": 1, "schema_version": 1,', 1))
+            with self.assertRaisesRegex(ValueError, "Duplicate key"):
+                host.verify_report_file(path)
 
 
 if __name__ == "__main__":

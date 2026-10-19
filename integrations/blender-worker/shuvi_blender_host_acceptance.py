@@ -21,6 +21,8 @@ import sys
 import tempfile
 from uuid import UUID
 
+from shuvi_blender_host_reverify import reverify_artifacts, verify_report_file
+
 # Never materialize __pycache__ in either audited clean source checkout.
 sys.dont_write_bytecode = True
 
@@ -316,7 +318,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream-root")
     parser.add_argument("--output-parent")
     parser.add_argument("--run", action="store_true")
+    parser.add_argument("--verify-report", help="Read-only rehash of retained host trial artifacts")
     args = parser.parse_args(argv)
+    if args.verify_report is not None:
+        if args.run or args.blender_exe or args.upstream_root or args.output_parent:
+            parser.error("--verify-report cannot be combined with host-launch options")
+        try:
+            reviewed = verify_report_file(Path(args.verify_report))
+        except (OSError, ValueError, UnicodeError) as exc:
+            print(json.dumps({
+                "kind": "shuvi41_host_artifact_offline_reverification",
+                "current_artifacts_rehashed": False,
+                "blender_launch_performed": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:300],
+            }, sort_keys=True))
+            return 1
+        print(json.dumps(reviewed, sort_keys=True))
+        return 0
     repo = Path(__file__).resolve().parents[2]
     probe = readiness(args.blender_exe, args.upstream_root, args.output_parent, repo)
     if not args.run:
@@ -344,6 +363,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run_trial(Path(args.blender_exe).resolve(strict=True),
                   Path(args.upstream_root).resolve(strict=True), output, report)
+        # Second independent, post-trial current-byte and lineage fence.
+        # Even a claimed successful upstream run cannot pass with missing or
+        # swapped checkpoints, forged session IDs or undecodable proof PNGs.
+        report["post_trial_artifacts_rehashed"] = reverify_artifacts(report, output)[
+            "current_artifacts_rehashed"]
     except Exception as exc:
         # Retain ALL partial .blend and PNG files for inspection; never retry.
         report["status"] = "failed_or_partial_outcome_unknown"
