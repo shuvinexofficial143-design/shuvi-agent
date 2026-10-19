@@ -27,6 +27,104 @@ OBJECT_FIELDS = (
 )
 
 
+
+MAX_REOPEN_ANIMATED_OBJECTS = 16
+MAX_REOPEN_ANIMATION_POINTS = 1024
+
+
+def _animation_readback(item: dict, call) -> dict:
+    """Bind a paged object's keyframes to independent typed animation.inspect.
+
+    No action edits or frame scrubbing: the checkpoint writer and independent
+    reopen reader must observe identical bounded curves and point handles.
+    Session-local IDs and runtime ownership flags are deliberately excluded.
+    """
+    from math import isfinite
+
+    snapshot = item.get("animation")
+    if (not isinstance(snapshot, dict)
+            or type(snapshot.get("has_animation_data")) is not bool
+            or snapshot.get("details_truncated") is not False
+            or snapshot.get("unsupported_structure") is True):
+        raise ValueError("Blender object animation readback is missing or truncated")
+    action = snapshot.get("action")
+    raw_channels = snapshot.get("channels")
+    if (action is not None and (not isinstance(action, str) or not action or len(action) > 256)
+            or not isinstance(raw_channels, list) or len(raw_channels) > 64):
+        raise ValueError("Blender action or channels are malformed")
+    if action is None and raw_channels:
+        raise ValueError("Blender animation channels exist without a source action")
+    if not snapshot["has_animation_data"]:
+        if action is not None or raw_channels:
+            raise ValueError("Blender object claims animation without action data")
+        return {"has_animation_data": False, "action": None, "channels": []}
+
+    expected_channels = []
+    total = 0
+    for ch in raw_channels:
+        if not isinstance(ch, dict):
+            raise ValueError("Malformed Blender animation curve")
+        points = ch.get("points")
+        path = ch.get("data_path")
+        index = ch.get("index")
+        count = ch.get("point_count")
+        if (not isinstance(path, str) or not path or len(path) > 256
+                or type(index) is not int or not 0 <= index <= 1024
+                or type(count) is not int or not 0 <= count <= 1024
+                or not isinstance(points, list) or len(points) != count):
+            raise ValueError("Blender animation curve is incomplete")
+        total += count
+        if total > MAX_REOPEN_ANIMATION_POINTS:
+            raise ValueError("Saved Blender animation point budget exceeded")
+        decoded_points = []
+        for point in points:
+            if not isinstance(point, dict):
+                raise ValueError("Malformed animation keyframe")
+            def pair(value):
+                if (not isinstance(value, list) or len(value) != 2
+                        or any(type(v) not in (int, float) or not isfinite(v) for v in value)):
+                    raise ValueError("Non-finite Blender animation keyframe or handle")
+                return [float(v) for v in value]
+            frame, value = pair(point.get("co"))
+            details = {}
+            for field in ("interpolation", "easing", "handle_left_type", "handle_right_type"):
+                token = point.get(field)
+                if not isinstance(token, str) or not token or len(token) > 64:
+                    raise ValueError("Blender animation interpolation metadata malformed")
+                details[field] = token
+            decoded_points.append({
+                "frame": frame, "value": value, **details,
+                "handle_left": pair(point.get("handle_left")),
+                "handle_right": pair(point.get("handle_right")),
+            })
+        expected_channels.append({
+            "data_path": path, "index": index,
+            "point_count": count, "points": decoded_points,
+        })
+
+    inspected = call("animation.inspect", {"object_id": item["object_id"]})
+    if (inspected.get("object_id") != item["object_id"]
+            or inspected.get("object_revision") != item.get("revision")
+            or inspected.get("action_name") != action
+            or inspected.get("curve_count") != len(expected_channels)
+            or inspected.get("point_count") != total
+            or inspected.get("channels") != expected_channels):
+        raise ValueError("Independent Blender animation readback differs from paged action")
+    for field in ("drivers_count", "nla_track_count"):
+        n = inspected.get(field)
+        if type(n) is not int or not 0 <= n <= 64:
+            raise ValueError("Blender animation auxiliary structure is malformed")
+    animation_revision = inspected.get("animation_revision")
+    if (not isinstance(animation_revision, str) or len(animation_revision) != 64
+            or any(c not in "0123456789abcdef" for c in animation_revision)):
+        raise ValueError("Blender animation revision missing")
+    return {
+        "has_animation_data": True, "action": action,
+        "channels": expected_channels,
+        "drivers_count": inspected["drivers_count"],
+        "nla_track_count": inspected["nla_track_count"],
+    }
+
 def _near_vector(actual, expected, *, tolerance=0.0002):
     return (isinstance(actual, (list, tuple)) and len(actual) == len(expected)
             and all(type(value) in (int, float) and abs(value - target) <= tolerance
@@ -264,6 +362,8 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
     proof_camera_verified = False
     proof_key_light_verified = False
     proof_copper_meshes_seen = 0
+    animated_count = 0
+    animation_point_count = 0
     proof_copper_material_verified_count = 0
     fixed_stage = saved.name if saved.name in _FIXED_STAGES else None
     fixed_stage_meshes_seen = 0
@@ -295,6 +395,20 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             if any(field not in item for field in OBJECT_FIELDS if field not in ("camera", "light")):
                 raise ValueError("Blender object readback missing required fields")
             stable = {field: item.get(field) for field in OBJECT_FIELDS}
+            # Animated checkpoints need independent action/keyframe readback,
+            # not only mesh shape and static object transforms.
+            state = item.get("animation")
+            if not isinstance(state, dict):
+                raise ValueError("Blender object animation snapshot absent")
+            if state.get("has_animation_data") is True:
+                animated_count += 1
+                if animated_count > MAX_REOPEN_ANIMATED_OBJECTS:
+                    raise ValueError("Saved Blender scene has too many animated objects")
+            stable["animation"] = _animation_readback(item, call)
+            animation_point_count += sum(
+                ch["point_count"] for ch in stable["animation"]["channels"])
+            if animation_point_count > MAX_REOPEN_ANIMATION_POINTS:
+                raise ValueError("Blender scene-wide animation proof budget exceeded")
             if active_id is not None and item.get("object_id") == active_id:
                 if active_camera_name is not None or item.get("type") != "CAMERA":
                     raise ValueError("Active Blender camera does not resolve to one camera object")
@@ -420,6 +534,8 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             "mesh_fingerprint": hashlib.sha256(topology_bytes).hexdigest(),
             "object_count": total, "mesh_count": mesh_count,
             "total_vertices": total_vertices, "total_faces": total_faces,
+            "animated_object_count": animated_count,
+            "animation_point_count": animation_point_count,
             "active_camera_name": active_camera_name,
             "proof_camera_verified": proof_camera_verified,
             "proof_key_light_verified": proof_key_light_verified,
@@ -532,6 +648,9 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
             "mesh_fingerprint": reopened["mesh_fingerprint"],
             "object_count": reopened["object_count"], "read_only": True,
             "mesh_geometry_verified": True, "mesh_count": reopened["mesh_count"],
+            "animated_object_count": reopened["animated_object_count"],
+            "animation_point_count": reopened["animation_point_count"],
+            "animation_keyframes_independently_verified": reopened["animated_object_count"] > 0,
             "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"],
             "active_camera_name": reopened["active_camera_name"],
             "proof_camera_verified": reopened["proof_camera_verified"],

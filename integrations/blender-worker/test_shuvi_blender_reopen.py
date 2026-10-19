@@ -40,6 +40,8 @@ def fixture(saved, *, session="session-A", name="Cube"):
         modifiers=[], modifier_count=0, details_truncated=False,
         data={"object_type": "MESH", "vertices": 3, "polygons": 1, "edges": 3},
         object_id=session+":object-1", revision="f" * 64,
+        animation={"has_animation_data": False, "action": None,
+                   "channels": [], "details_truncated": False},
     )
     return scene, obj
 
@@ -775,6 +777,92 @@ class ReopenTests(unittest.TestCase):
         controller.obj["details_truncated"] = True
         with self.assertRaisesRegex(ValueError, "truncated"):
             capture_scene(controller, self.file)
+
+
+    def test_animated_checkpoint_keyframes_survive_independent_reopen(self):
+        """Previously static fingerprints missed altered or missing action data."""
+        class AnimatedController(FakeController):
+            def __init__(self, saved, *, session="session-A", frame24=2.0,
+                         inspect_tamper=False, truncate=False):
+                super().__init__(saved, session=session)
+                self.inspect_tamper = inspect_tamper
+                self.obj["animation"] = {
+                    "has_animation_data": True, "action": "Shuvi41Motion",
+                    "details_truncated": truncate,
+                    "channels": [{
+                        "data_path": "location", "index": 0, "point_count": 2,
+                        "points": [
+                            {"co": [1.0, 0.0], "interpolation": "LINEAR",
+                             "easing": "AUTO", "handle_left_type": "AUTO",
+                             "handle_right_type": "AUTO",
+                             "handle_left": [1.0, 0.0], "handle_right": [1.0, 0.0]},
+                            {"co": [24.0, frame24], "interpolation": "LINEAR",
+                             "easing": "AUTO", "handle_left_type": "AUTO",
+                             "handle_right_type": "AUTO",
+                             "handle_left": [24.0, frame24], "handle_right": [24.0, frame24]},
+                        ],
+                    }],
+                }
+            def execute(self, request):
+                if request.operation == "animation.inspect":
+                    self.assert_probe_target(request)
+                    p = self.obj["animation"]["channels"][0]["points"]
+                    channels = [{
+                        "data_path": "location", "index": 0, "point_count": 2,
+                        "points": [{
+                            "frame": float(point["co"][0]),
+                            "value": float(point["co"][1]) + (
+                                1.0 if self.inspect_tamper else 0.0),
+                            "interpolation": point["interpolation"],
+                            "easing": point["easing"],
+                            "handle_left_type": point["handle_left_type"],
+                            "handle_right_type": point["handle_right_type"],
+                            "handle_left": point["handle_left"],
+                            "handle_right": point["handle_right"],
+                        } for point in p],
+                    }]
+                    return DummyResult({
+                        "object_id": self.obj["object_id"],
+                        "object_revision": self.obj["revision"],
+                        "action_name": "Shuvi41Motion", "curve_count": 1,
+                        "point_count": 2, "channels": channels,
+                        "drivers_count": 0, "nla_track_count": 0,
+                        "animation_revision": "c" * 64,
+                    })
+                return super().execute(request)
+            def assert_probe_target(self, request):
+                if request.payload != {"object_id": self.obj["object_id"]}:
+                    raise AssertionError("Animation probe targeted wrong Blender object")
+
+        writer = capture_scene(AnimatedController(self.file), self.file)
+        reopened = capture_scene(
+            AnimatedController(self.file, session="session-B"), self.file)
+        self.assertEqual(writer["fingerprint"], reopened["fingerprint"])
+        self.assertEqual(writer["animated_object_count"], 1)
+        self.assertEqual(writer["animation_point_count"], 2)
+        no_animation = capture_scene(FakeController(self.file, session="session-B"), self.file)
+        self.assertNotEqual(writer["fingerprint"], no_animation["fingerprint"])
+        changed = capture_scene(
+            AnimatedController(self.file, session="session-B", frame24=3.0), self.file)
+        self.assertNotEqual(writer["fingerprint"], changed["fingerprint"])
+        for params in ({"inspect_tamper": True}, {"truncate": True}):
+            with self.subTest(params=params):
+                with self.assertRaises(ValueError):
+                    capture_scene(AnimatedController(self.file, **params), self.file)
+        bad = AnimatedController(self.file)
+        bad.obj["animation"]["channels"][0]["points"][1]["co"][1] = float("nan")
+        with self.assertRaises(ValueError):
+            capture_scene(bad, self.file)
+
+    def test_animation_snapshot_missing_and_misdeclared_rejected(self):
+        ordinary = FakeController(self.file)
+        ordinary.obj.pop("animation")
+        with self.assertRaises(ValueError):
+            capture_scene(ordinary, self.file)
+        ordinary = FakeController(self.file)
+        ordinary.obj["animation"]["action"] = "Forged"
+        with self.assertRaises(ValueError):
+            capture_scene(ordinary, self.file)
 
     def test_reopen_requires_matching_new_read_only_session(self):
         original = capture_scene(FakeController(self.file), self.file)
