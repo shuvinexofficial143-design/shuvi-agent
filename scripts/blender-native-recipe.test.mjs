@@ -34,6 +34,7 @@ test("native recipe is fixed, typed, bounded and never invokes a process or read
   assert.ok(rust.includes('Some(json!({"timeout_ms":90_000,"steps":steps}))'));
   assert.ok(rust.includes("let plan=expected_plan(stage,revision)"));
   assert.ok(rust.includes('"requires_new_session_loading_verified_stage2":stage=="render" || stage=="look" || stage=="motion"'));
+  assert.ok(rust.includes('"requires_new_session_loading_verified_motion":stage=="motion_frame1" || stage=="motion_frame24"'));
   assert.match(rust,/if serde_json::to_vec\(&plan\).*\.len\(\)>65536/);
   for(const operation of [
     "mesh.create","mesh.inspect","mesh.translate_vertices","objects.list","device.create","material.create_assign",
@@ -70,6 +71,8 @@ test("independent Python plan-only recipe provides the same expected upstream op
     look_render:["render.configure","scene.inspect","render.execute"],
     motion:["objects.list","animation.insert_keyframe","animation.insert_keyframe",
       "scene.inspect","animation.set_frame","file.checkpoint"],
+    motion_frame1:["animation.set_frame","render.configure","scene.inspect","render.execute"],
+    motion_frame24:["animation.set_frame","render.configure","scene.inspect","render.execute"],
   };
   const [exe,...args]=python;
   for(const [stage,steps] of Object.entries(expected)){
@@ -81,9 +84,11 @@ test("independent Python plan-only recipe provides the same expected upstream op
     const value=JSON.parse(call.stdout);
     assert.equal(value.mode,"PLAN_ONLY_NO_BLENDER_LAUNCH");
     assert.deepEqual(value.plan.steps.map(x=>x.request.operation),steps);
-    assert.equal(value.plan.steps.length,["render","look_render"].includes(stage)?3:stage==="look"?5:6);
+    assert.equal(value.plan.steps.length,["render","look_render"].includes(stage)?3:
+      ["motion_frame1","motion_frame24"].includes(stage)?4:stage==="look"?5:6);
     assert.equal(value.requires_separate_native_owner_approval,true);
-    assert.equal(value.render_action_approval_required,["render","look_render"].includes(stage));
+    assert.equal(value.render_action_approval_required,
+      ["render","look_render","motion_frame1","motion_frame24"].includes(stage));
     if(stage==="look" || stage==="motion"){
       assert.equal(value.supplementary_not_three_stage_acceptance,true);
       assert.equal(value.requires_new_session_loading_verified_stage2,true);
@@ -93,6 +98,14 @@ test("independent Python plan-only recipe provides the same expected upstream op
       assert.equal(value.requires_new_session_loading_verified_material,true);
       assert.equal(value.requires_new_session_loading_verified_stage2,false);
       assert.equal(value.output_file,"shuvi41-proof-material-render.png");
+    }
+    if(["motion_frame1","motion_frame24"].includes(stage)){
+      assert.equal(value.requires_new_session_loading_verified_motion,true);
+      assert.equal(value.supplementary_not_three_stage_acceptance,true);
+      assert.equal(value.requires_new_session_loading_verified_stage2,false);
+      assert.equal(value.output_file,stage==="motion_frame1"
+        ?"shuvi41-proof-motion-frame001.png":"shuvi41-proof-motion-frame024.png");
+      assert.equal(value.plan.steps[0].request.payload.frame,stage==="motion_frame1"?1:24);
     }
     if(stage==="motion"){
       assert.equal(value.output_file,"shuvi41-proof-motion.blend");

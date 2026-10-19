@@ -18,6 +18,8 @@ EXPECTED_OPS = {
     "look_render": ["render.configure", "scene.inspect", "render.execute"],
     "motion": ["objects.list", "animation.insert_keyframe", "animation.insert_keyframe",
                "scene.inspect", "animation.set_frame", "file.checkpoint"],
+    "motion_frame1": ["animation.set_frame", "render.configure", "scene.inspect", "render.execute"],
+    "motion_frame24": ["animation.set_frame", "render.configure", "scene.inspect", "render.execute"],
 }
 
 
@@ -44,7 +46,9 @@ class AcceptanceRecipeTests(unittest.TestCase):
             self.assertLessEqual(len(recipe["steps"]), 6)
             self.assertLess(len(json.dumps(recipe).encode()), 65536)
             self.assertEqual(recipe["steps"][-1]["request"]["operation"],
-                             "render.execute" if stage in ("render", "look_render") else "file.checkpoint")
+                             "render.execute" if stage in ("render", "look_render",
+                                                          "motion_frame1", "motion_frame24")
+                             else "file.checkpoint")
 
     def test_request_and_command_ids_distinct_including_across_phases(self):
         steps = [step for stage in EXPECTED_OPS
@@ -232,6 +236,37 @@ class AcceptanceRecipeTests(unittest.TestCase):
         self.assertTrue(answer["requires_separate_native_owner_approval"])
         self.assertFalse(answer["render_action_approval_required"])
         self.assertEqual(answer["output_file"], scenario.MOTION)
+
+    def test_motion_frame_renders_select_distinct_frames_before_bounded_cpu_render(self):
+        for stage, frame, filename in (
+            ("motion_frame1", 1, scenario.MOTION_FRAME1),
+            ("motion_frame24", 24, scenario.MOTION_FRAME24),
+        ):
+            steps = scenario.build(stage, REV)["steps"]
+            self.assertEqual(steps[0]["request"]["operation"], "animation.set_frame")
+            self.assertEqual(steps[0]["request"]["payload"],
+                             {"frame": frame, "expected_scene_revision": REV})
+            cfg = steps[1]["request"]["payload"]
+            self.assertEqual([cfg["width"], cfg["height"], cfg["samples"]], [64, 64, 1])
+            self.assertEqual(cfg["expected_scene_revision"], "BOUND_FROM_SEEK")
+            self.assertEqual(steps[1]["bindings"], [scenario.bind(
+                "seek", ["data", "after", "revision"], ["expected_scene_revision"]
+            )])
+            self.assertEqual(steps[3]["request"]["payload"]["name"], filename)
+            self.assertEqual(steps[3]["bindings"], [scenario.bind(
+                "configured_scene", ["data", "revision"], ["expected_scene_revision"]
+            )])
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(scenario.main(
+                    ["--stage", stage, "--scene-revision", REV]), 0)
+            emitted = json.loads(stdout.getvalue())
+            self.assertTrue(emitted["render_action_approval_required"])
+            self.assertTrue(emitted["requires_new_session_loading_verified_motion"])
+            self.assertFalse(emitted["requires_new_session_loading_verified_stage2"])
+            self.assertTrue(emitted["supplementary_not_three_stage_acceptance"])
+            self.assertEqual(emitted["output_file"], filename)
+            self.assertNotEqual(emitted["output_file"], scenario.STAGE3)
 
     def test_stale_or_malformed_revision_is_rejected_before_plan(self):
         for bad in ("", "0" * 63, "g" * 64, "F" * 64, None, 1):

@@ -15,7 +15,7 @@ test("model acceptance has a fixed typed workflow without any unsafe Blender lau
     "material.create_assign"]){
     assert.ok(source.includes('"'+op+'"'),op);
   }
-  for(const label of ["_model1","_model2","_motion","animation.insert_keyframe",
+  for(const label of ["_model1","_model2","_motion","_motion_frame","animation.insert_keyframe",
     "animation.set_frame","source_step","source_path",
     "target_path","expected_scene_revision","PLAN_ONLY_NO_BLENDER_LAUNCH",
     "requires_separate_native_owner_approval","render_action_approval_required"]){
@@ -54,4 +54,15 @@ test("python acceptance scenario is executable in plan-only mode and all discove
   assert.equal(plan.mode,"PLAN_ONLY_NO_BLENDER_LAUNCH");
   assert.equal(plan.render_action_approval_required,true);
   assert.equal(plan.plan.steps.at(-1).request.operation,"render.execute");
+  for(const [stage,frame] of [["motion_frame1",1],["motion_frame24",24]]){
+    const result=spawnSync(exe,[...args,"-B",py,"--stage",stage,
+      "--scene-revision","a".repeat(64)],{cwd:root,timeout:5000,encoding:"utf8"});
+    assert.equal(result.status,0,result.stderr);
+    const parsed=JSON.parse(result.stdout);
+    assert.equal(parsed.plan.steps[0].request.payload.frame,frame);
+    assert.equal(parsed.requires_new_session_loading_verified_motion,true);
+    assert.equal(parsed.render_action_approval_required,true);
+    assert.deepEqual(parsed.plan.steps.map(x=>x.request.operation),
+      ["animation.set_frame","render.configure","scene.inspect","render.execute"]);
+  }
 });

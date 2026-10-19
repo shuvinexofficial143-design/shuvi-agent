@@ -19,7 +19,8 @@ import json
 import re
 from uuid import uuid4
 
-STAGES = ("model1", "model2", "render", "look", "look_render", "motion")
+STAGES = ("model1", "model2", "render", "look", "look_render", "motion",
+          "motion_frame1", "motion_frame24")
 REVISION = re.compile(r"[a-f0-9]{64}\Z", re.ASCII)
 MESH_NAME = "Shuvi41ProofMesh"
 STAGE1 = "shuvi41-proof-stage1.blend"
@@ -28,6 +29,8 @@ STAGE3 = "shuvi41-proof-render.png"
 LOOK = "shuvi41-proof-material.blend"
 MATERIAL_RENDER = "shuvi41-proof-material-render.png"
 MOTION = "shuvi41-proof-motion.blend"
+MOTION_FRAME1 = "shuvi41-proof-motion-frame001.png"
+MOTION_FRAME24 = "shuvi41-proof-motion-frame024.png"
 
 
 def step(name: str, operation: str, payload: dict, bindings: list | None = None) -> dict:
@@ -201,6 +204,28 @@ def _motion(revision: str) -> list:
     ]
 
 
+def _motion_frame(revision: str, frame: int, filename: str) -> list:
+    """A separate SHA-pinned motion checkpoint -> chosen-frame CPU PNG.
+
+    Frame selection must happen before configuring render, using the actual
+    upstream verified post-seek scene revision. This does not prove pixel
+    differences without a real host; each render needs explicit approval.
+    """
+    return [
+        step("seek", "animation.set_frame", {
+            "frame": frame, "expected_scene_revision": revision,
+        }),
+        step("configure", "render.configure", {
+            "width": 64, "height": 64, "samples": 1,
+            "expected_scene_revision": "BOUND_FROM_SEEK",
+        }, [bind("seek", ["data", "after", "revision"], ["expected_scene_revision"])]),
+        step("configured_scene", "scene.inspect", {}),
+        step("render", "render.execute", {
+            "name": filename, "expected_scene_revision": "BOUND_FROM_CONFIGURED_SCENE",
+        }, [bind("configured_scene", ["data", "revision"], ["expected_scene_revision"])]),
+    ]
+
+
 def _render(revision: str, filename: str = STAGE3) -> list:
     # Model1 saves an active camera and Model2 adds a key light.
     # This stage loads their checkpoint via a new separately approved session.
@@ -230,6 +255,8 @@ def build(stage: str, expected_scene_revision: str) -> dict:
         "look": _look,
         "look_render": lambda revision: _render(revision, MATERIAL_RENDER),
         "motion": _motion,
+        "motion_frame1": lambda revision: _motion_frame(revision, 1, MOTION_FRAME1),
+        "motion_frame24": lambda revision: _motion_frame(revision, 24, MOTION_FRAME24),
     }[stage](expected_scene_revision)
     assert 1 <= len(steps) <= 6
     return {"timeout_ms": 90000, "steps": steps}
@@ -251,12 +278,16 @@ def main(argv: list[str] | None = None) -> int:
         "stage": args.stage,
         "requires_separate_native_owner_approval": True,
         "must_use_current_session_inspect_revision": True,
-        "render_action_approval_required": args.stage in ("render", "look_render"),
+        "render_action_approval_required": args.stage in ("render", "look_render",
+                                                   "motion_frame1", "motion_frame24"),
         "output_file": {"model1": STAGE1, "model2": STAGE2, "render": STAGE3,
                         "look": LOOK, "look_render": MATERIAL_RENDER,
-                        "motion": MOTION}[args.stage],
+                        "motion": MOTION, "motion_frame1": MOTION_FRAME1,
+                        "motion_frame24": MOTION_FRAME24}[args.stage],
         "requires_new_session_loading_verified_stage2": args.stage in ("render", "look", "motion"),
-        "supplementary_not_three_stage_acceptance": args.stage in ("look", "look_render", "motion"),
+        "requires_new_session_loading_verified_motion": args.stage in ("motion_frame1", "motion_frame24"),
+        "supplementary_not_three_stage_acceptance": args.stage in ("look", "look_render", "motion",
+                                                             "motion_frame1", "motion_frame24"),
         "requires_new_session_loading_verified_material": args.stage == "look_render",
         "plan": plan,
     }, separators=(",", ":")))

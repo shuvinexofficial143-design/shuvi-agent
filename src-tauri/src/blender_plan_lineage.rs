@@ -135,6 +135,30 @@ fn valid_stage(steps:&[&Value],ops:&[String])->&'static str{
                 && has_binding(steps[5],"choose_final_frame",json!(["data","after","revision"]),json!(["expected_scene_revision"]))
                 {"motion"}else{"other"}
         },
+        ["animation.set_frame","render.configure","scene.inspect","render.execute"]=>{
+            let frame=payload(steps,0);
+            let configure=payload(steps,1);
+            let output=payload(steps,3);
+            let candidate=match (frame.get("frame").and_then(Value::as_u64),
+                                 output.get("name").and_then(Value::as_str)){
+                (Some(1),Some("shuvi41-proof-motion-frame001.png"))=>"motion_frame1",
+                (Some(24),Some("shuvi41-proof-motion-frame024.png"))=>"motion_frame24",
+                _=>"other"
+            };
+            if candidate!="other"
+                && name(steps[0]).ok()==Some("seek")
+                && name(steps[1]).ok()==Some("configure")
+                && name(steps[2]).ok()==Some("configured_scene")
+                && name(steps[3]).ok()==Some("render")
+                && configure.get("width").and_then(Value::as_u64)==Some(64)
+                && configure.get("height").and_then(Value::as_u64)==Some(64)
+                && configure.get("samples").and_then(Value::as_u64)==Some(1)
+                && has_binding(steps[1],"seek",json!(["data","after","revision"]),
+                    json!(["expected_scene_revision"]))
+                && checkpoint_binding(steps[3],"configured_scene"){
+                candidate
+            }else{"other"}
+        },
         ["render.configure","scene.inspect","render.execute"]=>{
             let config=payload(steps,0);
             if config.get("width").and_then(Value::as_u64)==Some(64)
@@ -308,7 +332,7 @@ pub(crate) fn verify_final_artifact_binding(plan:&Value,output:&Value)->Result<(
     Ok(())
 }
 
-/// Native fail-closed dispatch policy for the five example workflow file
+/// Native fail-closed dispatch policy for the reserved workflow output file
 /// names. The matched output *must* come from the exact typed recipe, not an
 /// unrelated plan whose last step writes an identical filename. The one-off
 /// Python adapter has no material preflight; material PNGs therefore require
@@ -337,6 +361,8 @@ pub(crate) fn reserved_output_policy(
             Some("shuvi41-proof-material.blend")=>Some("look"),
             Some("shuvi41-proof-material-render.png")=>Some("look_render"),
             Some("shuvi41-proof-motion.blend")=>Some("motion"),
+            Some("shuvi41-proof-motion-frame001.png")=>Some("motion_frame1"),
+            Some("shuvi41-proof-motion-frame024.png")=>Some("motion_frame24"),
             _=>None
         };
         if let Some(expected)=matched {
@@ -360,6 +386,7 @@ pub(crate) fn reserved_output_policy(
     }
     let source_name=match stage{
         "render"|"look"|"motion"=>Some("shuvi41-proof-stage2.blend"),
+        "motion_frame1"|"motion_frame24"=>Some("shuvi41-proof-motion.blend"),
         "look_render"=>Some("shuvi41-proof-material.blend"),
         _=>None
     };
@@ -369,10 +396,10 @@ pub(crate) fn reserved_output_policy(
             return Err("Blender reserved stage requires the exact expected SHA-pinned input checkpoint.".into());
         }
     }
-    if matches!(stage,"render"|"look_render") && !allow_render {
+    if matches!(stage,"render"|"look_render"|"motion_frame1"|"motion_frame24") && !allow_render {
         return Err("Blender reserved PNG stage requires explicit render approval.".into());
     }
-    if stage=="look_render" && !persistent_session {
+    if matches!(stage,"look_render"|"motion_frame1"|"motion_frame24") && !persistent_session {
         return Err("Blender material PNG requires the persistent broker's independent scene/material preflight.".into());
     }
     Ok(())
@@ -416,9 +443,54 @@ mod tests{
             Some("/proofs/shuvi41-proof-stage2.blend"),false,true).is_err());
     }
     #[test]
+    fn motion_frame_render_requires_actual_motion_source_render_permission_and_persistent_session(){
+        let rev="c".repeat(64);
+        for (stage,frame,file) in [
+            ("motion_frame1",1,"shuvi41-proof-motion-frame001.png"),
+            ("motion_frame24",24,"shuvi41-proof-motion-frame024.png"),
+        ]{
+            let plan=crate::blender_acceptance_recipe::expected_plan(stage,&rev).unwrap();
+            let lineage=derive(&plan).unwrap();
+            assert_eq!(lineage["acceptance_stage"],stage);
+            reserved_output_policy(&plan,&lineage,
+                Some("/approved/shuvi41-proof-motion.blend"),true,true).unwrap();
+            for source in [
+                None,Some("/approved/shuvi41-proof-stage2.blend"),
+                Some("/approved/wrong-motion.blend")
+            ]{
+                assert!(reserved_output_policy(&plan,&lineage,source,true,true).is_err());
+            }
+            assert!(reserved_output_policy(&plan,&lineage,
+                Some("/approved/shuvi41-proof-motion.blend"),false,true).is_err());
+            assert!(reserved_output_policy(&plan,&lineage,
+                Some("/approved/shuvi41-proof-motion.blend"),true,false).is_err());
+            assert_eq!(plan["steps"][0]["request"]["payload"]["frame"],frame);
+            assert_eq!(plan["steps"][3]["request"]["payload"]["name"],file);
+            for (step,field,evil) in [
+                (0,"frame",json!(42)),(1,"samples",json!(8)),
+                (3,"name",json!("regular.png"))
+            ]{
+                let mut changed=plan.clone();
+                changed["steps"][step]["request"]["payload"][field]=evil;
+                assert_eq!(derive(&changed).unwrap()["acceptance_stage"],"other");
+            }
+            for alias in [
+                file.to_ascii_uppercase(),
+                format!("{file}."),
+                format!("{file} ")
+            ]{
+                let mut changed=plan.clone();
+                changed["steps"][3]["request"]["payload"]["name"]=json!(alias);
+                let token=derive(&changed).unwrap();
+                assert!(reserved_output_policy(&changed,&token,
+                    Some("/approved/shuvi41-proof-motion.blend"),true,true).is_err());
+            }
+        }
+    }
+    #[test]
     fn strict_template_rejects_hidden_mutations_and_unsafe_material_render_substitutions(){
         let revision="b".repeat(64);
-        for stage in ["model1","model2","render","look","look_render","motion"]{
+        for stage in ["model1","model2","render","look","look_render","motion","motion_frame1","motion_frame24"]{
             let original=crate::blender_acceptance_recipe::expected_plan(stage,&revision).unwrap();
             assert_eq!(derive(&original).unwrap()["acceptance_stage"],stage);
             let mut altered=original.clone();
@@ -525,7 +597,9 @@ mod tests{
             ("look","SHUVI41-PROOF-MATERIAL.BLEND"),
             ("look_render","SHUVI41-PROOF-MATERIAL-RENDER.PNG"),
             ("model1","shuvi41-proof-stage1.blend."),
-            ("model2","shuvi41-proof-stage2.blend  ")
+            ("model2","shuvi41-proof-stage2.blend  "),
+            ("motion_frame1","SHUVI41-PROOF-MOTION-FRAME001.PNG"),
+            ("motion_frame24","shuvi41-proof-motion-frame024.png.")
         ] {
             let mut plan=crate::blender_acceptance_recipe::expected_plan(stage,&revision).unwrap();
             let last=plan["steps"].as_array().unwrap().len()-1;
@@ -545,7 +619,7 @@ mod tests{
     #[test]
     fn final_artifact_binding_rejects_correct_hash_wrong_filename_and_format(){
         let revision="d".repeat(64);
-        for stage in ["model1","model2","render","look","look_render"]{
+        for stage in ["model1","model2","render","look","look_render","motion","motion_frame1","motion_frame24"]{
             let plan=crate::blender_acceptance_recipe::expected_plan(stage,&revision).unwrap();
             let last=plan["steps"].as_array().unwrap().last().unwrap();
             let operation=last["request"]["operation"].as_str().unwrap();
@@ -623,6 +697,9 @@ mod tests{
             ("render",Some("/approved/shuvi41-proof-stage2.blend"),true),
             ("look",Some("/approved/shuvi41-proof-stage2.blend"),false),
             ("look_render",Some("/approved/shuvi41-proof-material.blend"),true),
+            ("motion",Some("/approved/shuvi41-proof-stage2.blend"),false),
+            ("motion_frame1",Some("/approved/shuvi41-proof-motion.blend"),true),
+            ("motion_frame24",Some("/approved/shuvi41-proof-motion.blend"),true),
         ];
         for (stage,source,render) in sources {
             let plan=crate::blender_acceptance_recipe::expected_plan(stage,&rev).unwrap();
@@ -631,7 +708,7 @@ mod tests{
             let wrong_source=if stage=="look_render"{
                 Some("/approved/shuvi41-proof-stage2.blend")
             }else{Some("/approved/shuvi41-proof-material.blend")};
-            if matches!(stage,"look"|"render"|"look_render") {
+            if matches!(stage,"look"|"render"|"look_render"|"motion"|"motion_frame1"|"motion_frame24") {
                 assert!(reserved_output_policy(&plan,&lineage,wrong_source,render,true).is_err());
                 assert!(reserved_output_policy(&plan,&lineage,None,render,true).is_err());
             }

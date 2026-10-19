@@ -57,3 +57,42 @@ by the operator; matching a basename and current SHA alone is **not** a
 cryptographic native approval attestation. Actual Windows/Blender animation
 reopen, visual timeline playback, rendered frame sequence, Premiere import
 and merging/deployment remain separately owner-approved work.
+
+## Frame-1 versus frame-24 render proof (separately approved follow-up)
+
+The optional `motion_frame1` and `motion_frame24` read-only recipe previews
+extend the motion proof with two **separate native owner-approved renders**.
+Neither preview runs Blender. The operator must first open the existing
+`shuvi41-proof-motion.blend` in an authenticated, SHA-256-pinned Blender
+session with explicitly enabled rendering; the source must be preserved.
+
+Each four-request plan uses the *current inspected* scene revision:
+
+1. `animation.set_frame` selects precisely frame 1 or frame 24.
+2. `render.configure` binds to that seek's **verified after-revision** and
+   chooses 64×64 pixels, one CPU sample.
+3. `scene.inspect` reads the configured scene's latest revision.
+4. `render.execute` binds to that revision and writes a fixed distinct PNG:
+   `shuvi41-proof-motion-frame001.png` or
+   `shuvi41-proof-motion-frame024.png`.
+
+Native Rust recognizes only the exact fixed four-step recipes. The outputs
+are reserved even against Win32 case/trailing-dot/trailing-space filename
+aliases; generic plans cannot impersonate them. The native gate additionally
+requires (a) an authenticated source path whose basename is exactly
+`shuvi41-proof-motion.blend` and which is SHA-pinned by the session,
+(b) render permission at both session and action level, and (c) the
+persistent approved session path. The recipe never grants that permission.
+
+The pinned upstream `PlanRunner`, typed `SetFrame`/`RenderConfig` parser and
+mock controller tests exercise both distinct frame poses, sequential CAS
+bindings, bounded render outputs and rejection of stale source revision;
+Rust and Node assert plan classification and denial of wrong source,
+missing permission, mismatched frames, and reserved-name aliases.
+
+**Honest limit:** a test fixture proves protocol behavior, not that two
+genuine Blender PNGs exist or differ visually. Filenames plus SHA-pinned
+startup do not alone reauthenticate the creator of a provided input file.
+Real independent reopening, screenshot comparison and actual host end-to-end
+acceptance require separately approved Windows/Blender execution. Nothing here
+merges branches, deploys, approves actions, or launches a host.

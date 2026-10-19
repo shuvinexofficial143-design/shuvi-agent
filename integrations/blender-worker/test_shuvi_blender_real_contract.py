@@ -394,15 +394,74 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         self.assertFalse(stale.saved)
         self.assertNotIn("file.checkpoint", stale.calls)
 
+    def test_real_upstream_render_frames_from_saved_motion_in_separate_sessions(self):
+        """Actual typed PlanRunner/SetFrame/RenderConfig, fixture scene only."""
+        creator = ContractController()
+        for stage in ("model1", "model2"):
+            report = PlanRunner(creator).run(Plan.from_dict(build(stage, creator.rev)))
+            self.assertTrue(report.completed, report.to_dict())
+        motion = ContractController(
+            existing=creator.saved["shuvi41-proof-stage2.blend"]["geometry"],
+            revision=digest({"loaded": "real-motion-source-fixture"}),
+        )
+        saved = PlanRunner(motion).run(Plan.from_dict(build("motion", motion.rev)))
+        self.assertTrue(saved.completed, saved.to_dict())
+        checkpoint = motion.saved["shuvi41-proof-motion.blend"]
+        original_motion = copy.deepcopy(checkpoint)
+        seen_sessions = set()
+        for stage, frame, z, filename in (
+            ("motion_frame1", 1, 0.0, "shuvi41-proof-motion-frame001.png"),
+            ("motion_frame24", 24, 1.5, "shuvi41-proof-motion-frame024.png"),
+        ):
+            fresh = ContractController(
+                existing=checkpoint["geometry"],
+                revision=digest({"new_source": stage}),
+            )
+            self.assertNotIn(fresh.session, seen_sessions)
+            seen_sessions.add(fresh.session)
+            plan = Plan.from_dict(build(stage, fresh.rev))
+            self.assertEqual(plan.to_dict()["steps"][0]["request"]["operation"],
+                             "animation.set_frame")
+            result = PlanRunner(fresh).run(plan)
+            self.assertTrue(result.completed, result.to_dict())
+            self.assertEqual(fresh.calls,
+                             ["animation.set_frame", "render.configure",
+                              "scene.inspect", "render.execute"])
+            self.assertEqual(fresh.current_frame, frame)
+            self.assertEqual(fresh.objects["Shuvi41ProofMesh"]["transform"]["location"],
+                             [0.0, 0.0, z])
+            self.assertEqual(result.results["render"].status, Status.VERIFIED)
+            self.assertEqual(result.results["render"].data["after"]["path"], filename)
+            self.assertTrue(fresh.render_ready)
+            self.assertEqual(fresh.active_camera, "Shuvi41ProofCamera")
+            self.assertEqual(fresh.key_light, "Shuvi41ProofKey")
+        self.assertEqual(checkpoint, original_motion,
+                         "Independent frame proof must never modify saved source bytes")
+
+    def test_real_upstream_motion_render_denies_stale_scene_without_render(self):
+        worker = ContractController()
+        report = PlanRunner(worker).run(
+            Plan.from_dict(build("motion_frame1", "f" * 64))
+        )
+        self.assertFalse(report.completed)
+        self.assertEqual(report.results["seek"].status, Status.FAILED)
+        self.assertEqual(report.unexecuted_steps,
+                         ("configure", "configured_scene", "render"))
+        self.assertFalse(worker.render_ready)
+        self.assertNotIn("render.execute", worker.calls)
+
     def test_actual_upstream_parser_accepts_three_fixed_production_recipes(self):
-        for stage in ("model1", "model2", "render", "look", "look_render"):
+        for stage in ("model1", "model2", "render", "look", "look_render",
+                      "motion", "motion_frame1", "motion_frame24"):
             native = build(stage, START_REV)
             parsed = Plan.from_dict(native)
             self.assertEqual(parsed.to_dict(), native)
             self.assertLessEqual(len(parsed.steps), 6)
             self.assertEqual(parsed.timeout_ms, 90_000)
             self.assertEqual(parsed.steps[-1].request.operation,
-                             "render.execute" if stage in ("render", "look_render") else "file.checkpoint")
+                             "render.execute" if stage in ("render", "look_render",
+                                                          "motion_frame1", "motion_frame24")
+                             else "file.checkpoint")
 
     def test_real_plan_runner_resolves_all_bindings_and_preserves_two_stage_geometry(self):
         owner = ContractController()

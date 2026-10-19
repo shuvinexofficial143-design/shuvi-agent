@@ -57,10 +57,14 @@ test("reserved example output names enforce matching typed plan and SHA-pinned i
   assert.ok(lineage.includes('Some("shuvi41-proof-render.png")=>Some("render")'));
   assert.ok(lineage.includes('Some("shuvi41-proof-stage1.blend")=>Some("model1")'));
   assert.ok(lineage.includes('Some("shuvi41-proof-motion.blend")=>Some("motion")'));
+  assert.ok(lineage.includes('Some("shuvi41-proof-motion-frame001.png")=>Some("motion_frame1")'));
+  assert.ok(lineage.includes('Some("shuvi41-proof-motion-frame024.png")=>Some("motion_frame24")'));
   assert.ok(lineage.includes('"render"|"look"|"motion"=>Some("shuvi41-proof-stage2.blend")'));
+  assert.ok(lineage.includes('"motion_frame1"|"motion_frame24"=>Some("shuvi41-proof-motion.blend")'));
+  assert.ok(lineage.includes('fn motion_frame_render_requires_actual_motion_source_render_permission_and_persistent_session('));
   assert.ok(lineage.includes("fn motion_reserved_output_requires_exact_keyframe_plan_and_stage2_sha_pinned_source("));
   assert.ok(lineage.includes("!exact_recipe_shape(plan,stage)"));
-  assert.ok(lineage.includes('if stage=="look_render" && !persistent_session'));
+  assert.ok(lineage.includes('if matches!(stage,"look_render"|"motion_frame1"|"motion_frame24") && !persistent_session'));
   assert.ok(session.includes('crate::blender_plan_lineage::reserved_output_policy('));
   assert.ok(oneOff.includes('crate::blender_plan_lineage::reserved_output_policy('));
   for(const caseName of [
