@@ -168,7 +168,7 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
                      alpha: int = 255, flat: bool = False) -> bytes:
         """Exact RGBA8 rows encoded with chosen genuine PNG filter, no Blender."""
         raw_rows = []
-        tint = 25 if stage == "look_render" else 0
+        tint = 25 if stage == "look_render" else (13 if stage == "motion_frame24" else 0)
         for y in range(64):
             row = bytearray()
             for x in range(64):
@@ -244,6 +244,140 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             "automatic_retry_allowed": False, "output_directory": str(directory),
             "completed_stages": stages,
         }
+
+    def _eight_stage_report(self, directory: Path):
+        """Only synthetic retained files: checks the opt-in readback contract."""
+        report = self._five_stage_report(directory)
+        report["motion_pair_requested"] = True
+        known = {receipt["stage"]: receipt["sha256"]
+                 for receipt in report["completed_stages"]}
+        for stage, filename, kind in host.MOTION_RECIPE_NAMES:
+            data = (b"BLENDER-v430" + stage.encode("ascii") + b" fixture"
+                    if kind == "BLEND" else self._png_fixture(stage))
+            target = directory / filename
+            target.write_bytes(data)
+            digest = hashlib.sha256(data).hexdigest()
+            report["completed_stages"].append({
+                "status": "host_file_rehashed", "file": str(target),
+                "sha256": digest, "bytes": len(data), "format": kind,
+                "stage": stage, "blender_session_id": str(uuid.uuid4()),
+                "input_source_sha256": known["model2"] if stage == "motion"
+                                       else known["motion"],
+                "independent_blender_reopen_verified": kind == "BLEND",
+                "rendered_visual_quality_verified": False,
+            })
+            known[stage] = digest
+        return report
+
+    def test_motion_opt_in_is_never_an_unapproved_host_launch(self):
+        output = io.StringIO()
+        with mock.patch.object(host.tempfile, "mkdtemp",
+                               side_effect=AssertionError("no write")), \
+             mock.patch.object(host, "run_trial",
+                               side_effect=AssertionError("no Blender")), \
+             contextlib.redirect_stdout(output):
+            with self.assertRaises(SystemExit):
+                host.main(["--include-motion"])
+            self.assertEqual(host.main([]), 0)
+        self.assertTrue(json.loads(output.getvalue())["probe_only"])
+
+    def test_explicit_motion_host_run_requires_opt_in_and_pixel_reverification(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-motion-cli-") as temp:
+            root = Path(temp)
+            blender = root / "blender.exe"
+            blender.write_bytes(b"fixture")
+            upstream = root / "upstream"
+            upstream.mkdir()
+            seen = []
+            def fake_trial(exe, source, output, report, *, include_motion=False):
+                self.assertTrue(include_motion)
+                self.assertTrue(report["motion_pair_requested"])
+                seen.append(output)
+                report["status"] = "real_blender_upstream_acceptance_passed"
+                report["real_host_acceptance_verified"] = True
+            options = ["--run", "--include-motion", "--blender-exe", str(blender),
+                       "--upstream-root", str(upstream), "--output-parent", str(root)]
+            out = io.StringIO()
+            with mock.patch.object(host, "readiness",
+                                   return_value={"ready": True}), \
+                 mock.patch.dict(os.environ, {host.OPT_IN_ENV: ""}), \
+                 mock.patch.object(host, "run_trial", side_effect=fake_trial), \
+                 mock.patch.object(host.tempfile, "mkdtemp",
+                                   side_effect=AssertionError("no write")), \
+                 contextlib.redirect_stdout(out):
+                self.assertEqual(host.main(options), 2)
+            self.assertEqual(seen, [])
+            for proof, expected in ((False, 1), (True, 0)):
+                out = io.StringIO()
+                with mock.patch.object(host, "readiness",
+                                       return_value={"ready": True}), \
+                     mock.patch.dict(os.environ, {host.OPT_IN_ENV: "disposable-only"}), \
+                     mock.patch.object(host, "run_trial", side_effect=fake_trial), \
+                     mock.patch.object(host, "reverify_artifacts",
+                                       return_value={"current_artifacts_rehashed": True,
+                                                     "motion_pair_pixels_differ": proof}), \
+                     contextlib.redirect_stdout(out):
+                    self.assertEqual(host.main(options), expected)
+                self.assertEqual(json.loads(out.getvalue())["motion_pair_pixels_differ"],
+                                 proof if proof else False)
+            self.assertEqual(len(seen), 2)
+
+    def test_eight_stage_motion_files_require_distinct_pixels_and_sha_lineage(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-motion-review-") as temp:
+            directory = Path(temp)
+            report = self._eight_stage_report(directory)
+            checked = host.reverify_artifacts(report, directory)
+            self.assertEqual(checked["verified_current_file_count"], 8)
+            self.assertTrue(checked["motion_pair_requested"])
+            self.assertTrue(checked["motion_pair_pixels_differ"])
+            self.assertNotEqual(checked["current_file_receipts"][-2]["decoded_rgba_sha256"],
+                                checked["current_file_receipts"][-1]["decoded_rgba_sha256"])
+            # All source bytes remain intact: both PNGs must name exactly the
+            # verified motion checkpoint's SHA, never a Stage-2 substitute.
+            last = report["completed_stages"][-1]
+            real_source = last["input_source_sha256"]
+            last["input_source_sha256"] = report["completed_stages"][1]["sha256"]
+            with self.assertRaisesRegex(ValueError, "lineage"):
+                host.reverify_artifacts(report, directory)
+            last["input_source_sha256"] = real_source
+            stage = report["completed_stages"][5]
+            path = Path(stage["file"])
+            path.write_bytes(path.read_bytes() + b"tampered")
+            with self.assertRaisesRegex(ValueError, "changed"):
+                host.reverify_artifacts(report, directory)
+
+    def test_motion_pair_rejects_same_decoded_pixels_even_with_different_png_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-motion-pixels-") as temp:
+            directory = Path(temp)
+            report = self._eight_stage_report(directory)
+            original = report["completed_stages"][-1]
+            second = Path(original["file"])
+            # Different PNG filters/compression SHA; exact same RGBA pixels.
+            same_pixels = self._png_fixture("motion_frame1", filter_mode=4)
+            self.assertNotEqual(same_pixels, (directory /
+                "shuvi41-proof-motion-frame001.png").read_bytes())
+            second.write_bytes(same_pixels)
+            original["sha256"] = hashlib.sha256(same_pixels).hexdigest()
+            original["bytes"] = len(same_pixels)
+            with self.assertRaisesRegex(ValueError, "pixel-identical"):
+                host.reverify_artifacts(report, directory)
+
+    def test_motion_opt_in_cannot_promote_five_stage_or_reused_session(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-motion-incomplete-") as temp:
+            directory = Path(temp)
+            report = self._five_stage_report(directory)
+            report["motion_pair_requested"] = True
+            with self.assertRaisesRegex(ValueError, "stage count"):
+                host.reverify_artifacts(report, directory)
+            report = self._eight_stage_report(directory)
+            report["completed_stages"][-1]["blender_session_id"] = (
+                report["completed_stages"][-2]["blender_session_id"])
+            with self.assertRaisesRegex(ValueError, "distinct fresh"):
+                host.reverify_artifacts(report, directory)
+            report["completed_stages"][-1]["blender_session_id"] = str(uuid.uuid4())
+            report["motion_pair_requested"] = False
+            with self.assertRaisesRegex(ValueError, "stage count"):
+                host.reverify_artifacts(report, directory)
 
     def test_offline_reverify_works_without_blender_git_or_process_launch(self):
         with tempfile.TemporaryDirectory(prefix="shuvi41-offline-review-") as temp:

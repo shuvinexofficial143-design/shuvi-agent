@@ -41,3 +41,27 @@ test("actual acceptance stages bind checked PlanRunner to SHA/reopened evidence"
   assert.match(fixture,/test_run_refused_without_both_controls/);
   assert.match(fixture,/test_failure_keeps_partial_outputs_and_never_retries/);
 });
+
+test("optional motion host trial is gated and verifies actual frame pixel differences",()=>{
+  const offline=read("integrations/blender-worker/shuvi_blender_host_reverify.py");
+  for(const proof of [
+    'parser.add_argument("--include-motion", action="store_true"',
+    'if args.include_motion and not args.run:',
+    'run_trial(*trial_args, include_motion=True)',
+    'MOTION_RECIPE_NAMES',
+    'record("motion", controller, current["revision"]',
+    '("motion_frame1", "motion_frame24")',
+    'inspect_input_source(motion_source, files["motion"]["sha256"])',
+    'motion_pair_requested',
+  ])assert.ok(host.includes(proof),proof);
+  for(const proof of [
+    'MOTION_STAGES',
+    'report.get("motion_pair_requested", False)',
+    'source_role = ("look"',
+    'previous["motion_frame1_pixels"] == previous["motion_frame24_pixels"]',
+    'motion_pair_pixels_differ',
+  ])assert.ok(offline.includes(proof),proof);
+  assert.match(fixture,/test_eight_stage_motion_files_require_distinct_pixels_and_sha_lineage/);
+  assert.match(fixture,/test_motion_pair_rejects_same_decoded_pixels_even_with_different_png_bytes/);
+  assert.match(fixture,/test_motion_opt_in_cannot_promote_five_stage_or_reused_session/);
+});

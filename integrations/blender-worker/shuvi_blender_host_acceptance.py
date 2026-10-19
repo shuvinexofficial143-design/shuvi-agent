@@ -37,6 +37,11 @@ RECIPE_NAMES = (
     ("look", "shuvi41-proof-material.blend", "BLEND"),
     ("look_render", "shuvi41-proof-material-render.png", "PNG"),
 )
+MOTION_RECIPE_NAMES = (
+    ("motion", "shuvi41-proof-motion.blend", "BLEND"),
+    ("motion_frame1", "shuvi41-proof-motion-frame001.png", "PNG"),
+    ("motion_frame24", "shuvi41-proof-motion-frame024.png", "PNG"),
+)
 MAX_ARTIFACT = 128 * 1024 * 1024
 
 
@@ -206,7 +211,8 @@ def _session(blender_exe: Path, output: Path, source: Path | None, allow_render:
     ))
 
 
-def run_trial(blender_exe: Path, upstream: Path, output: Path, report: dict) -> None:
+def run_trial(blender_exe: Path, upstream: Path, output: Path, report: dict,
+              *, include_motion: bool = False) -> None:
     # Import only AFTER opt-in, path/branch/git cleanliness checks and folder isolation.
     sys.path.insert(0, str(upstream / "src"))
     from shuvi_blender_agent.client import BlenderController
@@ -227,7 +233,8 @@ def run_trial(blender_exe: Path, upstream: Path, output: Path, report: dict) -> 
                allow_render: bool, source_proof: dict | None = None):
         result = checked_plan(controller, build(stage, revision), output, blender_exe,
                               allow_render, revision)
-        basename, kind = next((name, kind) for s, name, kind in RECIPE_NAMES if s == stage)
+        basename, kind = next((name, kind) for s, name, kind in
+                              RECIPE_NAMES + MOTION_RECIPE_NAMES if s == stage)
         entry = verify_artifact(result, output, basename, kind, read_output)
         entry["blender_session_id"] = scene(controller)["session_id"]
         entry["stage"] = stage
@@ -287,8 +294,38 @@ def run_trial(blender_exe: Path, upstream: Path, output: Path, report: dict) -> 
         if stage == "look":
             material_source = Path(files["look"]["file"])
 
-    # At the very end, re-read all five distinct artifacts after all launches.
-    for stage, basename, kind in RECIPE_NAMES:
+    # Optional motion proof: a new SHA-bound Stage-2 source session writes
+    # a verified animation checkpoint, then TWO more independent, SHA-bound
+    # render sessions evaluate frames 1 and 24. Never overwrite Stage-2.
+    if include_motion:
+        before = inspect_input_source(stage2_source, files["model2"]["sha256"])
+        with _session(blender_exe, output, stage2_source, False) as running:
+            controller = BlenderController(running.client)
+            current = scene(controller, stage2_source)
+            if current["session_id"] in used_session_ids:
+                raise ValueError("Motion reused an earlier Blender session identity")
+            used_session_ids.add(current["session_id"])
+            record("motion", controller, current["revision"],
+                   stage2_source, False, before)
+        if inspect_input_source(stage2_source, files["model2"]["sha256"]) != before:
+            raise ValueError("Stage-2 source bytes changed during motion checkpoint")
+        motion_source = Path(files["motion"]["file"])
+        for stage in ("motion_frame1", "motion_frame24"):
+            before = inspect_input_source(motion_source, files["motion"]["sha256"])
+            with _session(blender_exe, output, motion_source, True) as running:
+                controller = BlenderController(running.client)
+                current = scene(controller, motion_source)
+                if current["session_id"] in used_session_ids:
+                    raise ValueError("Motion frame render reused a Blender session identity")
+                used_session_ids.add(current["session_id"])
+                record(stage, controller, current["revision"],
+                       motion_source, True, before)
+            if inspect_input_source(motion_source, files["motion"]["sha256"]) != before:
+                raise ValueError("Saved motion checkpoint changed while rendering a frame")
+
+    # At the end, re-read every artifact after all launches.
+    for stage, basename, kind in (RECIPE_NAMES +
+                                  (MOTION_RECIPE_NAMES if include_motion else ())):
         entry = files[stage]
         check = read_output(Path(entry["file"]), kind)
         if check.get("sha256") != entry["sha256"] or check.get("bytes") != entry["bytes"]:
@@ -318,10 +355,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream-root")
     parser.add_argument("--output-parent")
     parser.add_argument("--run", action="store_true")
+    parser.add_argument("--include-motion", action="store_true",
+                        help="Opt-in three extra real motion checkpoint/frame-render stages")
     parser.add_argument("--verify-report", help="Read-only rehash of retained host trial artifacts")
     args = parser.parse_args(argv)
     if args.verify_report is not None:
-        if args.run or args.blender_exe or args.upstream_root or args.output_parent:
+        if args.run or args.include_motion or args.blender_exe or args.upstream_root or args.output_parent:
             parser.error("--verify-report cannot be combined with host-launch options")
         try:
             reviewed = verify_report_file(Path(args.verify_report))
@@ -336,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps(reviewed, sort_keys=True))
         return 0
+    if args.include_motion and not args.run:
+        parser.error("--include-motion requires --run and existing disposable-only opt-in")
     repo = Path(__file__).resolve().parents[2]
     probe = readiness(args.blender_exe, args.upstream_root, args.output_parent, repo)
     if not args.run:
@@ -359,15 +400,24 @@ def main(argv: list[str] | None = None) -> int:
         "native_owner_approval_reauthenticated": False,
         "adobe_import_performed": False, "visual_quality_verified": False,
         "automatic_retry_allowed": False,
+        "motion_pair_requested": args.include_motion,
+        "motion_pair_pixels_differ": False,
     }
     try:
-        run_trial(Path(args.blender_exe).resolve(strict=True),
-                  Path(args.upstream_root).resolve(strict=True), output, report)
+        trial_args = (Path(args.blender_exe).resolve(strict=True),
+                      Path(args.upstream_root).resolve(strict=True), output, report)
+        if args.include_motion:
+            run_trial(*trial_args, include_motion=True)
+        else:
+            run_trial(*trial_args)
         # Second independent, post-trial current-byte and lineage fence.
         # Even a claimed successful upstream run cannot pass with missing or
         # swapped checkpoints, forged session IDs or undecodable proof PNGs.
-        report["post_trial_artifacts_rehashed"] = reverify_artifacts(report, output)[
-            "current_artifacts_rehashed"]
+        rechecked = reverify_artifacts(report, output)
+        report["post_trial_artifacts_rehashed"] = rechecked["current_artifacts_rehashed"]
+        if args.include_motion and rechecked.get("motion_pair_pixels_differ") is not True:
+            raise ValueError("Opted-in motion pair did not independently verify distinct decoded pixels")
+        report["motion_pair_pixels_differ"] = rechecked.get("motion_pair_pixels_differ", False)
     except Exception as exc:
         # Retain ALL partial .blend and PNG files for inspection; never retry.
         report["status"] = "failed_or_partial_outcome_unknown"

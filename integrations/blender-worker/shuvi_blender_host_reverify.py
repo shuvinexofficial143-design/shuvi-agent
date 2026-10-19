@@ -23,6 +23,11 @@ STAGES = (
     ("look", "shuvi41-proof-material.blend", "BLEND"),
     ("look_render", "shuvi41-proof-material-render.png", "PNG"),
 )
+MOTION_STAGES = (
+    ("motion", "shuvi41-proof-motion.blend", "BLEND"),
+    ("motion_frame1", "shuvi41-proof-motion-frame001.png", "PNG"),
+    ("motion_frame24", "shuvi41-proof-motion-frame024.png", "PNG"),
+)
 MAX_ARTIFACT = 128 * 1024 * 1024
 MAX_PNG = 2 * 1024 * 1024
 MAX_REPORT = 65536
@@ -208,7 +213,7 @@ def _check_file(path: Path, digest: str, size: int, kind: str) -> str | None:
 
 
 def reverify_artifacts(report: dict, output: Path) -> dict:
-    """Inspect exactly five current files; never promote a historical proof to host truth."""
+    """Recheck the fixed five or opt-in eight files, without host execution."""
     if not isinstance(report, dict):
         raise ValueError("Host report is not an object")
     output = output.resolve(strict=True)
@@ -228,14 +233,18 @@ def reverify_artifacts(report: dict, output: Path) -> dict:
     for key, value in expected.items():
         if type(report.get(key)) is not type(value) or report[key] != value:
             raise ValueError("Host trial report contract mismatch at " + key)
+    motion_requested = report.get("motion_pair_requested", False)
+    if type(motion_requested) is not bool:
+        raise ValueError("Motion pair opt-in report field must be a boolean")
+    stages = STAGES + (MOTION_STAGES if motion_requested else ())
     items = report.get("completed_stages")
-    if not isinstance(items, list) or len(items) != len(STAGES):
-        raise ValueError("Report requires exactly five completed stages")
+    if not isinstance(items, list) or len(items) != len(stages):
+        raise ValueError("Report does not contain the exact opted-in stage count")
     previous = {}
     first_session = None
     other_sessions = set()
     checked = []
-    for receipt, (stage, basename, kind) in zip(items, STAGES):
+    for receipt, (stage, basename, kind) in zip(items, stages):
         if not isinstance(receipt, dict):
             raise ValueError("Malformed host stage receipt")
         session = receipt.get("blender_session_id")
@@ -259,8 +268,10 @@ def reverify_artifacts(report: dict, output: Path) -> dict:
                 or receipt.get("independent_blender_reopen_verified") is not (kind == "BLEND")
                 or receipt.get("rendered_visual_quality_verified") is not False):
             raise ValueError("Host receipt stage or historical proof type differs")
-        source_sha = (None if stage in ("model1", "model2")
-                      else previous["look" if stage == "look_render" else "model2"])
+        source_role = ("look" if stage == "look_render" else
+                       "motion" if stage in ("motion_frame1", "motion_frame24") else
+                       "model2")
+        source_sha = None if stage in ("model1", "model2") else previous[source_role]
         if receipt.get("input_source_sha256") != source_sha:
             raise ValueError("Host receipt input checkpoint SHA lineage invalid")
         artifact = output / basename
@@ -279,11 +290,15 @@ def reverify_artifacts(report: dict, output: Path) -> dict:
     # different PNG compression, timestamps or file hashes alone do not count.
     if previous["render_pixels"] == previous["look_render_pixels"]:
         raise ValueError("Copper look render is pixel-identical to base render")
+    if motion_requested and previous["motion_frame1_pixels"] == previous["motion_frame24_pixels"]:
+        raise ValueError("Motion frames are pixel-identical after decoding actual RGBA pixels")
     return {
         "schema_version": 1,
         "kind": "shuvi41_host_artifact_offline_reverification",
         "current_artifacts_rehashed": True,
         "verified_current_file_count": len(checked),
+        "motion_pair_requested": motion_requested,
+        "motion_pair_pixels_differ": motion_requested,
         "current_file_receipts": checked,
         "report_is_unsigned_and_mutable": True,
         "historical_blender_execution_independently_authenticated": False,

@@ -96,3 +96,46 @@ startup do not alone reauthenticate the creator of a provided input file.
 Real independent reopening, screenshot comparison and actual host end-to-end
 acceptance require separately approved Windows/Blender execution. Nothing here
 merges branches, deploys, approves actions, or launches a host.
+
+## Optional real-host eight-stage acceptance mode (source only)
+
+The existing Windows-host acceptance script keeps its **five-stage default**
+(model1, model2, render, look, look_render) unchanged. A separately approved
+future operator can explicitly request `--run --include-motion`, **plus**
+the pre-existing `SHUVI41_HOST_ACCEPTANCE=disposable-only` environment flag,
+clean Shuvi feature branch, pinned upstream commit, chosen Blender executable,
+and disposable output parent. Neither this feature's creation nor a plain
+readiness probe launches or installs Blender.
+
+If these independent prerequisites are met on an approved host, it adds three
+strictly ordered stages after the original five:
+
+1. Fresh source-SHA-bound Stage-2 session saves
+   `shuvi41-proof-motion.blend`; verified .blend **independent reopen** is
+   required, including the previous action/keyframe persistence checks.
+2. A new independent render-authorized source-SHA-bound motion session
+   seeks frame 1 and creates `shuvi41-proof-motion-frame001.png`.
+3. Yet another render-authorized session seeks frame 24 and creates
+   `shuvi41-proof-motion-frame024.png`.
+
+The script checks distinct session IDs, input source SHA before/after each
+stage, typed PlanRunner results, output names, bytes and SHA. Each incomplete
+or interrupted stage fails without automatic retry and retains partial files.
+
+The **read-only offline report verifier** accepts exactly five artifacts for
+legacy/default results, or exactly eight when the report explicitly records
+`motion_pair_requested=true`. It checks each source chain, current artifact
+bytes, PNG chunks/CRC/zlib, authentic decoded 64×64 RGBA content and requires
+the two animation frame images to have **different normalized RGBA pixels**.
+Changing only PNG compression, row filters, metadata or file SHA cannot pass.
+It rejects missing stages, reused sessions, changed checkpoints, identical
+frame pixels and forged motion input SHA references.
+
+Passing these checks would establish a bounded **visible frame difference**
+for the specific trial, but not cinematic quality or full-scene semantics.
+An unsigned mutable report is not an external attestation of past execution,
+and the CLI bypasses native Shuvi ToolActions; it is an independent
+owner-opt-in host QA harness, never a claim of native user approval.
+
+**This milestone only adds code/tests.** No Windows host was accessed,
+no Blender launched, no render actually produced, and no merge/deploy occurred.
