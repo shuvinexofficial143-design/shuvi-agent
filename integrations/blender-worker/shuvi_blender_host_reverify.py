@@ -58,7 +58,60 @@ def _check_blend(path: Path) -> None:
         raise ValueError("Checkpoint does not have a real Blender file header")
 
 
-def _check_png(path: Path) -> None:
+
+def _reconstructed_visible_digest(decoded: bytes, channels: int) -> str:
+    """Invert PNG row filters, inspect actual RGBA pixels, and hash normalized pixels.
+
+    Strictly bounded to 64x64 RGB/RGBA8. This is a coarse nonblank content
+    guard, not model identification, colorimetry, image quality or host proof.
+    """
+    stride = 64 * channels
+    prior = bytearray(stride)
+    image_hash = hashlib.sha256()
+    visible = 0
+    colors = set()
+    for y in range(64):
+        row_start = y * (stride + 1)
+        filter_type = decoded[row_start]
+        if filter_type > 4:
+            raise ValueError("PNG has an invalid scanline filter")
+        row = bytearray(decoded[row_start + 1:row_start + 1 + stride])
+        for pos in range(stride):
+            left = row[pos - channels] if pos >= channels else 0
+            above = prior[pos]
+            above_left = prior[pos - channels] if pos >= channels else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = above
+            elif filter_type == 3:
+                predictor = (left + above) // 2
+            else:
+                base = left + above - above_left
+                dl = abs(base - left)
+                da = abs(base - above)
+                dc = abs(base - above_left)
+                predictor = (left if dl <= da and dl <= dc
+                             else above if da <= dc else above_left)
+            row[pos] = (row[pos] + predictor) & 0xff
+        for pos in range(0, stride, channels):
+            rgb = bytes(row[pos:pos + 3])
+            alpha = row[pos + 3] if channels == 4 else 255
+            image_hash.update(rgb)
+            image_hash.update(bytes((alpha,)))
+            if alpha:
+                visible += 1
+                if len(colors) < 2:
+                    colors.add(rgb)
+        prior = row
+    if visible < 16 or len(colors) < 2:
+        raise ValueError("Proof PNG lacks nonuniform visible pixel content")
+    return image_hash.hexdigest()
+
+
+def _check_png(path: Path) -> str:
     """Independently decode bounded 64x64 PNG IDAT and check chunk CRC/filter."""
     if path.stat().st_size > MAX_PNG:
         raise ValueError("Fixed render is larger than PNG review budget")
@@ -124,11 +177,10 @@ def _check_png(path: Path) -> None:
     if (len(decoded) != expected or not decomp.eof or decomp.unused_data
             or decomp.unconsumed_tail):
         raise ValueError("PNG zlib scanlines are invalid or oversized")
-    if any(decoded[y * (row_stride + 1)] > 4 for y in range(64)):
-        raise ValueError("PNG has an invalid scanline filter")
+    return _reconstructed_visible_digest(decoded, channels)
 
 
-def _check_file(path: Path, digest: str, size: int, kind: str) -> None:
+def _check_file(path: Path, digest: str, size: int, kind: str) -> str | None:
     if not path.is_file() or not _no_links(path):
         raise ValueError("Artifact must be an ordinary non-symlink file")
     if type(size) is not int or not 12 <= size <= MAX_ARTIFACT:
@@ -137,10 +189,11 @@ def _check_file(path: Path, digest: str, size: int, kind: str) -> None:
         raise ValueError("Invalid artifact hash claim")
     if path.stat().st_size != size:
         raise ValueError("Artifact bytes changed since host report")
+    pixels_sha = None
     if kind == "BLEND":
         _check_blend(path)
     else:
-        _check_png(path)
+        pixels_sha = _check_png(path)
     sha = hashlib.sha256()
     total = 0
     with path.open("rb") as handle:
@@ -151,6 +204,7 @@ def _check_file(path: Path, digest: str, size: int, kind: str) -> None:
             sha.update(block)
     if total != size or sha.hexdigest() != digest:
         raise ValueError("Artifact SHA-256 differs from host receipt")
+    return pixels_sha
 
 
 def reverify_artifacts(report: dict, output: Path) -> dict:
@@ -212,10 +266,19 @@ def reverify_artifacts(report: dict, output: Path) -> dict:
         artifact = output / basename
         if receipt.get("file") != str(artifact):
             raise ValueError("Host receipt output path differs from fixed proof location")
-        _check_file(artifact, receipt.get("sha256"), receipt.get("bytes"), kind)
+        pixels_sha = _check_file(artifact, receipt.get("sha256"), receipt.get("bytes"), kind)
         previous[stage] = receipt["sha256"]
-        checked.append({"stage": stage, "sha256": receipt["sha256"],
-                        "bytes": receipt["bytes"], "format": kind})
+        if pixels_sha is not None:
+            previous[stage + "_pixels"] = pixels_sha
+        current_receipt = {"stage": stage, "sha256": receipt["sha256"],
+                           "bytes": receipt["bytes"], "format": kind}
+        if pixels_sha is not None:
+            current_receipt["decoded_rgba_sha256"] = pixels_sha
+        checked.append(current_receipt)
+    # The Copper look pass must actually change at least some decoded pixels;
+    # different PNG compression, timestamps or file hashes alone do not count.
+    if previous["render_pixels"] == previous["look_render_pixels"]:
+        raise ValueError("Copper look render is pixel-identical to base render")
     return {
         "schema_version": 1,
         "kind": "shuvi41_host_artifact_offline_reverification",

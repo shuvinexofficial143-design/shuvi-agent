@@ -85,3 +85,22 @@ recorded as failed_or_partial_outcome_unknown with no automatic retry. CI
 covers this using synthetic files only; real Windows Blender execution and
 native Shuvi approval acceptance remain unverified.
 
+
+
+### Visible-pixel proof for the two fixed 64×64 demo renders
+
+The offline verifier now **reconstructs actual pixels** for all five standard
+PNG row-filter types (None/Sub/Up/Average/Paeth), for RGB8 and RGBA8 only.
+The fixed trial refuses a PNG that decodes correctly but is completely
+transparent, uniformly colored, or has fewer than 16 visible pixels.
+It also requires the Copper material preview to differ from the base
+model render in **decoded RGBA pixels**—different PNG compression or file
+hashes alone do not count. Identical decoded images fail closed before a
+host trial is called successful.
+
+This is a bounded, deterministic *nonblank/different-frame* source acceptance
+gate. A varied background or random image could also pass. Therefore the
+output still records visual_quality_verified=false and does not claim that
+the intended 3D model appears, that material shaders look professional, or
+that real Windows Blender/Adobe integration has been accepted. Live visual
+inspection is a distinct owner-approved step.

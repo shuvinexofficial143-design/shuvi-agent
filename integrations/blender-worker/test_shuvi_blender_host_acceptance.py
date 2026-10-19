@@ -163,6 +163,49 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
         return (struct.pack(">I", len(data)) + kind + data +
                 struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
 
+    def _png_fixture(self, stage: str, filter_mode: int = 0,
+                     alpha: int = 255, flat: bool = False) -> bytes:
+        """Exact RGBA8 rows encoded with chosen genuine PNG filter, no Blender."""
+        raw_rows = []
+        tint = 25 if stage == "look_render" else 0
+        for y in range(64):
+            row = bytearray()
+            for x in range(64):
+                rgb = ((70, 70, 70) if flat
+                       else ((3 * x + tint) % 256, (4 * y + tint) % 256, 70))
+                row.extend((*rgb, alpha))
+            raw_rows.append(bytes(row))
+        previous = bytes(64 * 4)
+        filtered = []
+        for row in raw_rows:
+            encoded = bytearray()
+            for i, value in enumerate(row):
+                left = row[i - 4] if i >= 4 else 0
+                above = previous[i]
+                upper_left = previous[i - 4] if i >= 4 else 0
+                if filter_mode == 0:
+                    predictor = 0
+                elif filter_mode == 1:
+                    predictor = left
+                elif filter_mode == 2:
+                    predictor = above
+                elif filter_mode == 3:
+                    predictor = (left + above) // 2
+                else:
+                    p = left + above - upper_left
+                    a, b, c = abs(p - left), abs(p - above), abs(p - upper_left)
+                    predictor = (left if a <= b and a <= c
+                                 else above if b <= c else upper_left)
+                encoded.append((value - predictor) & 255)
+            filtered.append(bytes((filter_mode,)) + bytes(encoded))
+            previous = row
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + self._png_chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 6, 0, 0, 0))
+            + self._png_chunk(b"IDAT", zlib.compress(b"".join(filtered)))
+            + self._png_chunk(b"IEND", b"")
+        )
+
     def _five_stage_report(self, directory: Path):
         """Synthetic bytes for offline readback only; never a real Blender proof."""
         stages = []
@@ -172,17 +215,7 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             if kind == "BLEND":
                 data = b"BLENDER-v430" + stage.encode("ascii") + b" fixture bytes"
             else:
-                pixels = b"".join(
-                    b"\x00" + b"".join(bytes((x * 3 % 256, y * 4 % 256, 70, 255))
-                                      for x in range(64))
-                    for y in range(64)
-                )
-                data = (
-                    b"\x89PNG\r\n\x1a\n"
-                    + self._png_chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 6, 0, 0, 0))
-                    + self._png_chunk(b"IDAT", zlib.compress(pixels))
-                    + self._png_chunk(b"IEND", b"")
-                )
+                data = self._png_fixture(stage)
             file = directory / filename
             file.write_bytes(data)
             digest = hashlib.sha256(data).hexdigest()
@@ -294,6 +327,40 @@ class HostAcceptanceHarnessTests(unittest.TestCase):
             self.assertEqual(report["status"], "failed_or_partial_outcome_unknown")
             self.assertFalse(report.get("post_trial_artifacts_rehashed", False))
             self.assertFalse(report["automatic_retry_allowed"])
+
+    def test_all_five_png_filters_reconstruct_the_same_visible_rgba_pixels(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-filter-check-") as temp:
+            target = Path(temp) / "render.png"
+            pixels = set()
+            for filter_mode in range(5):
+                target.write_bytes(self._png_fixture("render", filter_mode=filter_mode))
+                pixels.add(host._check_png(target))
+            self.assertEqual(len(pixels), 1, "PNG filter encoding cannot change pixel proof")
+
+    def test_valid_crc_and_zlib_cannot_promote_invisible_or_monochrome_render(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-visible-check-") as temp:
+            target = Path(temp) / "render.png"
+            for alpha, flat in ((0, False), (255, True)):
+                target.write_bytes(self._png_fixture("render", alpha=alpha, flat=flat))
+                with self.assertRaisesRegex(ValueError, "visible pixel"):
+                    host._check_png(target)
+
+    def test_copper_must_change_decoded_pixels_not_just_png_compression_hash(self):
+        with tempfile.TemporaryDirectory(prefix="shuvi41-pixel-change-") as temp:
+            root = Path(temp)
+            report = self._five_stage_report(root)
+            self.assertEqual(host.reverify_artifacts(report, root)[
+                "verified_current_file_count"], 5)
+            copper = report["completed_stages"][4]
+            target = Path(copper["file"])
+            # Same underlying model render but a different PNG filter/byte hash.
+            alternate = self._png_fixture("render", filter_mode=4)
+            self.assertNotEqual(alternate, (root / "shuvi41-proof-render.png").read_bytes())
+            target.write_bytes(alternate)
+            copper["bytes"] = len(alternate)
+            copper["sha256"] = hashlib.sha256(alternate).hexdigest()
+            with self.assertRaisesRegex(ValueError, "pixel-identical"):
+                host.reverify_artifacts(report, root)
 
     def test_offline_reverify_rejects_unsanctioned_status_and_duplicate_json_keys(self):
         with tempfile.TemporaryDirectory(prefix="shuvi41-offline-review-") as temp:
