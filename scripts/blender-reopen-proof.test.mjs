@@ -56,7 +56,27 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 31 tests/);
+  const discovered=(reopenTests.match(/^    def test_/gm)||[]).length;
+  assert.ok(discovered>0,"Python test discovery must not be empty");
+  assert.match(result.stderr,new RegExp(`Ran ${discovered} tests`));
+});
+
+test("saved Blender actions retain bounded independently reread animation keys across a fresh process",()=>{
+  const source=readFileSync(helper,"utf8");
+  for(const token of [
+    "def _animation_readback(item: dict, call) -> dict:",
+    'inspected = call("animation.inspect", {"object_id": item["object_id"]})',
+    'inspected.get("object_revision") != item.get("revision")',
+    'inspected.get("channels") != expected_channels',
+    'stable["animation"] = _animation_readback(item, call)',
+    '"animated_object_count": animated_count',
+    '"animation_point_count": animation_point_count',
+    '"animation_keyframes_independently_verified": reopened["animation_point_count"] > 0',
+  ])assert.ok(source.includes(token),token);
+  for(const regression of [
+    "test_animated_checkpoint_keyframes_survive_independent_reopen",
+    "test_animation_snapshot_missing_and_misdeclared_rejected",
+  ])assert.ok(reopenTests.includes("def "+regression+"("),regression);
 });
 
 test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
