@@ -26,7 +26,8 @@ test("recovery Audit, owner completion and abandonment controls stay immediately
  assert.match(css,/max-height:220px;overflow:auto/);
 });
 test("unrecognized model JSON never implies Windows action executed",()=>{
-  assert.match(ts,/The AI wrote tool-like JSON, but it was not recognized/);
+  assert.match(ts,/AI tool response rejected/);
+  assert.match(ts,/Windows outcome is NOT unknown/);
   assert.match(ts,/No Windows action was prepared or executed/);
   assert.match(ts,/showActionFeedback\("AI replied but Windows could not prepare/);
 });
