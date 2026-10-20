@@ -7,9 +7,10 @@ import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./
 import {admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from "../../src/master-autonomy-contract.mjs";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
-import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
+import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,completeAuditedYouTubePage,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
 import {buildBoundedContinuationContext,isWithinRustLimit} from "./native-continuation-context.mjs";
 import {verifiedSimpleOpening} from "./native-opening-completion.mjs";
+import {auditedYouTubeLaunch,youtubeReadbackProposal,verifiedYouTubeHome} from "./native-browser-completion.mjs";
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 import {actionFingerprint,seenAfterAuditedChange} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
@@ -31,7 +32,7 @@ import {redactNativeError,redactNativeOutput,redactNativeMessage,nativeAssistant
 import {validPreparedApproval} from "./native-prepared-approval.mjs";
 import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
 import type {NativeTaskBudget} from "./native-task-budget.mjs";
-import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery,validateNativeRecoveryRecord,inspectNativeRecoveryStore,assessNativeRecoveryPair} from "./native-recovery-journal.mjs";
+import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery,retireVerifiedNativeRecovery,validateNativeRecoveryRecord,inspectNativeRecoveryStore,assessNativeRecoveryPair} from "./native-recovery-journal.mjs";
 import {reconcileNativeActionAudit,recoveryAuditMessage} from "./native-recovery-audit.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
@@ -186,8 +187,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  recoveryDismiss.className="shuvi-native-recovery-dismiss";
  recoveryDismiss.type="button";
  recoveryDismiss.hidden=true;
+ const recoveryOwnerDone=field("button","I confirm this task is finished (owner report)");
+ recoveryOwnerDone.className="shuvi-native-recovery-owner-done";
+ recoveryOwnerDone.type="button";
+ recoveryOwnerDone.hidden=true;
+ const recoveryPanel=field("section");
+ recoveryPanel.className="shuvi-native-recovery-panel";
+ recoveryPanel.setAttribute("role","region");
+ recoveryPanel.setAttribute("aria-label","Windows task recovery controls next to chat composer");
+ recoveryPanel.append(recoveryNotice,recoveryCheck,recoveryOwnerDone,recoveryDismiss);
  budgetNote.className="shuvi-native-note";
- panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus,recoveryNotice,recoveryCheck,recoveryDismiss);
+ panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -196,9 +206,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  if(composerParent){
   composerParent.insertBefore(actionFeedback,chatForm);
   composerParent.insertBefore(approval,chatForm);
+  composerParent.insertBefore(recoveryPanel,chatForm);
  }else{
   // Defensive fallback for an incomplete preview; never lose an approval UI.
-  panel.append(actionFeedback,approval);
+  panel.append(actionFeedback,approval,recoveryPanel);
  }
  let team:ModelTeamHandle|null=null;
  let ready=false;
@@ -220,6 +231,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // retired on the owner's next independent instruction without old execution.
  // This marker is never restored after a process restart.
  let cleanNoActionPausedBudget:NativeTaskBudget|null=null;
+ // Only a narrowly verified, fully audited task can use automatic retirement.
+ // No paused, denied, unknown, or interrupted task gets this capability.
+ let completedVerifiedBudget:NativeTaskBudget|null=null;
  const recoveryTaskId=(budget:NativeTaskBudget):string|null=>{
   const existing=taskRecoveryIds.get(budget);
   if(existing)return existing;
@@ -247,6 +261,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   recoveryNotice.hidden=false;
   recoveryCheck.hidden=!previousRecovery.actionId;
   recoveryDismiss.hidden=false;
+  recoveryOwnerDone.hidden=previousRecovery.phase==="paused"&&previousRecovery.stagedActions>0?false:true;
  }else if(needsOwnerRecoveryReview){
   recoveryNotice.textContent="Previous WebView recovery evidence is corrupt or unavailable. No old request or Windows action was replayed. Owner review is required before another Windows task.";
   recoveryNotice.hidden=false;
@@ -273,7 +288,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    recoveryCheck.disabled=false;
   }
  });
- recoveryDismiss.addEventListener("click",async()=>{
+ const ownerClearRecovery=async(ownerReportsFinished:boolean)=>{
   if(!ready){
    recoveryNotice.textContent="Native recovery has not finished loading. Cannot acknowledge or clear it yet.";
    return;
@@ -287,27 +302,45 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   // throughout the asynchronous Rust disk operation.
   sending=true;
   recoveryDismiss.disabled=true;
+  recoveryOwnerDone.disabled=true;
   try{
+   if(ownerReportsFinished){
+    const local=inspectNativeRecoveryStore(recoveryStorage);
+    const review=assessNativeRecoveryPair(local,await invoke<unknown>("load_native_recovery").catch(()=>null));
+    if(review.reason!=="matched_previous_task"||local.record?.phase!=="paused"||
+       !local.record.actionId||local.record.stagedActions<1){
+     recoveryNotice.textContent="Owner completion can only close a matching paused task with action evidence. Unknown, in-flight, denied or mismatched records still need Rust Audit review and explicit abandonment.";
+     recoveryNotice.hidden=false;
+     return;
+    }
+   }
    await invoke<void>("clear_native_recovery");
    if(!clearNativeRecovery(recoveryStorage))
     throw Error("Local recovery journal could not be cleared");
    rustRecovery=null;
    recoveryCheckpointFailed=false;
    cleanNoActionPausedBudget=null;
+   completedVerifiedBudget=null;
    // Acknowledgement is an explicit abandonment of the old execution scope.
    // Never reuse old budgets, goal roots, window evidence or worker state.
    taskBudgets.clear();
    taskGoalRoots.clear();
    taskStates.clear();
    taskEvidence.clear();
+   browserLaunchProofs.clear();
    verifiedWindows.clear();
    observedWindows.clear();observedControls.clear();pendingUiReadback.clear();
-   taskStatus.textContent="Previous task acknowledged; start a fresh Windows task.";
-   goalStatus.textContent="Old task objective not independently verified.";
+   taskStatus.textContent=ownerReportsFinished
+    ?"Owner reported the prior task finished; start a fresh Windows task."
+    :"Previous task abandoned/acknowledged; start a fresh Windows task.";
+   goalStatus.textContent=ownerReportsFinished
+    ?"Owner-reported completion; NOT independently verified by Shuvi."
+    :"Old task objective not independently verified.";
    recoveryAcknowledged=true;
    recoveryNotice.hidden=true;
    recoveryCheck.hidden=true;
    recoveryDismiss.hidden=true;
+   recoveryOwnerDone.hidden=true;
   }catch{
    // Clearing Rust before WebView removal can leave split evidence. Neither
    // store can authorize a fresh task until both are explicitly cleared.
@@ -319,8 +352,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }finally{
    sending=false;
    recoveryDismiss.disabled=false;
+   recoveryOwnerDone.disabled=false;
   }
- });
+ };
+ recoveryDismiss.addEventListener("click",()=>ownerClearRecovery(false));
+ recoveryOwnerDone.addEventListener("click",()=>ownerClearRecovery(true));
  const writeRecovery=(b:NativeTaskBudget,phase:string,actionId:string|null=null):boolean=>{
   // Installed native commands MUST NOT bypass recovery when localStorage
   // is missing, denied, or throws. Ordinary Chat remains independent.
@@ -344,6 +380,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    recoveryNotice.hidden=false;
    recoveryCheck.hidden=!actionId;
    recoveryDismiss.hidden=false;
+   recoveryOwnerDone.hidden=true;
   }
   return saved;
  };
@@ -357,6 +394,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    recoveryNotice.hidden=false;
    recoveryCheck.hidden=!actionId;
    recoveryDismiss.hidden=false;
+   recoveryOwnerDone.hidden=true;
    return false;
   };
   if(recoveryCheckpointFailed)return failClosed();
@@ -366,7 +404,56 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   try{await invoke<void>("save_native_recovery",{record});return true;}
   catch{return failClosed();}
  };
+ // Completed means the *narrow original request* passed its independent
+ // readback gate, not merely that a native action succeeded. Both durable
+ // stores must agree at the exact task UUID/revision before clearing either.
+ const retireVerifiedPair=async():Promise<boolean>=>{
+  try{
+   if(recoveryCheckpointFailed||sending&&pending)throw Error("Unsafe retirement boundary");
+   const local=inspectNativeRecoveryStore(recoveryStorage);
+   const native=await invoke<unknown>("load_native_recovery");
+   const agreement=assessNativeRecoveryPair(local,native);
+   if(agreement.reason!=="matched_verified_completion"||!local.record?.taskId||
+      !Number.isSafeInteger(local.record.revision))throw Error("No paired verified completion");
+   await invoke<void>("retire_verified_native_recovery",{
+    taskId:local.record.taskId,revision:local.record.revision
+   });
+   if(!retireVerifiedNativeRecovery(recoveryStorage,local.record.taskId,local.record.revision))
+    throw Error("WebView terminal record changed during retirement");
+   rustRecovery=null;
+   completedVerifiedBudget=null;
+   recoveryAcknowledged=true;
+   recoveryNotice.hidden=true;
+   recoveryCheck.hidden=true;
+   recoveryDismiss.hidden=true;
+   recoveryOwnerDone.hidden=true;
+   return true;
+  }catch{
+   // A crash or failure between the Rust and WebView disk operations must
+   // NOT let an independent task overwrite an orphaned checkpoint.
+   recoveryCheckpointFailed=true;
+   recoveryAcknowledged=false;
+   recoveryNotice.textContent="Verified task retirement did not finish in both journals. No new Windows action or paid request was sent. Inspect Rust Audit and acknowledge the remaining checkpoint.";
+   recoveryNotice.hidden=false;
+   recoveryCheck.hidden=false;
+   recoveryDismiss.hidden=false;
+   recoveryOwnerDone.hidden=true;
+   return false;
+  }
+ };
+ const showOwnerCompletionChoice=(b:NativeTaskBudget,actionId:string|null)=>{
+  const record=readNativeRecovery(recoveryStorage);
+  if(record?.phase!=="paused"||record.taskId!==taskRecoveryIds.get(b)||
+     !record.actionId||record.stagedActions<1||record.actionId!==actionId||
+     recoveryCheckpointFailed)return;
+  recoveryNotice.textContent="This Windows task is paused. Shuvi cannot independently verify its full goal. If you checked the result yourself, report completion here; otherwise review Rust Audit and abandon the task. No Windows action or paid request will replay.";
+  recoveryNotice.hidden=false;
+  recoveryCheck.hidden=false;
+  recoveryOwnerDone.hidden=false;
+  recoveryDismiss.hidden=false;
+ };
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
+ const browserLaunchProofs=new Map<string,NonNullable<ReturnType<typeof auditedYouTubeLaunch>>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
  const observedWindows=new Map<string,ReturnType<typeof newAuditedWindowObservation>>();
  const observedControls=new Map<string,ReturnType<typeof newAuditedControlObservation>>();
@@ -420,7 +507,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }
    // Startup admission is decided only AFTER both independent stores load.
    // Never restore model/tool authority from either inspection snapshot.
-   const review=assessNativeRecoveryPair(previousRecoveryState,rustRecovery);
+   let review=assessNativeRecoveryPair(previousRecoveryState,rustRecovery);
+   if(review.reason==="matched_verified_completion"){
+    const retired=await retireVerifiedPair();
+    review=retired?{requiresReview:false,reason:"no_previous_task"}
+     :{requiresReview:true,reason:"mismatched_stores"};
+   }
    recoveryAcknowledged=!review.requiresReview;
    if(review.requiresReview){
     const reason={
@@ -430,12 +522,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      invalid_rust:"Rust recovery evidence is invalid.",
      mismatched_stores:"WebView and Rust recovery records disagree.",
      matched_previous_task:"Previous Windows task checkpoint found; an audited action is not proof the original goal completed.",
+     matched_verified_completion:"Verified previous task could not be retired from both persistent stores.",
      no_previous_task:""
     }[review.reason];
     recoveryNotice.textContent=reason+" No old request or Windows action was replayed. Review native Activity/Audit and explicitly acknowledge the interrupted task before a new Windows task.";
     recoveryNotice.hidden=false;
     recoveryCheck.hidden=!(previousRecovery?.actionId??rustRecovery?.actionId);
     recoveryDismiss.hidden=false;
+    recoveryOwnerDone.hidden=!(review.reason==="matched_previous_task"&&
+      previousRecovery?.phase==="paused"&&previousRecovery.stagedActions>0);
    }
    if(!Array.isArray(list)||!list.length)throw Error("Native provider registry unavailable.");
    team=mountNativeModelSetup(invoke,list);
@@ -466,7 +561,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   updateReply(threadId,index,(replies.get(threadId)?.[index]||"")+"\n\n"+extra);
  }
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
-  const plannedReadback=nextMasterReadbackProposal(task.objective,result.tool);
+  const plannedReadback=nextMasterReadbackProposal(task.objective,result.tool)??
+   (result.tool==="browser_start"?youtubeReadbackProposal(browserLaunchProofs.get(task.threadId)):null);
   const taskBudget=taskBudgets.get(task.threadId);
   // Validate the exact objective and Rust-bound context BEFORE consuming a
   // paid-request reservation. Deterministic readback needs no model context.
@@ -575,7 +671,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   histories.set(task.threadId,[...(plannedReadback?prev:messages),{role:"assistant",content:answer}].slice(-22));
   appendReply(task.threadId,task.promptIndex,(plannedReadback?"Native readback step:\n":"Master next step:\n")+answer);
   if(!response.tool_proposal){
-   await persistRecovery(taskBudget,"paused",task.action.id);
+   const paused=await persistRecovery(taskBudget,"paused",task.action.id);
+   if(paused)showOwnerCompletionChoice(taskBudget,task.action.id);
    haltTask(task.threadId,followupRoot?"awaiting_clarification":"no_next_tool");
    appendReply(task.threadId,task.promptIndex,
     (followupRoot?"Task paused: waiting for your clarification; no further Windows tool is prepared. The original goal is NOT independently verified complete.\n":"Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.\n")+
@@ -833,6 +930,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
      taskEvidence.set(current.threadId,recordAuditedEvidence(
       taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
+     if(result.tool==="browser_start"){
+      const launchProof=auditedYouTubeLaunch(current.objective,current.action.id,current.proposal,result);
+      if(launchProof)browserLaunchProofs.set(current.threadId,launchProof);
+      else browserLaunchProofs.delete(current.threadId);
+     }
      if(requiresNewWindowObservation(observedWindows.has(current.threadId),result.tool)){
       observedWindows.set(current.threadId,null); // Stale: UI mutations need a NEW audited read.
       verifiedWindows.delete(current.threadId);
@@ -898,22 +1000,33 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      const simpleOpening=verified?verifiedSimpleOpening(
        current.objective,current.action.id,result,
        taskEvidence.get(current.threadId)??null,true):null;
+     const youtubeHome=verified?verifiedYouTubeHome(
+       current.objective,current.action.id,current.proposal,result,
+       taskEvidence.get(current.threadId)??null,
+       browserLaunchProofs.get(current.threadId)??null,true):null;
      clearPending();
-     if(simpleOpening){
-      const appName=simpleOpening.scope==="premiere_window"?"Premiere":"Notepad";
+     if(simpleOpening||youtubeHome){
+      const appName=youtubeHome?"YouTube":simpleOpening?.scope==="premiere_window"?"Premiere":"Notepad";
       const finalBudget=taskBudgets.get(current.threadId);
-      if(!finalBudget||!await persistRecovery(finalBudget,"paused",current.action.id)){
+      if(!finalBudget||!await persistRecovery(finalBudget,"completed_verified",current.action.id)){
        haltTask(current.threadId,"recovery_journal_failed");
        appendReply(current.threadId,current.promptIndex,
         appName+" window was observed with a Rust audit, but terminal recovery could not be saved. No completion status or paid retry was issued.");
        return;
       }
-      updateTask(current.threadId,completeAuditedOpening(getTask(current.threadId),appName));
-      const completedMessage="Requested "+appName+" window OPENING VERIFIED at last audited OS inspection: "+
-       redactNativeMessage(simpleOpening.window.title)+" (PID "+simpleOpening.window.pid+
-       ", HWND "+simpleOpening.window.hwnd+"). The native launcher and window inspection "+
-       "had different approved action IDs. No extra AI model request. "+
-       (appName==="Premiere"?"Project creation, file import, editing, save and export remain UNVERIFIED.":"File creation, editing, and save remain UNVERIFIED.");
+      completedVerifiedBudget=finalBudget;
+      updateTask(current.threadId,youtubeHome
+       ?completeAuditedYouTubePage(getTask(current.threadId))
+       :completeAuditedOpening(getTask(current.threadId),appName));
+      const completedMessage=youtubeHome
+       ?"Requested YouTube HOME PAGE VERIFIED loaded at "+youtubeHome.origin+
+        "/ (managed PID "+youtubeHome.pid+"). Separate Allow once and exact native audits " +
+        "confirmed the browser launch and CDP page readback. Searching, playback and login remain UNVERIFIED. No extra AI model request."
+       :"Requested "+appName+" window OPENING VERIFIED at last audited OS inspection: "+
+        redactNativeMessage(simpleOpening!.window.title)+" (PID "+simpleOpening!.window.pid+
+        ", HWND "+simpleOpening!.window.hwnd+"). The native launcher and window inspection "+
+        "had different approved action IDs. No extra AI model request. "+
+        (appName==="Premiere"?"Project creation, file import, editing, save and export remain UNVERIFIED.":"File creation, editing, and save remain UNVERIFIED.");
       appendReply(current.threadId,current.promptIndex,completedMessage);
       showActionFeedback(completedMessage);
       goalStatus.textContent=completedMessage;
@@ -1019,8 +1132,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);observedControls.delete(threadId);pendingUiReadback.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();observedControls.clear();pendingUiReadback.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);browserLaunchProofs.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);observedControls.delete(threadId);pendingUiReadback.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();browserLaunchProofs.clear();verifiedWindows.clear();observedWindows.clear();observedControls.clear();pendingUiReadback.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -1049,6 +1162,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
    if(route.role!=="chat"&&!recoveryAcknowledged)return {ok:false,error:
     "The previous Windows task may have an unresolved action or paid request. Review Rust Audit, then explicitly acknowledge and clear the interrupted task journal before starting another Windows task. Nothing was sent."};
+   if(route.role!=="chat"&&!waitingForChoice&&completedVerifiedBudget){
+    // A completed original goal has a paired terminal checkpoint. Retirement
+    // is conditional on its exact persisted identity, never a generic clear.
+    sending=true;
+    try{
+     if(!await retireVerifiedPair())return {ok:false,error:
+      "Previously verified Windows task could not be safely retired. No paid request or Windows action sent."};
+    }finally{sending=false;}
+   }
    if(route.role!=="chat"&&!waitingForChoice&&cleanNoActionPausedBudget){
     // A known successful answer with ZERO staged Windows actions is terminal.
     // The owner's fresh command can retire it, but only after BOTH stores
@@ -1115,6 +1237,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       observedWindows.delete(threadId);
       verifiedWindows.delete(threadId);
       taskEvidence.delete(threadId);
+      browserLaunchProofs.delete(threadId);
       taskStates.delete(threadId);
      }
      // Preserve live proof on a clarification; clear it only for a new task.

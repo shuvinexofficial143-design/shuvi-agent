@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {NATIVE_JOURNAL_KEY,readNativeRecovery,writeNativeRecovery,clearNativeRecovery,inspectNativeRecoveryStore,assessNativeRecoveryPair} from "../web-dashboard/src/native-recovery-journal.mjs";
+import {NATIVE_JOURNAL_KEY,readNativeRecovery,writeNativeRecovery,clearNativeRecovery,retireVerifiedNativeRecovery,inspectNativeRecoveryStore,assessNativeRecoveryPair} from "../web-dashboard/src/native-recovery-journal.mjs";
 const makeStore=()=>{const m=new Map();return {m,getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,v),removeItem:k=>m.delete(k)}};
 const value={maxActions:24,stagedActions:3,modelRequests:4,expiresAt:7201000,phase:"awaiting_approval",actionId:"native_action-123"};
 test("recoverable journal contains only bounded metadata and can be dismissed",()=>{
@@ -110,6 +110,40 @@ test("recovered paused and audited states still require explicit owner review",(
  }
 });
 
+test("terminal completion requires two staged actions and exact audited predecessor",()=>{
+ const id="14a40d18-4df8-4cb8-ab90-0137027f3a8b",store=makeStore();
+ const reserved={version:2,taskId:id,revision:1,maxActions:8,stagedActions:0,
+  modelRequests:1,expiresAt:7201000,phase:"model_reserved",actionId:null};
+ const save=(last,revision,phase,patch={})=>writeNativeRecovery(store,{...last,revision,phase,...patch},1000+revision);
+ assert.equal(save(reserved,1,"model_reserved"),true);
+ const approved={...reserved,revision:2,stagedActions:1,phase:"awaiting_approval",actionId:"first"};
+ assert.equal(save(approved,2,"awaiting_approval"),true);
+ const executing={...approved,revision:3,phase:"executing"};
+ assert.equal(save(executing,3,"executing"),true);
+ const audited={...executing,revision:4,phase:"audit_verified"};
+ assert.equal(save(audited,4,"audit_verified"),true);
+ assert.equal(save(audited,5,"completed_verified"),false,"one action cannot complete goal");
+ assert.equal(save(audited,5,"readback_reserved"),true);
+ const second={...audited,revision:6,stagedActions:2,actionId:"readback",phase:"awaiting_approval"};
+ assert.equal(save(second,6,"awaiting_approval"),true);
+ assert.equal(save(second,7,"executing"),true);
+ assert.equal(save(second,8,"completed_verified"),false,"executing is not audit");
+ assert.equal(save(second,8,"audit_verified"),true);
+ const terminal={...second,revision:9,phase:"completed_verified"};
+ for(const patch of [{actionId:"other"},{modelRequests:2},{stagedActions:3}])
+  assert.equal(save(terminal,9,"completed_verified",patch),false);
+ assert.equal(save(terminal,9,"completed_verified"),true);
+ const local=inspectNativeRecoveryStore(store,1010);
+ assert.deepEqual(assessNativeRecoveryPair(local,{...local.record,updatedAt:1015},1016),
+  {requiresReview:true,reason:"matched_verified_completion"});
+ assert.equal(save(terminal,10,"model_reserved",{modelRequests:2}),false);
+ assert.equal(save(terminal,10,"paused"),false);
+ assert.equal(retireVerifiedNativeRecovery(store,id,8,1010),false,"revision CAS");
+ assert.equal(retireVerifiedNativeRecovery(store,"7811c24d-d01a-4b04-96ae-0d4ef664ca93",9,1010),false);
+ assert.equal(retireVerifiedNativeRecovery(store,id,9,1010),true);
+ assert.equal(inspectNativeRecoveryStore(store,1010).kind,"empty");
+});
+
 test("split-brain WebView and Rust recovery always fails closed",()=>{
  const store=makeStore();
  writeNativeRecovery(store,value,1000);
@@ -141,7 +175,7 @@ test("corrupt or unreadable WebView recovery cannot silently disappear on restar
 test("native transport gates new Windows tasks on reconciled recovery and preserves manual clear",()=>{
  const src=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(src,/const previousRecoveryState=inspectNativeRecoveryStore\(recoveryStorage\)/);
- assert.match(src,/const review=assessNativeRecoveryPair\(previousRecoveryState,rustRecovery\)/);
+ assert.match(src,/let review=assessNativeRecoveryPair\(previousRecoveryState,rustRecovery\)/);
  assert.match(src,/recoveryAcknowledged=!review\.requiresReview/);
  assert.match(src,/if\(route\.role!=="chat"&&!recoveryAcknowledged\)/);
  assert.match(src,/await invoke<void>\("clear_native_recovery"\)/);

@@ -48,13 +48,17 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
         return Err("Native recovery budget counters exceed the owner limits.".into());
     }
     if !matches!(value.phase.as_str(),"model_reserved"|"readback_reserved"|"awaiting_approval"|"executing"|
-        "audit_verified"|"native_denied"|"paused"|"outcome_unknown"){
+        "audit_verified"|"native_denied"|"paused"|"outcome_unknown"|"completed_verified"){
 
         return Err("Unsupported native recovery transition.".into());
     }
     if value.phase=="native_denied"&&
        (value.version!=2||value.revision.is_none()){
         return Err("Native denial requires revisioned v2 inspection evidence.".into());
+    }
+    if value.phase=="completed_verified"&&
+       (value.version!=2||value.revision.is_none()||value.staged_actions<2||value.action_id.is_none()){
+        return Err("Verified completion requires a separately audited readback identity.".into());
     }
     if value.updated_at==0||value.expires_at==0||
        value.expires_at>value.updated_at.saturating_add(TWO_HOURS)||
@@ -67,7 +71,7 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
             return Err("Invalid native recovery action identifier.".into());
         }
     }
-    if matches!(value.phase.as_str(),"readback_reserved"|"awaiting_approval"|"executing"|"audit_verified"|"native_denied")&&
+    if matches!(value.phase.as_str(),"readback_reserved"|"awaiting_approval"|"executing"|"audit_verified"|"native_denied"|"completed_verified")&&
 
        (value.action_id.is_none()||value.staged_actions==0){
         return Err("Native recovery action phase has no staged identity.".into());
@@ -95,6 +99,9 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
             next.staged_actions==0&&next.action_id.is_none()=>Ok(()),
         None=>Err("First recovery checkpoint must reserve a single model request without an action.".into()),
         Some(previous)=>{
+            if previous.phase=="completed_verified"{
+                return Err("Completed native task must be conditionally retired before another reservation.".into());
+            }
             if previous.version!=2||previous.task_id!=next.task_id{
                 return Err("Prior recovery task identity requires owner acknowledgement.".into());
             }
@@ -148,6 +155,12 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
                 next.action_id.is_none()||previous.staged_actions!=next.staged_actions||
                 previous.model_requests!=next.model_requests){
                 return Err("Native denial must match the exact in-flight prepared action.".into());
+            }
+            if next.phase=="completed_verified"&&
+               (previous.phase!="audit_verified"||previous.action_id!=next.action_id||
+                previous.staged_actions!=next.staged_actions||
+                previous.model_requests!=next.model_requests){
+                return Err("Terminal completion requires the last audited, separately approved readback.".into());
             }
             if next.phase=="awaiting_approval"&&
                (!matches!(previous.phase.as_str(),"model_reserved"|"outcome_unknown"|"readback_reserved")||
@@ -207,6 +220,25 @@ pub(crate) fn clear(app:&AppHandle)->Result<(),String>{
     crate::premiere_store::clear_snapshot(&path(app)?)
 }
 
+// Unlike owner abandonment, automatic retirement may only delete an exact
+// matched terminal revision. A delayed WebView call cannot clear a newer task.
+fn retire_verified_record(file:&Path,task_id:&str,revision:u64)->Result<(),String>{
+    let bytes=crate::read_file_bytes_bounded(file,MAX_BYTES,"native recovery journal")?;
+    validate_bytes(&bytes)?;
+    let old:NativeRecoveryRecord=serde_json::from_slice(&bytes)
+        .map_err(|_|"Native recovery terminal snapshot is unreadable.".to_string())?;
+    if old.version!=2||old.phase!="completed_verified"||
+       old.task_id.as_deref()!=Some(task_id)||old.revision!=Some(revision){
+        return Err("Terminal recovery identity/revision mismatch; owner review required.".into());
+    }
+    crate::premiere_store::clear_snapshot(file)
+}
+
+pub(crate) fn retire_verified(app:&AppHandle,task_id:&str,revision:u64)->Result<(),String>{
+    let _guard=RECOVERY_LOCK.lock().map_err(|_|"Native recovery lock unavailable.")?;
+    retire_verified_record(&path(app)?,task_id,revision)
+}
+
 #[tauri::command]
 pub(crate) fn save_native_recovery(record:NativeRecoveryRecord,app:AppHandle)->Result<(),String>{
     save(&app,record)
@@ -219,6 +251,10 @@ pub(crate) fn load_native_recovery(app:AppHandle)->Result<Option<NativeRecoveryR
 pub(crate) fn clear_native_recovery(app:AppHandle)->Result<(),String>{
     clear(&app)
 }
+#[tauri::command]
+pub(crate) fn retire_verified_native_recovery(task_id:String,revision:u64,app:AppHandle)->Result<(),String>{
+    retire_verified(&app,&task_id,revision)
+}
 
 #[cfg(test)]
 mod tests{
@@ -230,6 +266,53 @@ mod tests{
             expires_at:7_200_001,updated_at:1,phase:"executing".into(),
             action_id:Some("action-1".into())
         }
+    }
+    #[test]
+    fn verified_completion_requires_two_actions_and_exact_audited_readback(){
+        let first=NativeRecoveryRecord{
+            revision:Some(4),staged_actions:2,phase:"audit_verified".into(),
+            ..state()
+        };
+        let finished=NativeRecoveryRecord{
+            revision:Some(5),phase:"completed_verified".into(),..first.clone()
+        };
+        assert!(valid(&finished).is_ok());
+        assert!(validate_advance(Some(&first),&finished).is_ok());
+        assert!(valid(&NativeRecoveryRecord{
+            staged_actions:1,..finished.clone()
+        }).is_err());
+        assert!(validate_advance(Some(&NativeRecoveryRecord{
+            phase:"paused".into(),..first.clone()
+        }),&finished).is_err());
+        assert!(validate_advance(Some(&NativeRecoveryRecord{
+            phase:"outcome_unknown".into(),..first.clone()
+        }),&finished).is_err());
+        assert!(validate_advance(Some(&first),&NativeRecoveryRecord{
+            action_id:Some("unrelated-action".into()),..finished.clone()
+        }).is_err());
+        assert!(validate_advance(Some(&finished),&NativeRecoveryRecord{
+            revision:Some(6),phase:"model_reserved".into(),model_requests:2,
+            ..finished.clone()
+        }).is_err());
+    }
+    #[test]
+    fn terminal_retirement_checks_task_revision_and_does_not_clear_other_work(){
+        let folder=std::env::temp_dir().join(format!("shuvi-terminal-recovery-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&folder).unwrap();
+        let file=folder.join("native-recovery.json");
+        let verified=NativeRecoveryRecord{
+            revision:Some(9),staged_actions:2,phase:"completed_verified".into(),
+            ..state()
+        };
+        let bytes=serde_json::to_vec(&verified).unwrap();
+        crate::premiere_store::replace(&file,&bytes,MAX_BYTES,validate_bytes).unwrap();
+        let task=verified.task_id.as_deref().unwrap();
+        assert!(retire_verified_record(&file,task,8).is_err());
+        assert!(retire_verified_record(&file,"7811c24d-d01a-4b04-96ae-0d4ef664ca93",9).is_err());
+        assert!(file.exists());
+        retire_verified_record(&file,task,9).unwrap();
+        assert!(!file.exists());
+        fs::remove_dir_all(folder).unwrap();
     }
     #[test]
     fn native_denial_is_ordered_owner_review_evidence_not_new_execution_permission() {

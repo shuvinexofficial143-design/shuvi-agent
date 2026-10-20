@@ -85,16 +85,16 @@ test("Native UI progress records narrow window-only completion, not project/edit
  assert.match(taskSummary(complete),/window opening VERIFIED.*project\/edit\/export NOT verified/);
  assert.equal(completeAuditedOpening(createTask()).phase,"planning");
 });
-test("Native dashboard accepts only exact Rust audit and durably pauses BEFORE terminal message",()=>{
+test("Native dashboard accepts only exact Rust audit and durably finalizes BEFORE terminal message",()=>{
  const ui=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(ui,/const simpleOpening=verified\?verifiedSimpleOpening\(/);
  assert.match(ui,/taskEvidence\.get\(current\.threadId\)\?\?null,true/);
  const capture=ui.indexOf("const simpleOpening=verified?");
- const checkpoint=ui.indexOf('await persistRecovery(finalBudget,"paused",current.action.id)',capture);
+ const checkpoint=ui.indexOf('await persistRecovery(finalBudget,"completed_verified",current.action.id)',capture);
  const finish=ui.indexOf("completeAuditedOpening(getTask(current.threadId),appName)",capture);
  const paid=ui.indexOf("await continueAfterVerifiedAction(current,result)",capture);
  assert.ok(capture>=0&&checkpoint>capture&&finish>checkpoint&&paid>finish);
- assert.match(ui,/if\(simpleOpening\)\{\s*const appName=[^\n]+;\s*const finalBudget/);
+ assert.match(ui,/if\(simpleOpening\|\|youtubeHome\)\{\s*const appName=[^\n]+;\s*const finalBudget/);
  assert.match(ui,/Project creation, file import, editing, save and export remain UNVERIFIED/);
 });
 

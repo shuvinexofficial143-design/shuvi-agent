@@ -17,6 +17,14 @@ test("native approval is mounted beside the current Chat composer, never only in
   assert.match(css,/chat-panel>\.shuvi-native-approval:not\(\[hidden\]\)/);
   assert.match(css,/chat-panel>\.shuvi-native-approval\[hidden\]\{display:none!important\}/);
 });
+test("recovery Audit, owner completion and abandonment controls stay immediately above composer",()=>{
+ assert.match(ts,/composerParent\.insertBefore\(recoveryPanel,chatForm\)/);
+ assert.match(ts,/recoveryPanel\.append\(recoveryNotice,recoveryCheck,recoveryOwnerDone,recoveryDismiss\)/);
+ assert.match(css,/chat-panel > \.shuvi-native-recovery-panel/);
+ assert.match(css,/:has\(> \.shuvi-native-recovery:not\(\[hidden\]\)\)/);
+ assert.doesNotMatch(ts,/panel\.append\([^;]*recoveryCheck,recoveryDismiss\)/);
+ assert.match(css,/max-height:220px;overflow:auto/);
+});
 test("unrecognized model JSON never implies Windows action executed",()=>{
   assert.match(ts,/The AI wrote tool-like JSON, but it was not recognized/);
   assert.match(ts,/No Windows action was prepared or executed/);

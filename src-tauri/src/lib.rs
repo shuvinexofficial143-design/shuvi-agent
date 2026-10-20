@@ -210,6 +210,7 @@ Available tools:
 - open_url: {"url":"https://example.com"}
 - browser_start: {"browser":"edge|chrome","url":"optional https:// page"}
 - browser_navigate: {"pid":1234,"url":"https://example.com"}
+- browser_page_state: {"pid":1234} — read-only current bound page origin/path/readyState; no URL query or fragment
 - browser_dom_read: {"pid":1234,"selector":"CSS selector"}
 - browser_dom_click: {"pid":1234,"selector":"CSS selector"}
 - browser_dom_set_value: {"pid":1234,"selector":"CSS selector","value":"text"}
@@ -720,6 +721,7 @@ enum ToolAction {
     BrowserStart { browser: String, url: Option<String> },
     BrowserNavigate { pid: u32, url: String },
     BrowserDomRead { pid: u32, selector: String },
+    BrowserPageState { pid: u32 },
     BrowserDomClick { pid: u32, selector: String },
     BrowserDomSetValue { pid: u32, selector: String, value: String },
     StopManagedProcess { pid: u32 },
@@ -1751,6 +1753,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "browser_start"
         | "browser_navigate"
         | "browser_dom_read"
+        | "browser_page_state"
         | "browser_dom_click"
         | "browser_dom_set_value"
         | "stop_managed_process"
@@ -3611,6 +3614,18 @@ fn stage_tool(
                 ToolAction::BrowserDomRead { pid, selector: selector.clone() },
                 "Read browser DOM".to_string(),
                 format!("Browser PID {pid} | selector={selector}"),
+                RiskLevel::Low,
+            )
+        }
+        "browser_page_state" => {
+            let pid = arg_u32(&proposal.arguments, "pid")?;
+            if proposal.arguments.as_object().is_none_or(|fields| fields.len()!=1){
+                return Err("browser_page_state accepts only the tracked browser PID.".into());
+            }
+            (
+                ToolAction::BrowserPageState { pid },
+                "Inspect managed browser page".to_string(),
+                format!("Read only origin, pathname, readyState and bounded title for managed browser PID {pid}; exclude URL query and fragment"),
                 RiskLevel::Low,
             )
         }
@@ -11264,6 +11279,20 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserPageState { pid } => {
+            // The PID must still belong to a Shuvi-managed, identity-checked
+            // CDP session. Reading never navigates, clicks or mutates the page.
+            let session = browser_session(state, pid)?;
+            let value = cdp_eval(session.port,&session.target_id,
+                r#"(() => ({origin: window.location.origin, pathname: window.location.pathname,
+                    readyState: document.readyState, title: String(document.title).slice(0, 160)}))()"#.to_string())?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string(&value)
+                    .map_err(|_|"Could not serialize browser readback.".to_string())?,
+                stderr:String::new(),exit_code:Some(0),
             })
         }
         ToolAction::BrowserDomClick { pid, selector } => {
@@ -21037,7 +21066,7 @@ fn review_native_scheduler_failure(
         ||inspection.timestamp_ms<=failed.timestamp_ms
         ||!matches!(inspection.tool.as_str(),
             "read_file"|"list_directory"|"workspace_scan"|"search_text"|
-            "list_processes"|"ui_find"|"browser_dom_read"|
+            "list_processes"|"ui_find"|"browser_dom_read"|"browser_page_state"|
             "premiere_context"|"premiere_timeline"|"premiere_bridge_status"|
             "blender_inspect"|"git_status"|"git_diff"){
         return Err("Recovery inspection must be a later, independently audited read-only action.".into());
@@ -22177,6 +22206,7 @@ pub fn run() {
             native_recovery::save_native_recovery,
             native_recovery::load_native_recovery,
             native_recovery::clear_native_recovery,
+            native_recovery::retire_verified_native_recovery,
             premiere_bridge_start,
             premiere_bridge_status,
             premiere_bridge_stop,

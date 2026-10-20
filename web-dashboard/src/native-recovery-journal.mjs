@@ -1,7 +1,7 @@
 // Recoverable inspection metadata only, NEVER permission to run an old action.
 export const NATIVE_JOURNAL_KEY="shuvi.native.task.recovery.v1";
 const ACTIONS=new Set([8,24,48]);
-const PHASES=new Set(["model_reserved","readback_reserved","awaiting_approval","audit_verified","native_denied","paused","outcome_unknown","executing"]);
+const PHASES=new Set(["model_reserved","readback_reserved","awaiting_approval","audit_verified","native_denied","paused","outcome_unknown","executing","completed_verified"]);
 const ACTION_ID=/^[A-Za-z0-9_-]{1,128}$/;
 const TASK_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_AGE=7200000;
@@ -20,6 +20,9 @@ function normalize(record,now){
   (record.version!==2||!Number.isSafeInteger(record.revision)||
    record.revision<1||!Number.isSafeInteger(record.stagedActions)||
    record.stagedActions<1||!record.actionId))return null;
+ if(record.phase==="completed_verified"&&
+  (record.version!==2||!Number.isSafeInteger(record.revision)||
+   record.stagedActions<2||!record.actionId))return null;
  const {stagedActions,modelRequests,expiresAt,updatedAt,actionId}=record;
  if(!Number.isSafeInteger(stagedActions)||stagedActions<0||stagedActions>record.maxActions)return null;
  if(!Number.isSafeInteger(modelRequests)||modelRequests<0||modelRequests>record.maxActions+1)return null;
@@ -74,6 +77,13 @@ export function writeNativeRecovery(store,record,now=Date.now()){
     (old.phase!=="executing"||safe.actionId!==old.actionId||
      safe.actionId===null||safe.stagedActions!==old.stagedActions||
      safe.modelRequests!==old.modelRequests))return false;
+   // This terminal marker is only published AFTER a fresh, audited, separate
+   // readback. It never converts paused/unknown/denied/paid reservations into
+   // completion and cannot change the action identity or budget counters.
+   if(safe.phase==="completed_verified"&&
+    (old.phase!=="audit_verified"||safe.actionId!==old.actionId||
+     safe.stagedActions!==old.stagedActions||safe.modelRequests!==old.modelRequests))return false;
+   if(old.phase==="completed_verified")return false;
    if(safe.phase==="awaiting_approval"&&
     (!["model_reserved","outcome_unknown","readback_reserved"].includes(old.phase)||
      safe.stagedActions!==old.stagedActions+1||safe.actionId===old.actionId||
@@ -89,6 +99,16 @@ export function writeNativeRecovery(store,record,now=Date.now()){
 export function clearNativeRecovery(store){
  if(!store)return false;
  try{store.removeItem(NATIVE_JOURNAL_KEY);return true;}catch{return false;}
+}
+
+// Conditional local retirement pairs with Rust's task/revision-checked clear.
+// It cannot remove another task that was written after a stale async call.
+export function retireVerifiedNativeRecovery(store,taskId,revision,now=Date.now()){
+ const state=inspectNativeRecoveryStore(store,now);
+ if(state.kind!=="valid"||state.record.version!==2||
+    state.record.phase!=="completed_verified"||state.record.taskId!==taskId||
+    state.record.revision!==revision)return false;
+ return clearNativeRecovery(store);
 }
 
 // Validate an independent Rust snapshot before showing it as crash evidence.
@@ -113,8 +133,8 @@ export function inspectNativeRecoveryStore(store,now=Date.now()){
 }
 
 // Both stores are independent inspection evidence; neither restores task
-// authority. Any old record needs owner acknowledgement, including "paused"
-// and "audit_verified": an audited action is not a completed user objective.
+// authority. Only a paired, identical *terminal* completion can be retired
+// without owner abandonment. "paused"/"audit_verified" are never completion.
 // Compare action/counters/phase but not updatedAt; the Rust fsync timestamp
 // legitimately differs from the WebView timestamp for the same checkpoint.
 export function assessNativeRecoveryPair(webview,rust,now=Date.now()){
@@ -131,5 +151,6 @@ export function assessNativeRecoveryPair(webview,rust,now=Date.now()){
  if(!native)return decision("invalid_rust");
  const fields=["version","taskId","revision","maxActions","stagedActions","modelRequests","expiresAt","phase","actionId"];
  if(fields.some(field=>local[field]!==native[field]))return decision("mismatched_stores");
+ if(local.phase==="completed_verified")return decision("matched_verified_completion");
  return decision("matched_previous_task");
 }

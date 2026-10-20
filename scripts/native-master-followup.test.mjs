@@ -38,8 +38,9 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
+ let persistedRust=rustRecord;
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
  nodes.set("chatWorkspaceLayout",chat);nodes.set("chatForm",form);
@@ -52,9 +53,23 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const invoke=async(name,params={})=>{
   calls.push({name,params});
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
-  if(name==="save_native_recovery"){if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");return;}
-  if(name==="load_native_recovery")return rustRecord;
-  if(name==="clear_native_recovery"){if(rustClearWait)await rustClearWait;if(rustClearFail)throw Error("simulated native recovery clear failure");return;}
+  if(name==="save_native_recovery"){
+   if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");
+   if(simulateRustJournal)persistedRust={...params.record};
+   return;
+  }
+  if(name==="load_native_recovery")return persistedRust;
+  if(name==="retire_verified_native_recovery"){
+   if(!simulateRustJournal||persistedRust?.phase!=="completed_verified"||
+      persistedRust.taskId!==params.taskId||persistedRust.revision!==params.revision)
+    throw Error("Rust refused terminal retirement");
+   persistedRust=null;return;
+  }
+  if(name==="clear_native_recovery"){
+   if(rustClearWait)await rustClearWait;if(rustClearFail)throw Error("simulated native recovery clear failure");
+   if(simulateRustJournal)persistedRust=null;
+   return;
+  }
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
   if(name==="chat"){
@@ -112,8 +127,10 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const approval=created.find(x=>x.attributes["aria-label"]==="Windows action needs your approval");
  const recoveryCheck=created.find(x=>x.textContent==="Check interrupted action in Rust Audit");
  const recoveryDismiss=created.find(x=>x.textContent==="Acknowledge old task and clear journal");
+ const recoveryOwnerDone=created.find(x=>x.textContent==="I confirm this task is finished (owner report)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
- return {transport,calls,chatInputs,staged,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryNotice};
+ const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
+ return {transport,calls,chatInputs,staged,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -1202,7 +1219,112 @@ test("exact audited Premiere opening closes with no unnecessary third paid model
  assert.equal(s.staged.length,2,"no third prepared Windows action");
  assert.match(s.transport.getReplies("simple-open-terminal")[0],/Project creation.*remain UNVERIFIED/);
  const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
- assert.deepEqual(phases.slice(-2),["audit_verified","paused"]);
+ assert.deepEqual(phases.slice(-2),["audit_verified","completed_verified"]);
+});
+
+test("completed Notepad goal retires exact Rust/WebView journal and accepts the next independent command",async()=>{
+ const first={content:"launch notepad",tool_proposal:{tool:"launch_app",arguments:{program:"notepad.exe"}},provider:"xkiro",model:"model/master"};
+ const next={content:"launch",tool_proposal:{tool:"premiere_launch",arguments:{}},provider:"xkiro",model:"model/master"};
+ const s=setup({first,second:next,uuidPreparedIds:true,simulateRustJournal:true,
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Untitled - Notepad",ProcessName:"notepad",ProcessId:19444,NativeWindowHandle:98412}])}});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("Notepad open karo","sequence",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"Notepad readback prepared");
+ await until(()=>!s.allow.disabled,"Notepad readback approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="completed_verified","terminal journal");
+ const priorTask=s.rustState().taskId;
+ const admitted=await s.transport.send("Premiere kholo","sequence",1);
+ assert.equal(admitted.ok,true,admitted.error);
+ assert.equal(s.calls.filter(x=>x.name==="retire_verified_native_recovery").length,1);
+ assert.equal(s.calls.filter(x=>x.name==="clear_native_recovery").length,0,"no manual abandonment needed");
+ assert.equal(s.chatInputs.length,2,"independent command is sent");
+ assert.equal(s.staged.length,3,"next native action awaits its own Allow once");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2,"next action never executes automatically");
+ assert.notEqual(s.rustState().taskId,priorTask);
+ assert.equal(s.rustState().revision,2);
+});
+
+test("matched terminal completion safely retires on restart without owner intervention",async()=>{
+ const store=recoveryStore();
+ const first={content:"launch notepad",tool_proposal:{tool:"launch_app",arguments:{program:"notepad.exe"}},provider:"xkiro",model:"model/master"};
+ const s=setup({first,uuidPreparedIds:true,simulateRustJournal:true,recoveryStore:store,
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Notepad",ProcessName:"notepad",ProcessId:19444,NativeWindowHandle:888}])}});
+ await until(()=>s.transport.connected(),"first app ready");
+ await s.transport.send("Open Notepad","old",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"inspection staged");
+ await until(()=>!s.allow.disabled,"readback allowed");
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="completed_verified","first terminal durable");
+ const restarted=setup({recoveryStore:store,rustRecord:s.rustState(),simulateRustJournal:true,
+  first:{content:"new task",tool_proposal:null,provider:"xkiro",model:"model/master"}});
+ await until(()=>restarted.transport.connected(),"restarted native IPC");
+ assert.equal(restarted.calls.filter(c=>c.name==="retire_verified_native_recovery").length,1);
+ assert.equal(store.getItem("shuvi.native.task.recovery.v1"),null);
+ const response=await restarted.transport.send("Open Premiere Pro","fresh",0);
+ assert.equal(response.ok,true,response.error);
+ assert.equal(restarted.calls.filter(c=>c.name==="clear_native_recovery").length,0);
+});
+
+test("paused browser action offers owner completion beside composer; owner reporting never fakes native proof",async()=>{
+ const browser={content:"open Youtube",tool_proposal:{tool:"browser_start",arguments:{browser:"edge",url:"https://www.youtube.com/"}},provider:"xkiro",model:"model/master"};
+ const s=setup({first:browser,second:{content:"I think it opened",tool_proposal:null,provider:"xkiro",model:"model/master"},
+  following:[{content:"search",tool_proposal:null,provider:"xkiro",model:"model/master"}],simulateRustJournal:true});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("youtube open karo","youtube",0);
+ s.allow.listeners.get("click")();
+ await until(()=>!s.recoveryOwnerDone.hidden,"owner completion option");
+ assert.equal(s.rustState().phase,"paused","browser launch alone cannot prove the page finished loading");
+ assert.equal(s.composerParent.children.includes(s.recoveryPanel),true,"recovery belongs beside composer");
+ assert.equal(s.recoveryCheck.hidden,false);
+ assert.equal(s.recoveryDismiss.hidden,false);
+ await s.recoveryOwnerDone.listeners.get("click")();
+ assert.equal(s.recoveryNotice.hidden,true);
+ const accepted=await s.transport.send("Search Arijit Singh on YouTube","youtube",1);
+ assert.equal(accepted.ok,true,accepted.error);
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ assert.equal(s.calls.filter(c=>c.name==="retire_verified_native_recovery").length,0,
+  "owner report is not the same as independently verified native completion");
+});
+
+test("YouTube home launches, separately approved CDP readback verifies page, next search is admitted without recovery buttons",async()=>{
+ const browser={content:"open YouTube",tool_proposal:{tool:"browser_start",arguments:{browser:"edge",url:"https://www.youtube.com/"}},provider:"xkiro",model:"model/master"};
+ const s=setup({first:browser,second:{content:"Search Arijit",tool_proposal:null,provider:"xkiro",model:"model/master"},
+  uuidPreparedIds:true,simulateRustJournal:true,stdoutFor:{
+   browser_start:"Started Shuvi-managed edge with root PID 19444, local DevTools port 50023, and one bound page target. Use this PID for browser DOM tools. Browser subprocesses are included in Shuvi's RAM accounting.",
+   browser_page_state:JSON.stringify({origin:"https://www.youtube.com",pathname:"/",title:"YouTube",readyState:"complete"})
+  }});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("youtube open karo","browser-sequence",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"browser page readback staged");
+ assert.deepEqual(s.staged[1].proposal,{tool:"browser_page_state",arguments:{pid:19444}});
+ assert.equal(s.chatInputs.length,1,"page inspection cannot incur another paid model request");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1,"second step needs Allow once");
+ await until(()=>!s.allow.disabled,"readback pending");
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="completed_verified","browser readback final");
+ assert.match(s.transport.getReplies("browser-sequence")[0],/YouTube HOME PAGE VERIFIED/);
+ assert.equal(s.recoveryDismiss.hidden,true);
+ const accepted=await s.transport.send("Search Arijit Singh on YouTube","browser-sequence",1);
+ assert.equal(accepted.ok,true,accepted.error);
+ assert.equal(s.calls.filter(c=>c.name==="retire_verified_native_recovery").length,1);
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,0);
+ assert.equal(s.chatInputs.length,2);
+});
+
+test("corrupt/mismatched terminal records cannot silently retire on restart",async()=>{
+ const now=Date.now(),taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const valid={version:2,taskId,revision:5,maxActions:8,stagedActions:2,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"completed_verified",actionId:"last-readback"};
+ const store=recoveryStore();store.setItem("shuvi.native.task.recovery.v1",JSON.stringify(valid));
+ const s=setup({recoveryStore:store,rustRecord:{...valid,revision:4},simulateRustJournal:true});
+ await until(()=>s.transport.connected(),"ready");
+ assert.equal(s.calls.filter(c=>c.name==="retire_verified_native_recovery").length,0);
+ assert.equal((await s.transport.send("Open Notepad","blocked",0)).ok,false);
+ assert.equal(s.chatInputs.length,0);
 });
 
 test("ambiguous Premiere window does not bypass Master outcome verification",async()=>{
@@ -1353,7 +1475,7 @@ test("Notepad: verified launch_app triggers deterministic ui_windows readback",a
   assert.match(s.transport.getReplies("notepad-simple-open")[0],/PID 1234/);
   assert.match(s.transport.getReplies("notepad-simple-open")[0],/HWND 5678/);
   const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
-  assert.deepEqual(phases.slice(-2),["audit_verified","paused"]);
+  assert.deepEqual(phases.slice(-2),["audit_verified","completed_verified"]);
 });
 
 test("Notepad: Hindi simple launch triggers deterministic readback",async()=>{

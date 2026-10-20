@@ -104,15 +104,25 @@
  border-radius:8px;padding:5px 8px;font:inherit}
 
 
-/* A crash warning must remain reachable even when Agent details are collapsed.
-   The check is read-only, and clearing an uncertain record needs an owner click. */
-#view-chat .shuvi-native-link > .shuvi-native-recovery {
- flex-basis:100%;margin:4px 0;padding:8px 10px;border-radius:8px;
- border:1px solid rgba(248,183,83,.45);font-size:12px;line-height:1.5
+/* Recovery lives immediately above the composer, never inside the scrolled
+   transcript or collapsed Agent-details card. Only active warnings occupy space. */
+#view-chat .chat-panel > .shuvi-native-recovery-panel {
+ display:none;align-self:stretch;grid-template-columns:repeat(2,minmax(0,1fr));
+ gap:8px;margin:0 17px 9px;padding:12px;border-radius:12px;
+ border:1px solid rgba(248,183,83,.75);background:var(--panel-2);
+ color:var(--text);position:relative;z-index:5;max-height:220px;overflow:auto
 }
-#view-chat .shuvi-native-link > button.shuvi-native-recovery-check:not([hidden]),
-#view-chat .shuvi-native-link > button.shuvi-native-recovery-dismiss:not([hidden]) {
- display:inline-flex;font-size:12px;padding:7px 11px;
+#view-chat .chat-panel > .shuvi-native-recovery-panel:has(> .shuvi-native-recovery:not([hidden])) {
+ display:grid;
 }
-#view-chat .shuvi-native-link > button.shuvi-native-recovery-check[hidden],
-#view-chat .shuvi-native-link > button.shuvi-native-recovery-dismiss[hidden] { display:none!important; }
+#view-chat .shuvi-native-recovery-panel > .shuvi-native-recovery {
+ grid-column:1/-1;margin:0;font-size:12px;line-height:1.5;overflow-wrap:anywhere
+}
+#view-chat .shuvi-native-recovery-panel > button:not([hidden]) {
+ display:block;min-height:39px;padding:8px 11px;border-radius:9px;cursor:pointer;
+ white-space:normal;text-align:center;font-size:12px;max-width:100%;overflow-wrap:anywhere
+}
+#view-chat .shuvi-native-recovery-panel > button[hidden] {display:none!important}
+@media(max-width:620px){
+ #view-chat .chat-panel > .shuvi-native-recovery-panel{grid-template-columns:minmax(0,1fr);margin-left:12px;margin-right:12px}
+}
