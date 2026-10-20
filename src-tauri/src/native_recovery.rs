@@ -499,7 +499,7 @@ mod tests{
         }).is_err(),"A failed provider request is never proof of goal completion");
         assert!(validate_advance(Some(&uncertain),&NativeRecoveryRecord{
             revision:Some(7),phase:"awaiting_approval".into(),
-            action_id:Some("new-action".into()),staged_actions:2,..uncertain
+            action_id:Some("new-action".into()),staged_actions:2,..uncertain.clone()
         }).is_err(),"New native action must have an explicit model reservation");
     }
     #[test]
