@@ -92,9 +92,9 @@ test("submission acquires exclusive lock before awaiting Rust recovery disk IO",
 test("Rust journal captures terminal states after verified or uncertain native outcomes",()=>{
  const source=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(source,/await persistRecovery\(taskBudget,"paused",task.action.id\)/);
- assert.match(source,/await persistRecovery\(taskBudget,"outcome_unknown",task.action.id\)/);
+ assert.match(source,/const phase=failure.kind==="http_response"\?"planning_response_failed":"planning_outcome_unknown"/);
  assert.match(source,/await persistRecovery\(taskBudget,"paused"\)/);
- assert.match(source,/await persistRecovery\(taskBudget,"outcome_unknown"\)/);
+ assert.match(source,/failure.kind==="http_response"\?"planning_response_failed":"planning_outcome_unknown"\)/);
  assert.match(source,/await persistRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
 });
 
@@ -177,7 +177,8 @@ test("native transport gates new Windows tasks on reconciled recovery and preser
  assert.match(src,/const previousRecoveryState=inspectNativeRecoveryStore\(recoveryStorage\)/);
  assert.match(src,/let review=assessNativeRecoveryPair\(previousRecoveryState,rustRecovery\)/);
  assert.match(src,/recoveryAcknowledged=!review\.requiresReview/);
- assert.match(src,/if\(route\.role!=="chat"&&!recoveryAcknowledged\)/);
+ assert.match(src,/if\(route\.role!=="chat"&&!recoveryAcknowledged&&!canContinueOriginalClarification\)/);
+ assert.match(src,/pausedClarificationRecord\.taskId===taskRecoveryIds\.get\(pausedClarificationBudget\)/);
  assert.match(src,/await invoke<void>\("clear_native_recovery"\)/);
  assert.match(src,/if\(!clearNativeRecovery\(recoveryStorage\)\)/);
 });
@@ -438,7 +439,7 @@ test("native-denied recovery never silently opens admission for a new Windows ta
  assert.match(src,/phase==="outcome_unknown"\|\|phase==="native_denied"/);
  assert.match(src,/recoveryAcknowledged=false/);
  assert.match(src,/Review Activity\/Audit and acknowledge this prior task/);
- assert.match(src,/if\(route\.role!=="chat"&&!recoveryAcknowledged\)/);
+ assert.match(src,/if\(route\.role!=="chat"&&!recoveryAcknowledged&&!canContinueOriginalClarification\)/);
 });
 test("Rust and WebView agree native_denied must be revisioned v2 evidence",()=>{
  const source=readFileSync(new URL("../src-tauri/src/native_recovery.rs",import.meta.url),"utf8");

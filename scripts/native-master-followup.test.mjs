@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  let persistedRust=rustRecord;
  const domParent=el(),composerParent=el(),form=el(),chat=el();
@@ -74,6 +74,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="remote_agent_status")return {enabled:false};
   if(name==="chat"){
    chatInputs.push(params.input);
+   if(chatFailures?.[chatInputs.length])throw Error(chatFailures[chatInputs.length]);
    const response=replies.shift()??{content:"Done",tool_proposal:null};
    if(continuationRenderError&&chatInputs.length===2){
     let reads=0;
@@ -102,6 +103,10 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    return {success:true,tool:action.proposal.tool,stdout:stdoutFor?.[action.proposal.tool]??(action.proposal.tool==="premiere_detect"?detectedPath:"Launch requested"),stderr:"",exit_code:0};
   }
   if(name==="action_audit_receipt"&&recoveryReceipt)return recoveryReceipt;
+  if(name==="action_audit_receipt"&&retryAuditReceipt){
+   const action=staged.find(s=>s.id===params.actionId);
+   return action?{action_id:params.actionId,tool:action.proposal.tool,event:"executed",success:true}:null;
+  }
   if(name==="action_audit_receipt")
    return (failFind||softFailedRead)?{action_id:receiptMismatch?"mismatched-action":params.actionId,tool:"ui_find",event:"failed",success:false}:null;
   if(name==="audit_log"&&recoveryTrail)return recoveryTrail;
@@ -122,15 +127,18 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  })();
  globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:actualRecoveryStore};
  const transport=mountNativeAgent(()=>{});
+ const budgetSelect=created.find(x=>x.attributes["aria-label"]==="Maximum Windows actions per task");
+ if(budgetSelect)budgetSelect.value=String(budgetActions);
  const allow=created.find(x=>x.textContent==="Allow once");
  const deny=created.find(x=>x.textContent==="Deny");
  const approval=created.find(x=>x.attributes["aria-label"]==="Windows action needs your approval");
  const recoveryCheck=created.find(x=>x.textContent==="Check interrupted action in Rust Audit");
  const recoveryDismiss=created.find(x=>x.textContent==="Acknowledge old task and clear journal");
  const recoveryOwnerDone=created.find(x=>x.textContent==="I confirm this task is finished (owner report)");
+ const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -187,6 +195,106 @@ test("Premiere: discovery audit triggers one Master continuation and a SECOND ex
  assert.match(s.chatInputs[1].messages.at(-1).content,/Previously approved Windows tool/);
  assert.match(s.chatInputs[1].messages.at(-1).content,/Adobe Premiere Pro\.exe/);
  assert.match(s.transport.getReplies("chat-1")[0],/Master next step/);
+});
+test("audited Windows success followed by AI 503 keeps action VERIFIED and requires owner-clicked paid continuation",async()=>{
+ const s=setup({first:detection,second:launch,simulateRustJournal:true,retryAuditReceipt:true,
+  chatFailures:{2:"Provider returned 503 Service Unavailable: This model is temporarily overloaded upstream."}});
+ await until(()=>s.transport.connected(),"native IPC");
+ const first=await s.transport.send("Adobe open karo. Premiere Pro","503-recovery",0);
+ assert.equal(first.ok,true);
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="planning_response_failed","503 planning-only checkpoint");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,"first Windows action executed once");
+ assert.equal(s.chatInputs.length,2,"failed paid planning request counted");
+ assert.equal(s.rustState().actionId,s.staged[0].id,"last successful Rust action kept");
+ assert.match(s.transport.getReplies("503-recovery")[0],/Last Windows action remains Rust AUDIT VERIFIED/);
+ assert.equal(s.recoveryRetry.hidden,false,"explicit owner retry is adjacent to composer");
+ assert.equal(s.recoveryNotice.hidden,false);
+ s.recoveryRetry.listeners.get("click")();
+ await until(()=>s.staged.length===2,"owner approved one new AI planning call");
+ assert.equal(s.chatInputs.length,3);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,"no re-execution of successful first action");
+ assert.equal(s.staged[1].proposal.tool,"premiere_launch");
+ assert.equal(s.approval.hidden,false,"new distinct Windows action still requires Allow once");
+ assert.equal(s.rustState().modelRequests,3,"failed and owner-retried AI requests each consume budget");
+});
+test("a second AI 503 still offers explicit paid retry without consuming another Windows Allow once",async()=>{
+ const s=setup({first:detection,second:launch,simulateRustJournal:true,retryAuditReceipt:true,
+  chatFailures:{2:"Provider returned 503 Service Unavailable: overloaded",
+   3:"Provider returned 503 Service Unavailable: overloaded again"}});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe open karo. Premiere Pro","repeated-503",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="planning_response_failed","first 503");
+ s.recoveryRetry.listeners.get("click")();
+ await until(()=>s.chatInputs.length===3&&s.rustState()?.phase==="planning_response_failed","second 503");
+ assert.equal(s.recoveryRetry.hidden,false,"remaining-budget owner retry stays available");
+ s.recoveryRetry.listeners.get("click")();
+ await until(()=>s.staged.length===2,"explicit third planning attempt");
+ assert.equal(s.chatInputs.length,4);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.staged[1].proposal.tool,"premiere_launch");
+ assert.equal(s.rustState().modelRequests,4,"each new attempt consumes distinct model budget");
+});
+test("initial AI 503 is planning failure only, with no phantom Windows action or automatic paid retry",async()=>{
+ const s=setup({simulateRustJournal:true,
+  chatFailures:{1:"Provider returned 503 Service Unavailable: temporarily overloaded upstream."}});
+ await until(()=>s.transport.connected(),"native IPC");
+ const first=await s.transport.send("Premiere Pro kholo","first-503",0);
+ assert.equal(first.ok,false);
+ assert.match(first.error,/AI planning HTTP 503/);
+ assert.equal(s.rustState()?.phase,"planning_response_failed");
+ assert.equal(s.rustState()?.stagedActions,0);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ assert.equal(s.recoveryRetry.hidden,true,"no audited predecessor exists to resume");
+ assert.equal(s.chatInputs.length,1,"no automatic retry");
+ const blocked=await s.transport.send("Open Notepad","second-503",0);
+ assert.equal(blocked.ok,false);
+ assert.equal(s.chatInputs.length,1,"unresolved paid request cannot be silently replayed");
+});
+test("restart after AI 503 preserves audited Windows identity but never blindly replays a paid request or action",async()=>{
+ const s=setup({simulateRustJournal:true,retryAuditReceipt:true,
+  chatFailures:{2:"Provider returned 503 Service Unavailable: upstream overloaded."}});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe open karo. Premiere Pro","before-restart",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="planning_response_failed","AI-only failure checkpoint");
+ const latest={...s.rustState()};
+ const restarted=setup({recoveryStore:s.recoveryStore,rustRecord:latest,simulateRustJournal:true});
+ await until(()=>restarted.transport.connected(),"restarted WebView");
+ assert.equal(restarted.recoveryRetry.hidden,true,"volatile continuation is never recovered as execution authority");
+ assert.equal(restarted.rustState()?.actionId,latest.actionId);
+ const blocked=await restarted.transport.send("Open Notepad","after-restart",0);
+ assert.equal(blocked.ok,false,"unresolved prior paid planning request needs owner review");
+ assert.equal(restarted.chatInputs.length,0);
+ assert.equal(restarted.calls.filter(x=>x.name==="execute_action").length,0);
+});
+
+test("YouTube search receives a distinct approved CDP search-result readback and terminal goal verification",async()=>{
+ const open={content:'{"tool":"browser_start","arguments":{"browser":"edge","url":"https://www.youtube.com/"}}',
+  tool_proposal:{tool:"browser_start",arguments:{browser:"edge",url:"https://www.youtube.com/"}}};
+ const search={content:'{"tool":"browser_navigate","arguments":{"pid":19444,"url":"https://www.youtube.com/results?search_query=Arijit+Singh"}}',
+  tool_proposal:{tool:"browser_navigate",arguments:{pid:19444,url:"https://www.youtube.com/results?search_query=Arijit+Singh"}}};
+ const s=setup({first:open,second:search,uuidPreparedIds:true,simulateRustJournal:true,stdoutFor:{
+  browser_start:"Started Shuvi-managed edge with root PID 19444, local DevTools port 50023, and one bound page target.",
+  browser_navigate:"Navigated browser PID 19444.",
+  browser_page_state:JSON.stringify({origin:"https://www.youtube.com",pathname:"/results",
+   readyState:"complete",title:"Arijit Singh - YouTube",searchQuery:"Arijit Singh",
+   resultCount:9,resultsLoaded:true})
+ }});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("YouTube par Arijit Singh ke gane search karo","search-goal",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"navigation proposal");
+ assert.equal(s.staged[1].proposal.tool,"browser_navigate");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"search readback proposal");
+ assert.equal(s.staged[2].proposal.tool,"browser_page_state");
+ assert.equal(s.chatInputs.length,2,"readback uses no third paid model call");
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="completed_verified","verified original search goal");
+ assert.match(s.transport.getReplies("search-goal")[0],/YouTube SEARCH VERIFIED/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,3);
 });
 test("missing audit stops after first action and never calls model again",async()=>{
  const s=setup({auditOk:false});
@@ -255,6 +363,37 @@ test("eight distinct stages have no fixed six-action cutoff",async()=>{
  assert.equal(s.chatInputs.length,8);
  assert.equal(s.approval.hidden,false);
  assert.doesNotMatch(s.transport.getReplies("long-task")[0],/step safety limit/);
+});
+test("20-stage native integration preserves completed actions across provider 503 and owner-approved planning resume",async()=>{
+ const action=(i)=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
+ const s=setup({first:detection,second:action(2),
+  following:Array.from({length:18},(_,i)=>action(i+3)),budgetActions:24,
+  simulateRustJournal:true,retryAuditReceipt:true,
+  chatFailures:{9:"Provider returned 503 Service Unavailable: upstream overloaded."}});
+ await until(()=>s.transport.connected(),"native IPC");
+ const first=await s.transport.send("Open Premiere and check the necessary windows","20-steps",0);
+ assert.equal(first.ok,true);
+ for(let i=1;i<=20;i++){
+  await until(()=>s.staged.length>=i,"distinct native action "+i);
+  await until(()=>!s.allow.disabled,"separate Allow once "+i);
+  assert.equal(s.staged[i-1].id,"action-"+i);
+  s.allow.listeners.get("click")();
+  if(i===8){
+   await until(()=>s.rustState()?.phase==="planning_response_failed","provider-503-only recovery");
+   assert.equal(s.calls.filter(c=>c.name==="execute_action").length,8);
+   assert.equal(s.rustState().actionId,"action-8","8th successful action stays verified");
+   assert.equal(s.recoveryRetry.hidden,false);
+   s.recoveryRetry.listeners.get("click")();
+  }
+  if(i<20)await until(()=>s.staged.length===i+1,"next prepared action "+(i+1));
+ }
+ await until(()=>s.calls.filter(c=>c.name==="execute_action").length===20,"20 audited actions");
+ assert.equal(s.staged.length,20);
+ assert.equal(new Set(s.calls.filter(c=>c.name==="execute_action").map(c=>c.params.actionId)).size,20,
+  "no completed action UUID is executed twice across provider failure");
+ assert.equal(s.chatInputs.length>=21,true,"provider failure and owner paid retry each counted");
+ assert.equal(s.rustState().maxActions,24,"owner-selected budget is never raised");
 });
 
 test("Premiere opening has separate detect, launch and window-inspection approvals",async()=>{

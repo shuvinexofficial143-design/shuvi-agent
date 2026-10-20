@@ -58,3 +58,68 @@ export function verifiedYouTubeHome(goal,actionId,proposal,result,evidence,launc
  return Object.freeze({scope:"youtube_homepage",pid:launchProof.pid,
   origin:page.origin,launchActionId:launchProof.launchActionId,pageActionId:actionId});
 }
+
+// Conservative single-intent YouTube search goals. Never infer that a
+// navigation/search was intended from an arbitrary sentence mentioning YouTube.
+const SEARCH_GOALS=[
+ /^youtube\s+(?:par|pe|mein)\s+(.+?)\s+(?:ke\s+gane\s+)?search\s+(?:karo|kar\s*do|krdo)$/iu,
+ /^search\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube$/iu,
+ /^youtube\s+search\s+(.+)$/iu
+];
+function normalizedQuery(value){
+ return typeof value==="string"?value.normalize("NFKC").toLocaleLowerCase("en")
+  .replace(/[^\p{L}\p{N}]+/gu," ").trim().replace(/\s+/g," "):"";
+}
+export function youtubeSearchGoal(goal){
+ if(typeof goal!=="string"||goal.length>160)return null;
+ const input=goal.trim().replace(/[.!?।]+$/u,"").trim();
+ for(const pattern of SEARCH_GOALS){
+  const match=pattern.exec(input);
+  if(!match)continue;
+  const query=normalizedQuery(match[1]);
+  if(query.length>=3&&query.length<=90&&!/\b(?:and|aur|then|phir|play|download)\b/iu.test(query))
+   return Object.freeze({query,allowSongSuffix:/\b(?:gane|songs?)\b/iu.test(input)});
+ }
+ return null;
+}
+export function youtubeSearchReadbackProposal(goal,actionId,proposal,result){
+ if(!youtubeSearchGoal(goal)||!UUID.test(actionId)||result?.success!==true||
+   result.tool!==proposal?.tool||!["browser_navigate","browser_dom_click","browser_dom_set_value"].includes(result.tool)||
+   !Number.isSafeInteger(proposal.arguments?.pid)||proposal.arguments.pid<1||
+   proposal.arguments.pid>4294967295)return null;
+ // A DOM input by itself is not a submitted search. Only a navigation or
+ // actual search-button click may trigger result verification.
+ if(result.tool==="browser_dom_set_value")return null;
+ if(result.tool==="browser_navigate"&&!(
+    typeof proposal.arguments.url==="string"&&
+    /^https:\/\/(?:www\.)?youtube\.com\/results\?/iu.test(proposal.arguments.url)))return null;
+ return Object.freeze({proposal:{tool:"browser_page_state",arguments:{pid:proposal.arguments.pid}},
+  evidence:{actionId,pid:proposal.arguments.pid}});
+}
+export function verifiedYouTubeSearch(goal,actionId,proposal,result,evidence,searchProof,audited){
+ const intent=youtubeSearchGoal(goal);
+ if(!intent||audited!==true||!searchProof||!UUID.test(actionId)||
+   actionId===searchProof.actionId||proposal?.tool!=="browser_page_state"||
+   Object.keys(proposal.arguments??{}).length!==1||proposal.arguments.pid!==searchProof.pid||
+   result?.tool!=="browser_page_state"||result.success!==true||
+   (result.exit_code!==null&&result.exit_code!==0)||
+   typeof result.stdout!=="string"||result.stdout.length>4096||
+   evidence?.lastTool!=="browser_page_state"||
+   !evidence.seenIds?.has(actionId)||!evidence.seenIds.has(searchProof.actionId))return null;
+ const previous=(evidence.observations??[]).slice(-2);
+ if(previous.length!==2||previous[0].id!==searchProof.actionId||
+   !["browser_navigate","browser_dom_click"].includes(previous[0].tool)||
+   previous[1].id!==actionId||previous[1].tool!=="browser_page_state")return null;
+ let page;
+ try{page=JSON.parse(result.stdout);}catch{return null;}
+ const query=normalizedQuery(page?.searchQuery);
+ if(!["https://www.youtube.com","https://youtube.com"].includes(page?.origin)||
+   page.pathname!=="/results"||page.readyState!=="complete"||
+   typeof page.title!=="string"||!/youtube/i.test(page.title)||
+   !Number.isSafeInteger(page.resultCount)||page.resultCount<1||page.resultCount>1000||
+   page.resultsLoaded!==true||
+   !(query===intent.query||(intent.allowSongSuffix&&
+     [" songs"," song"," gane"].some(suffix=>query===intent.query+suffix))))return null;
+ return Object.freeze({scope:"youtube_search",pid:searchProof.pid,query,
+  resultCount:page.resultCount,searchActionId:searchProof.actionId,pageActionId:actionId});
+}

@@ -30,6 +30,12 @@ export function completeAuditedYouTubePage(s){
    s.tools[0]!=="browser_start"||s.tools[1]!=="browser_page_state")return s;
  return {...s,phase:"page_verified",reason:null};
 }
+export function completeAuditedYouTubeSearch(s){
+ if(!s||s.phase!=="planning"||s.pending||s.verified<2||
+    s.tools.at(-1)!=="browser_page_state"||
+    !["browser_navigate","browser_dom_click"].includes(s.tools.at(-2)))return s;
+ return {...s,phase:"search_verified",reason:null};
+}
 export function pauseTask(s,reason){
  if(!s)return s;
  const reasons=["denied","unknown_outcome","confirmed_read_failure","model_failed","prepare_failed","no_next_tool","repeated_tool","no_tool","awaiting_clarification","context_limit_exceeded"];
@@ -42,6 +48,7 @@ export function taskSummary(s){
  const stop=s.phase==="paused"?" · Paused ("+s.reason+")":"";
  if(s.phase==="window_verified")return s.verified+" audited native step(s) · Requested "+(s.windowApp??"Premiere")+" window opening VERIFIED at last inspection; project/edit/export NOT verified.";
  if(s.phase==="page_verified")return s.verified+" audited native step(s) · Requested YouTube HOME page VERIFIED at last managed browser inspection; searching and other page actions NOT verified.";
+ if(s.phase==="search_verified")return s.verified+" audited native step(s) · Requested YouTube search result page VERIFIED by bound CDP readback and native audit.";
  return s.verified+" audited native step(s)"+next+stop+
   (s.pending?" · Worker lane: "+workerForTool(s.pending.tool):"")+
   " · Overall task unverified.";

@@ -48,7 +48,8 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
         return Err("Native recovery budget counters exceed the owner limits.".into());
     }
     if !matches!(value.phase.as_str(),"model_reserved"|"readback_reserved"|"awaiting_approval"|"executing"|
-        "audit_verified"|"native_denied"|"paused"|"outcome_unknown"|"completed_verified"){
+        "audit_verified"|"native_denied"|"paused"|"outcome_unknown"|"completed_verified"|
+        "planning_response_failed"|"planning_outcome_unknown"){
 
         return Err("Unsupported native recovery transition.".into());
     }
@@ -122,8 +123,19 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
             // An old provider reservation cannot be made again from an
             // awaiting, executing or unknown checkpoint without review.
             if next.phase=="model_reserved"&&
-               !matches!(previous.phase.as_str(),"paused"|"audit_verified"){
+               !matches!(previous.phase.as_str(),"paused"|"audit_verified"|
+                   "planning_response_failed"|"planning_outcome_unknown"){
                 return Err("Unresolved native action cannot reserve a new paid request.".into());
+            }
+            // A provider error only terminates the *new planning request*.
+            // The previous action identity and its successful Rust audit
+            // cannot be downgraded to an unknown Windows outcome.
+            if matches!(next.phase.as_str(),"planning_response_failed"|"planning_outcome_unknown")&&
+               (previous.phase!="model_reserved"||
+                previous.action_id!=next.action_id||
+                previous.staged_actions!=next.staged_actions||
+                previous.model_requests!=next.model_requests){
+                return Err("Planning failure must follow the same reserved model request.".into());
             }
             // A deterministic, read-only next step cannot skip the last
             // Rust-audited result or silently increase provider spending.
@@ -450,6 +462,45 @@ mod tests{
         assert!(validate_advance(Some(&reserved),&NativeRecoveryRecord{
             phase:"model_reserved".into(),model_requests:2,..staged}).is_err(),
             "A readback reservation cannot be silently turned into paid model consent");
+    }
+    #[test]
+    fn provider_failure_preserves_last_audited_action_and_requires_new_paid_reservation(){
+        let action=state();
+        let audited=NativeRecoveryRecord{
+            revision:Some(2),phase:"audit_verified".into(),..action.clone()};
+        let requested=NativeRecoveryRecord{
+            revision:Some(3),phase:"model_reserved".into(),model_requests:2,
+            ..audited.clone()};
+        let failed=NativeRecoveryRecord{
+            revision:Some(4),phase:"planning_response_failed".into(),..requested.clone()};
+        assert!(validate_advance(Some(&audited),&requested).is_ok());
+        assert!(validate_advance(Some(&requested),&failed).is_ok());
+        assert!(validate_advance(Some(&audited),&failed).is_err(),
+            "Only an already reserved AI request can fail");
+        assert!(validate_advance(Some(&requested),&NativeRecoveryRecord{
+            action_id:Some("different-action".into()),..failed.clone()
+        }).is_err(),"The previously successful action must not become unknown");
+
+        let consented=NativeRecoveryRecord{
+            revision:Some(5),phase:"model_reserved".into(),model_requests:3,
+            ..failed.clone()};
+        assert!(validate_advance(Some(&failed),&consented).is_ok());
+        assert!(validate_advance(Some(&failed),&NativeRecoveryRecord{
+            revision:Some(5),phase:"executing".into(),..failed.clone()
+        }).is_err(),"AI failure cannot replay an already executed Windows tool");
+        assert!(validate_advance(Some(&failed),&NativeRecoveryRecord{
+            model_requests:2,..consented.clone()
+        }).is_err(),"Retry must consume another paid-request budget slot");
+        let uncertain=NativeRecoveryRecord{
+            revision:Some(6),phase:"planning_outcome_unknown".into(),..consented.clone()};
+        assert!(validate_advance(Some(&consented),&uncertain).is_ok());
+        assert!(validate_advance(Some(&uncertain),&NativeRecoveryRecord{
+            revision:Some(7),phase:"completed_verified".into(),..uncertain.clone()
+        }).is_err(),"A failed provider request is never proof of goal completion");
+        assert!(validate_advance(Some(&uncertain),&NativeRecoveryRecord{
+            revision:Some(7),phase:"awaiting_approval".into(),
+            action_id:Some("new-action".into()),staged_actions:2,..uncertain
+        }).is_err(),"New native action must have an explicit model reservation");
     }
     #[test]
     fn cannot_downgrade_inflight_execution_or_reserve_again_from_unknown(){

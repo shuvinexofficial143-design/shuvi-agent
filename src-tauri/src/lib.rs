@@ -210,7 +210,7 @@ Available tools:
 - open_url: {"url":"https://example.com"}
 - browser_start: {"browser":"edge|chrome","url":"optional https:// page"}
 - browser_navigate: {"pid":1234,"url":"https://example.com"}
-- browser_page_state: {"pid":1234} — read-only current bound page origin/path/readyState; no URL query or fragment
+- browser_page_state: {"pid":1234} — read-only current bound page origin/path/readyState; only on YouTube search results includes a bounded search query and loaded result count; no raw URL query or fragment
 - browser_dom_read: {"pid":1234,"selector":"CSS selector"}
 - browser_dom_click: {"pid":1234,"selector":"CSS selector"}
 - browser_dom_set_value: {"pid":1234,"selector":"CSS selector","value":"text"}
@@ -3625,7 +3625,7 @@ fn stage_tool(
             (
                 ToolAction::BrowserPageState { pid },
                 "Inspect managed browser page".to_string(),
-                format!("Read only origin, pathname, readyState and bounded title for managed browser PID {pid}; exclude URL query and fragment"),
+                format!("Read only origin, pathname, readyState, bounded title and allowlisted YouTube search result readback for managed browser PID {pid}; exclude other URL queries and fragments"),
                 RiskLevel::Low,
             )
         }
@@ -11286,8 +11286,17 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             // CDP session. Reading never navigates, clicks or mutates the page.
             let session = browser_session(state, pid)?;
             let value = cdp_eval(session.port,&session.target_id,
-                r#"(() => ({origin: window.location.origin, pathname: window.location.pathname,
-                    readyState: document.readyState, title: String(document.title).slice(0, 160)}))()"#.to_string())?;
+                r#"(() => {
+                    const resultPage = ['https://www.youtube.com','https://youtube.com'].includes(window.location.origin) &&
+                        window.location.pathname === '/results';
+                    const query = resultPage ? new URLSearchParams(window.location.search).get('search_query') : null;
+                    const results = resultPage ? document.querySelectorAll('ytd-video-renderer, ytd-playlist-renderer').length : 0;
+                    return {origin: window.location.origin, pathname: window.location.pathname,
+                        readyState: document.readyState, title: String(document.title).slice(0, 160),
+                        searchQuery: query && query.length <= 160 ? query : null,
+                        resultCount: Math.min(results, 1000),
+                        resultsLoaded: resultPage && results > 0};
+                })()"#.to_string())?;
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string(&value)

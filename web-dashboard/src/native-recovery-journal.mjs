@@ -1,7 +1,7 @@
 // Recoverable inspection metadata only, NEVER permission to run an old action.
 export const NATIVE_JOURNAL_KEY="shuvi.native.task.recovery.v1";
 const ACTIONS=new Set([8,24,48]);
-const PHASES=new Set(["model_reserved","readback_reserved","awaiting_approval","audit_verified","native_denied","paused","outcome_unknown","executing","completed_verified"]);
+const PHASES=new Set(["model_reserved","readback_reserved","awaiting_approval","audit_verified","native_denied","paused","outcome_unknown","executing","completed_verified","planning_response_failed","planning_outcome_unknown"]);
 const ACTION_ID=/^[A-Za-z0-9_-]{1,128}$/;
 const TASK_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_AGE=7200000;
@@ -58,7 +58,13 @@ export function writeNativeRecovery(store,record,now=Date.now()){
     safe.modelRequests<old.modelRequests||safe.stagedActions<old.stagedActions)return false;
    if(safe.phase==="paused"&&["executing","outcome_unknown"].includes(old.phase))return false;
    if(safe.phase==="model_reserved"&&
-    !["paused","audit_verified"].includes(old.phase))return false;
+    !["paused","audit_verified","planning_response_failed","planning_outcome_unknown"].includes(old.phase))return false;
+   // The last Windows action stays audit-verified. This is only the outcome
+   // of the *subsequent provider request*, not a Windows execution failure.
+   if(["planning_response_failed","planning_outcome_unknown"].includes(safe.phase)&&
+    (old.phase!=="model_reserved"||safe.actionId!==old.actionId||
+     safe.stagedActions!==old.stagedActions||safe.modelRequests!==old.modelRequests))
+    return false;
    // Model-free inspection must create a durable, owner-goal-bound
    // reservation AFTER an exact audited predecessor. This does not
    // increment billed model requests or stage/execute a Windows action.

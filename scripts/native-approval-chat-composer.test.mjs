@@ -19,7 +19,7 @@ test("native approval is mounted beside the current Chat composer, never only in
 });
 test("recovery Audit, owner completion and abandonment controls stay immediately above composer",()=>{
  assert.match(ts,/composerParent\.insertBefore\(recoveryPanel,chatForm\)/);
- assert.match(ts,/recoveryPanel\.append\(recoveryNotice,recoveryCheck,recoveryOwnerDone,recoveryDismiss\)/);
+ assert.match(ts,/recoveryPanel\.append\(recoveryNotice,recoveryCheck,recoveryRetry,recoveryOwnerDone,recoveryDismiss\)/);
  assert.match(css,/chat-panel > \.shuvi-native-recovery-panel/);
  assert.match(css,/:has\(> \.shuvi-native-recovery:not\(\[hidden\]\)\)/);
  assert.doesNotMatch(ts,/panel\.append\([^;]*recoveryCheck,recoveryDismiss\)/);
