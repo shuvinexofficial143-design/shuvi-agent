@@ -23,6 +23,21 @@ test("CDP commands select the stored target ID instead of the first page",()=>{
   assert.doesNotMatch(block,/Select-Object -First 1[\s\S]*No debuggable browser page is available/);
 });
 
+test("DevTools PowerShell bridge emits one JSON result without .NET VoidTaskResult noise",()=>{
+  const start=rust.indexOf("fn cdp_command(");
+  const end=rust.indexOf("fn cdp_eval(",start);
+  const block=rust.slice(start,end);
+  // Windows PowerShell places unassigned .NET return values on stdout.
+  // Leaking these two async completions before JSON broke real YouTube DOM reads.
+  assert.match(block,/\[void\]\$ws\.ConnectAsync\([^\n]+\)\.GetAwaiter\(\)\.GetResult\(\)/);
+  assert.match(block,/\[void\]\$ws\.SendAsync\([^\n]+\)\.GetAwaiter\(\)\.GetResult\(\)/);
+  assert.match(block,/\[void\]\$ws\.Dispose\(\)/);
+  assert.match(block,/if \(\$obj\.id -eq 1\) \{\{\s*\[void\]\$ws\.Dispose\(\)\s*Write-Output \$text\s*break/);
+  // Keep the decoder strict: malformed/extra output must still fail closed.
+  assert.match(block,/serde_json::from_str\(&stdout\)/);
+  assert.doesNotMatch(block,/^\s*\$ws\.(ConnectAsync|SendAsync|Dispose)\(/m);
+});
+
 test("navigate and DOM evaluation pass the bound target",()=>{
   const first=rust.indexOf("ToolAction::BrowserNavigate");
   const navStart=rust.indexOf("ToolAction::BrowserNavigate",first+1);

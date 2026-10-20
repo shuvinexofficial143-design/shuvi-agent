@@ -3219,11 +3219,13 @@ $targets = Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:{port}/json
 $target = $targets | Where-Object {{ $_.type -eq 'page' -and $_.id -eq $targetId -and $_.webSocketDebuggerUrl }} | Select-Object -First 1
 if (-not $target) {{ throw 'The Shuvi-bound browser page target is no longer available.' }}
 $ws = New-Object System.Net.WebSockets.ClientWebSocket
-$ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+# PowerShell must not write the .NET Task completion object to stdout:
+# Rust expects exactly one CDP JSON response, not VoidTaskResult lines.
+[void]$ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 $message = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))
 $bytes = [Text.Encoding]::UTF8.GetBytes($message)
 $sendSegment = [ArraySegment[byte]]::new($bytes)
-$ws.SendAsync($sendSegment, [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+[void]$ws.SendAsync($sendSegment, [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 while ($true) {{
     $buffer = New-Object byte[] 65536
     $builder = New-Object Text.StringBuilder
@@ -3238,8 +3240,8 @@ while ($true) {{
     $text = $builder.ToString()
     $obj = $text | ConvertFrom-Json
     if ($obj.id -eq 1) {{
-        $ws.Dispose()
-        $text
+        [void]$ws.Dispose()
+        Write-Output $text
         break
     }}
 }}"#
