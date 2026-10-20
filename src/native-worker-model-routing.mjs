@@ -80,9 +80,30 @@ export function specialistProposalMatches(delegation,proposal){
 // Specialized AI only drafts one typed proposal for an exact READY step.
 // This context is NOT permission, a Windows application result or authority
 // to revise the Master graph. The locally pinned route owns the model choice.
-export function delegatedWorkerContext(base,delegation,graph){
- if(typeof base!=="string")return null;
- if(!delegation?.isSpecialist)return base;
+// The native chat command rejects orchestration_context after 3000 Unicode
+// characters. Reserve the evidence suffix *before* preparing a delegated
+// context; a UTF-8 byte budget is deliberately conservative for Hindi text.
+const MAX_ORCHESTRATION_CONTEXT_BYTES=3000;
+const encoder=new TextEncoder();
+function utf8Prefix(value,limit){
+ let result="",used=0;
+ for(const char of value){
+  const size=encoder.encode(char).length;
+  if(used+size>limit)break;
+  used+=size;result+=char;
+ }
+ return result;
+}
+export function reservedGoalEvidenceBudget(goalEvidence){
+ if(typeof goalEvidence!=="string"||!goalEvidence.trim())return null;
+ const bytes=encoder.encode("\n"+goalEvidence).length;
+ return bytes<MAX_ORCHESTRATION_CONTEXT_BYTES
+  ?MAX_ORCHESTRATION_CONTEXT_BYTES-bytes:null;
+}
+export function delegatedWorkerContext(base,delegation,graph,maxBytes=MAX_ORCHESTRATION_CONTEXT_BYTES){
+ if(typeof base!=="string"||!Number.isInteger(maxBytes)||maxBytes<0||
+    maxBytes>MAX_ORCHESTRATION_CONTEXT_BYTES)return null;
+ if(!delegation?.isSpecialist)return utf8Prefix(base,maxBytes);
  if(!graph||!Array.isArray(graph.steps))return null;
  const step=graph.steps.find(s=>s.step_id===delegation.step_id);
  if(!step||step.expected_tool!==delegation.tool||step.status!=="ready"
@@ -103,9 +124,9 @@ export function delegatedWorkerContext(base,delegation,graph){
   "Never mutate the task graph, grant permission, assert success, or auto-retry.",
   "The owner must approve a new native action; Rust receipt decides outcome."
  ].join("\n")+"\n";
- const encoder=new TextEncoder();
- if(encoder.encode(instruction).length>2750)return null;
- let remaining=3000-encoder.encode(instruction).length,tail="";
+ const instructionBytes=encoder.encode(instruction).length;
+ if(instructionBytes>2750||instructionBytes>maxBytes)return null;
+ let remaining=maxBytes-instructionBytes,tail="";
  for(const ch of base){
    const len=encoder.encode(ch).length;
    if(len>remaining)break;

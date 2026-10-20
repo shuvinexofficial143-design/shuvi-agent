@@ -129,8 +129,13 @@ test("Master gets independent proof requirements BEFORE any paid model proposal"
  const bad=masterGoalEvidenceContext(null);
  assert.match(bad,/do not stage native work/);
  const desktop=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
- assert.match(desktop,/orchestration_context: workerContext\+"\\n"\+masterGoalEvidenceContext\(orchestration.owner_request\)/);
- const evidenceAt=desktop.indexOf('orchestration_context: workerContext+"\\n"+masterGoalEvidenceContext(orchestration.owner_request)');
+ assert.match(desktop,/const masterGoalContext=masterGoalEvidenceContext\(orchestration.owner_request\)/);
+ assert.match(desktop,/const contextBudget=reservedGoalEvidenceBudget\(masterGoalContext\)/);
+ assert.match(desktop,/delegation,orchestration.task_graph,contextBudget\)/);
+ assert.match(desktop,/orchestration_context: workerContext\+"\\n"\+masterGoalContext/);
+ const evidenceAt=desktop.indexOf('orchestration_context: workerContext+"\\n"+masterGoalContext');
  const modelCall=desktop.indexOf('const response = await invoke<ChatResponse>("chat"');
  assert.ok(evidenceAt>modelCall,"proof guidance must be included in the actual native model dispatch");
+ assert.ok(desktop.indexOf("const contextBudget=reservedGoalEvidenceBudget(masterGoalContext)")<modelCall,
+  "reserve proof guidance before dispatching to the paid model");
 });

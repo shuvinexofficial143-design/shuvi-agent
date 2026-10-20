@@ -58,8 +58,9 @@ export function editingMasterContext(messages) {
   return typeof lastUser?.content === "string" && EDITING_INTENT.test(lastUser.content.slice(0, 16384))
     ? MASTER_GUIDANCE : "";
 }
-// Rust bounds orchestration_context in UTF-8 bytes, not JS UTF-16 length.
-// Stop on a complete code point so Hindi prompts cannot exceed that limit.
+// Rust bounds orchestration_context by Unicode characters. Using a stricter
+// UTF-8 byte budget also covers Hindi and avoids JS UTF-16 length ambiguity.
+// Stop on a complete code point so the downstream limit cannot be exceeded.
 function utf8Prefix(value, byteLimit) {
   const encoder = new TextEncoder();
   let result = "", used = 0;

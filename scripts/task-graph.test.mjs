@@ -959,6 +959,21 @@ test("Master planning context exposes missing acceptance rather than claiming a 
  assert.doesNotMatch(context,/next audited-safe worker handoff: step import/);
 });
 
+test("bounded Master continuation keeps recovery and paid-request state ahead of long goal metadata",()=>{
+ const state=initial();
+ state.objective="Large user media objective ".repeat(300);
+ state.owner_request="Large original brief ".repeat(60);
+ state.last_outcome="failed";
+ state.recovery_mode="replan_required";
+ state.model_requests_reserved=3;
+ const context=agent.orchestrationContext(state);
+ assert.ok(context.length<=3000);
+ const shortBoundedContext=[...context].slice(0,1100).join("");
+ assert.match(shortBoundedContext,/last_outcome=failed/);
+ assert.match(shortBoundedContext,/recovery=replan_required/);
+ assert.match(shortBoundedContext,/reserved_model_requests=3/);
+});
+
 test("a forged running import receipt cannot bypass final cross-app handoff admission",()=>{
  const p=plan([
   step("render",[],"motion_graphics_run_remotion"),

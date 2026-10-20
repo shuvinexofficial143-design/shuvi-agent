@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
 import {validateMasterPlan,validateMasterAction,assessMasterGoalDelivery} from "./master-autonomy-graph.mjs";
-import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
+import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext,reservedGoalEvidenceBudget} from "./native-worker-model-routing.mjs";
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
 import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
 import {attachNativePremiereOpeningBlueprint} from "./master-opening-blueprint.mjs";
@@ -2846,9 +2846,11 @@ async function runAgentStep(): Promise<void> {
   }
   const selectedRoute=delegation.route;
   // Local graph-owned role, exact step and tool; never model-supplied authority.
-  const workerContext=delegatedWorkerContext(
+  const masterGoalContext=masterGoalEvidenceContext(orchestration.owner_request);
+  const contextBudget=reservedGoalEvidenceBudget(masterGoalContext);
+  const workerContext=contextBudget===null?null:delegatedWorkerContext(
     orchestrationWithMasterEditor(orchestrationContext(orchestration), messages),
-    delegation,orchestration.task_graph);
+    delegation,orchestration.task_graph,contextBudget);
   if(workerContext===null){
     await stopAgentForSafety("Configured specialist has no verified READY step or task context. No model request sent.");
     return;
@@ -2926,7 +2928,7 @@ async function runAgentStep(): Promise<void> {
         model: selectedRoute.model,
         base_url: selectedRoute.base_url || null,
         messages: providerMessageWindow(messages),
-        orchestration_context: workerContext+"\n"+masterGoalEvidenceContext(orchestration.owner_request)
+        orchestration_context: workerContext+"\n"+masterGoalContext
       }
     });
     // The provider call has settled; release before same-task recursive

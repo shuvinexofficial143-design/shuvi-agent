@@ -960,6 +960,10 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
   const unfinishedIds=new Set(verifiedProgress.steps.filter(s=>!s.evidence_verified).map(s=>s.step_id));
   const parts = [
     "Agent orchestration state:",
+    // A long graph or asset receipt can exhaust the model context. Pin the
+    // execution/recovery identity ahead of optional graph detail so a
+    // bounded continuation never loses the last audited outcome or budget.
+    `- control: step=${state.next_step}/${state.max_steps}; reserved_model_requests=${state.model_requests_reserved}/${state.max_steps+1}; deadline=${state.task_expires_at_ms??"legacy"}; last_outcome=${state.last_outcome??"none"}; failures=${state.consecutive_failures}/${MAX_CONSECUTIVE_FAILURES}; recovery=${state.recovery_mode}`,
     `- owner original brief (immutable): ${state.owner_request?.slice(0,450) ?? "legacy/unbound; inspect task before new native work"}`,
     `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`,
     ...(state.task_graph ? [

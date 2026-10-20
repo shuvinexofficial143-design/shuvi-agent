@@ -134,6 +134,42 @@ test("buildBoundedContinuationContext bounds optional fields when budget exhaust
   assert.ok(new TextEncoder().encode(context).byteLength <= 2900);
 });
 
+test("oversized early task guidance does not conceal short audited evidence or UI readback", () => {
+  const context=buildBoundedContinuationContext(
+    "YouTube kholo fir search karo", "browser_start",
+    "550e8400-e29b-41d4-a716-446655440000", "2",
+    "Very long task guidance ".repeat(500),
+    "Verified browser_start audit and PID 19444; no window readback yet.",
+    "Goal remains unverified.",
+    "Visible window still needs independent inspection.",
+    "Recovery: do not launch a second browser process.",
+    "ui_windows"
+  );
+  assert.ok(isWithinRustLimit(context));
+  assert.match(context,/Prior UI mutation has an audited execution receipt/);
+  assert.match(context,/Verified browser_start audit and PID 19444/);
+  assert.match(context,/Goal remains unverified/);
+  assert.doesNotMatch(context,/Very long task guidance/);
+  assert.match(context,/Last approved action ID: 550e8400-e29b-41d4-a716-446655440000/);
+});
+
+test("near-boundary optional fields account for separator bytes instead of discarding all evidence",()=>{
+  const base=buildBoundedContinuationContext("Open Notepad","launch_app",null,"1","","","","","");
+  const remaining=2900-new TextEncoder().encode(base).byteLength;
+  const almostFull="X".repeat(remaining-1);
+  const context=buildBoundedContinuationContext("Open Notepad","launch_app",null,"1",almostFull,"","","","");
+  assert.ok(isWithinRustLimit(context));
+  assert.ok(context.endsWith(almostFull));
+  assert.equal(new TextEncoder().encode(context).byteLength,2900);
+});
+
+test("oversized Unicode identity pauses explicitly instead of silently corrupting audit fields",()=>{
+  assert.throws(()=>buildBoundedContinuationContext(
+    "🪟".repeat(950),"launch_app","550e8400-e29b-41d4-a716-446655440000",
+    "1","","","","",""
+  ),/task identity exceeds/);
+});
+
 // Test validatesObjectivePreservation
 test("validatesObjectivePreservation correctly validates objective preservation", () => {
   const objective = "Open Notepad";

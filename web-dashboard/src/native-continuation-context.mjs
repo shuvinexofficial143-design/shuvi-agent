@@ -62,17 +62,23 @@ function buildBoundedContinuationContext(
   // Calculate bytes used by critical fields
   const criticalBytes = new TextEncoder().encode(criticalParts).byteLength;
 
+  // Never silently truncate a security-critical objective or receipt. The
+  // caller persists a paused recovery state if this cannot fit safely.
+  if (criticalBytes > MAX_ORCHESTRATION_BYTES) {
+    throw new Error('Verified task identity exceeds the native continuation context budget');
+  }
+
   // Remaining budget for optional fields
   const remainingBudget = MAX_ORCHESTRATION_BYTES - criticalBytes;
 
   // Optional fields with fixed priority order (most important first)
   const optionalParts = [
+    pendingReadback ? `Prior UI mutation has an audited execution receipt but its visible effect is NOT verified. Observe same HWND/PID via separately approved ui_windows then ui_find or ui_discover before further UI mutation.` : '',
     taskContextStr,
     evidenceSummaryStr,
     replanGuidanceStr,
     goalEvidenceLabelStr,
-    windowObservationStr,
-    pendingReadback ? `Prior UI mutation has an audited execution receipt but its visible effect is NOT verified. Observe same HWND/PID via separately approved ui_windows then ui_find or ui_discover before further UI mutation.` : ''
+    windowObservationStr
   ].filter(Boolean);
 
   // Build optional content within remaining budget
@@ -80,31 +86,25 @@ function buildBoundedContinuationContext(
   let accumulatedBytes = 0;
 
   for (const part of optionalParts) {
-    const partBytes = new TextEncoder().encode(part).byteLength;
+    // Every included part has its own space separator. An oversized early
+    // observation must not suppress later, shorter evidence or readback.
+    const partBytes = new TextEncoder().encode(' ' + part).byteLength;
     if (accumulatedBytes + partBytes <= remainingBudget) {
       optionalPartsInBudget.push(part);
       accumulatedBytes += partBytes;
     } else {
-      // Stop adding optional parts once budget is exhausted
-      break;
+      continue;
     }
   }
 
   // Combine all parts
   const allParts = [criticalParts, ...optionalPartsInBudget].filter(Boolean).join(' ');
 
-  // Final verification
+  // Final verification: overflow is a programming error, not permission to
+  // discard the verified action ID or partially rewrite the owner request.
   const finalBytes = new TextEncoder().encode(allParts).byteLength;
   if (finalBytes > MAX_ORCHESTRATION_BYTES) {
-    // Fallback: return only critical parts if optional parts pushed us over
-    // This should not happen with proper budgeting, but we have a safety check
-    const criticalOnlyBytes = new TextEncoder().encode(criticalParts).byteLength;
-    if (criticalOnlyBytes > MAX_ORCHESTRATION_BYTES) {
-      // This is a critical error - objective alone exceeds limit
-      // Return minimal safe context
-      return `Original user request: ${objective.slice(0, 1000)}. Last audited tool: ${auditedTool}. Audit status: audit_verified.`;
-    }
-    return criticalParts;
+    throw new Error('Native continuation context budget calculation failed');
   }
 
   return allParts;
