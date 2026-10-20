@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import {nativeAssistantDisplay} from "../web-dashboard/src/native-error-redaction.mjs";
 
 // Bundle the real native UI transport; stub ONLY the DOM-heavy model picker.
 // Provider Chat and Windows tool preparation are independently mocked, with
@@ -91,6 +92,31 @@ test("successful AI reply without tool still completes normally", async () => {
   assert.deepEqual(result, { ok: true, reply: "Hello from Shuvi." });
   assert.equal(transport.getReplies("thread-2")[0], "Hello from Shuvi.");
   assert.equal(mock.calls.includes("prepare_tool"), false);
+});
+
+test("invalid AI tool JSON is a planning parse rejection, never Windows UNKNOWN or an automatic retry",async()=>{
+ const store=inMemoryRecoveryStore();
+ const mock=nativeInvoke({
+  content:'{"tool":"browser_start","arguments":',provider:"xkiro",
+  model:"openai/gpt-5.6-sol",tool_proposal:null,
+  tool_diagnostic:{kind:"rejected_tool",reason:"malformed_ambiguous_or_unsupported_tool_json"}
+ },false);
+ const transport=await mount(mock.invoke,store);
+ const result=await transport.send("YouTube par search karo, phir video play aur pause karo","bad-tool",0);
+ assert.equal(result.ok,true);
+ assert.equal(mock.calls.filter(x=>x==="chat").length,1);
+ assert.equal(mock.calls.includes("prepare_tool"),false);
+ assert.equal(mock.calls.includes("execute_action"),false);
+ assert.equal(store.read()?.phase,"paused");
+ assert.equal(store.read()?.stagedActions,0);
+ assert.match(transport.getReplies("bad-tool")[0],/AI tool parsing rejected/);
+ assert.doesNotMatch(transport.getReplies("bad-tool")[0],/Windows outcome is UNKNOWN/);
+});
+
+test("provider structured call with empty assistant text still shows a safe readable approval label",()=>{
+ assert.match(nativeAssistantDisplay("",{tool:"browser_page_state",arguments:{pid:123}}),
+  /permission to use browser page state/i);
+ assert.doesNotMatch(nativeAssistantDisplay("",{tool:"browser_page_state",arguments:{pid:123}}),/\{.*pid/i);
 });
 
 test("native chat labels are updated only after confirmed native connection", () => {

@@ -26,7 +26,7 @@ export function nativeAssistantDisplay(input,proposal=null){
  const safe=redactNativeMessage(input);
  const tool=proposal&&typeof proposal.tool==="string"?proposal.tool.trim():"";
  const trimmed=safe.trim();
- if(tool&&trimmed.startsWith("{") )
+ if(tool&&(!trimmed||trimmed.startsWith("{")))
   return "I need permission to use "+tool.replaceAll("_"," ")+" before I continue.";
  if(trimmed.startsWith("{")&&trimmed.endsWith("}")){
   try{

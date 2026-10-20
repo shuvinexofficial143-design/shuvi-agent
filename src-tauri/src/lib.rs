@@ -670,7 +670,16 @@ struct ChatResponse {
     provider: String,
     model: String,
     tool_proposal: Option<ToolProposal>,
+    // Closed vocabulary only. Never include raw model JSON, prompts, keys or
+    // provider headers in a diagnostic that reaches the dashboard.
+    tool_diagnostic: Option<ToolDiagnostic>,
     usage: Option<UsageStats>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ToolDiagnostic {
+    kind: &'static str,
+    reason: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2107,13 +2116,72 @@ fn chat_response(
     usage: Option<UsageStats>,
 ) -> ChatResponse {
     let tool_proposal = parse_tool_proposal(&content);
+    let tool_diagnostic = if tool_proposal.is_some() {
+        Some(ToolDiagnostic { kind: "accepted_tool", reason: "validated_text_json" })
+    } else if content.contains(r#""tool""#) ||
+        content.trim_start().starts_with('{') ||
+        content.trim_start().starts_with("```") ||
+        content.trim_start().starts_with("~~~") {
+        Some(ToolDiagnostic { kind: "rejected_tool", reason: "malformed_ambiguous_or_unsupported_tool_json" })
+    } else {
+        Some(ToolDiagnostic { kind: "plain_text", reason: "assistant_text_without_tool" })
+    };
     ChatResponse {
         content,
         provider,
         model,
         tool_proposal,
+        tool_diagnostic,
         usage,
     }
+}
+
+// Structured provider tool calls are *not* executable actions. They are only
+// translated to the same strict Shuvi proposal allowlist and then still pass
+// dashboard scope, Rust prepare_tool, separate owner Allow once and audit.
+// Reject multiple calls, mixed tool-bearing text and malformed arguments.
+fn validated_structured_tool(name: &str, raw_arguments: &Value) -> Option<ToolProposal> {
+    let object = raw_arguments.as_object()?;
+    if object.len() > 40 || raw_arguments.to_string().len() > 32_000 { return None; }
+    let proposal = if name == "shuvi_tool" {
+        raw_arguments.clone()
+    } else {
+        json!({"tool": name, "arguments": raw_arguments})
+    };
+    parse_tool_proposal(&proposal.to_string())
+}
+
+fn attach_structured_tool(
+    mut response: ChatResponse,
+    name: Option<&str>,
+    arguments: Option<Value>,
+    recognized_count: usize,
+    truncated: bool,
+) -> ChatResponse {
+    if truncated {
+        response.tool_proposal = None;
+        response.tool_diagnostic = Some(ToolDiagnostic {
+            kind: "rejected_tool", reason: "provider_output_truncated"
+        });
+        return response;
+    }
+    if recognized_count == 0 { return response; }
+    let mixed_tool_text = response.tool_proposal.is_some() ||
+        response.content.contains(r#""tool""#);
+    let proposal = if recognized_count == 1 && !mixed_tool_text {
+        name.zip(arguments.as_ref()).and_then(|(n, a)| validated_structured_tool(n, a))
+    } else { None };
+    response.tool_diagnostic = Some(if proposal.is_some() {
+        ToolDiagnostic { kind: "accepted_tool", reason: "validated_structured_call" }
+    } else if recognized_count > 1 {
+        ToolDiagnostic { kind: "rejected_tool", reason: "multiple_structured_calls" }
+    } else if mixed_tool_text {
+        ToolDiagnostic { kind: "rejected_tool", reason: "mixed_or_conflicting_tool_formats" }
+    } else {
+        ToolDiagnostic { kind: "rejected_tool", reason: "invalid_structured_call_schema" }
+    });
+    response.tool_proposal = proposal;
+    response
 }
 
 fn usage_from_openai(body: &Value) -> Option<UsageStats> {
@@ -2234,15 +2302,34 @@ async fn openai_compatible_chat(
         return Err(format!("Provider returned {status}: {}", compact_error(&body)));
     }
 
-    let content = bounded_provider_text(
-        body.pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Provider response had no assistant text.".to_string())?,
-        "Provider assistant",
-    )?;
-
-    let usage = usage_from_openai(&body);
-    Ok(chat_response(content, input.provider, input.model, usage))
+    let message=body.pointer("/choices/0/message")
+        .ok_or_else(|| "Provider response omitted assistant message.".to_string())?;
+    let content=if let Some(value)=message.get("content").and_then(Value::as_str) {
+        bounded_provider_text(value,"Provider assistant")?
+    } else if let Some(parts)=message.get("content").and_then(Value::as_array) {
+        collect_provider_text(parts.iter().filter_map(|part|
+            part.get("text").and_then(Value::as_str)),"Provider assistant")?
+    } else { String::new() };
+    let calls=message.get("tool_calls").and_then(Value::as_array);
+    let count=calls.map_or(0,Vec::len);
+    if content.is_empty() && count==0 {
+        return Err("Provider response had neither assistant text nor a structured tool call.".into());
+    }
+    let (name,args)=if count==1 {
+        let call=&calls.expect("single existing array")[0];
+        let name=if call.get("type").and_then(Value::as_str)==Some("function") {
+            call.pointer("/function/name").and_then(Value::as_str)
+        } else { None };
+        let args=call.pointer("/function/arguments").and_then(Value::as_str)
+            .filter(|s|s.len()<=32_000)
+            .and_then(|s|serde_json::from_str::<Value>(s).ok());
+        (name,args)
+    } else { (None,None) };
+    let truncated=body.pointer("/choices/0/finish_reason").and_then(Value::as_str)
+        .is_some_and(|reason|matches!(reason,"length"|"content_filter"));
+    let usage=usage_from_openai(&body);
+    let parsed=chat_response(content,input.provider,input.model,usage);
+    Ok(attach_structured_tool(parsed,name,args,count,truncated))
 }
 
 async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
@@ -2300,13 +2387,18 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
         parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)),
         "Gemini assistant",
     )?;
-
-    if content.is_empty() {
+    let calls:Vec<&Value>=parts.iter().filter_map(|p|p.get("functionCall")).collect();
+    if content.is_empty()&&calls.is_empty() {
         return Err("Gemini returned an empty response.".into());
     }
-
     let usage = usage_from_gemini(&body);
-    Ok(chat_response(content, input.provider, model, usage))
+    let parsed=chat_response(content,input.provider,model,usage);
+    let (name,args)=if calls.len()==1 {
+        (calls[0].get("name").and_then(Value::as_str),calls[0].get("args").cloned())
+    }else{(None,None)};
+    let truncated=body.pointer("/candidates/0/finishReason").and_then(Value::as_str)
+        .is_some_and(|reason|matches!(reason,"MAX_TOKENS"|"SAFETY"));
+    Ok(attach_structured_tool(parsed,name,args,calls.len(),truncated))
 }
 
 async fn anthropic_chat(
@@ -2373,12 +2465,19 @@ async fn anthropic_chat(
         "Anthropic assistant",
     )?;
 
-    if content.is_empty() {
+    let calls:Vec<&Value>=body.get("content").and_then(Value::as_array).into_iter()
+        .flatten().filter(|part|part.get("type").and_then(Value::as_str)==Some("tool_use")).collect();
+    if content.is_empty()&&calls.is_empty() {
         return Err("Anthropic returned an empty response.".into());
     }
 
     let usage = usage_from_anthropic(&body);
-    Ok(chat_response(content, input.provider, model, usage))
+    let parsed=chat_response(content,input.provider,model,usage);
+    let (name,args)=if calls.len()==1 {
+        (calls[0].get("name").and_then(Value::as_str),calls[0].get("input").cloned())
+    }else{(None,None)};
+    let truncated=body.get("stop_reason").and_then(Value::as_str)==Some("max_tokens");
+    Ok(attach_structured_tool(parsed,name,args,calls.len(),truncated))
 }
 
 async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
@@ -22248,6 +22347,45 @@ pub fn run() {
 #[cfg(test)]
 mod task_graph_transport_tests {
     use super::*;
+
+    #[test]
+    fn native_model_diagnostics_separate_tool_parse_failure_from_windows_outcome() {
+        let valid=chat_response(json!({"tool":"ui_windows","arguments":{}}).to_string(),
+            "xkiro".into(),"test".into(),None);
+        assert_eq!(valid.tool_proposal.as_ref().unwrap().tool,"ui_windows");
+        assert_eq!(valid.tool_diagnostic.unwrap().reason,"validated_text_json");
+        let malformed=chat_response("{\"tool\":\"ui_windows\",\"arguments\":".into(),
+            "xkiro".into(),"test".into(),None);
+        assert!(malformed.tool_proposal.is_none());
+        assert_eq!(malformed.tool_diagnostic.unwrap().kind,"rejected_tool");
+        let narrative=chat_response("Please choose a window.".into(),
+            "xkiro".into(),"test".into(),None);
+        assert!(narrative.tool_proposal.is_none());
+        assert_eq!(narrative.tool_diagnostic.unwrap().kind,"plain_text");
+    }
+
+    #[test]
+    fn structured_provider_calls_are_bounded_and_require_one_valid_tool() {
+        let arguments=json!({"pid":432});
+        let accepted=attach_structured_tool(
+            chat_response("".into(),"xkiro".into(),"test".into(),None),
+            Some("browser_page_state"),Some(arguments.clone()),1,false);
+        assert_eq!(accepted.tool_proposal.unwrap().arguments,arguments);
+        let duplicate=attach_structured_tool(
+            chat_response("".into(),"xkiro".into(),"test".into(),None),
+            Some("browser_page_state"),Some(arguments.clone()),2,false);
+        assert!(duplicate.tool_proposal.is_none());
+        assert_eq!(duplicate.tool_diagnostic.unwrap().reason,"multiple_structured_calls");
+        let unknown=attach_structured_tool(
+            chat_response("".into(),"xkiro".into(),"test".into(),None),
+            Some("unapproved_remote_shell"),Some(json!({})),1,false);
+        assert!(unknown.tool_proposal.is_none());
+        let truncated=attach_structured_tool(
+            chat_response("".into(),"xkiro".into(),"test".into(),None),
+            Some("browser_page_state"),Some(arguments),1,true);
+        assert!(truncated.tool_proposal.is_none());
+        assert_eq!(truncated.tool_diagnostic.unwrap().reason,"provider_output_truncated");
+    }
 
     #[test]
     fn graph_metadata_survives_provider_parsing_without_granting_tool_access() {
