@@ -71,7 +71,9 @@ test("owner UI click explicitly requests narrow scope; generic Allow once remain
  assert.ok(native.includes('editScopeApprove.addEventListener("click",async()=>'));
  assert.ok(native.includes('"issue_task_edit_scope",{taskId,actionId:current.action.id}'));
  assert.ok(native.includes('scopedApprovalId=current.action.id;await decide(true);'));
- assert.ok(native.includes('scope.tool===current.action.kind&&scope.path===exactEditPath'));
+ assert.ok(native.includes('scope.tool===proposal?.tool&&scope.path===exactEditPath(proposal)'));
+ assert.ok(native.includes('requiresScopedEdit&&scope&&activeEdit(current.threadId,current.proposal??undefined)'));
+ assert.ok(native.includes('scope.remainingActions-=1'));
  assert.ok(native.includes('editScopeId:scope.id,taskId:scope.taskId'));
  assert.ok(native.includes('approve.addEventListener("click",()=>{void decide(true);});'));
  assert.ok(native.includes('"revoke_task_edit_scopes",{taskId:active.taskId}'));
@@ -85,7 +87,7 @@ test("owner can explicitly revoke task editing scope without claiming process te
  assert.ok(native.includes('const revokeEditing=field("button","Revoke task editing scopes")'));
  assert.ok(native.includes('composerParent.insertBefore(revokeEditing,chatForm)'));
  assert.ok(native.includes('revokeEditing.addEventListener("click",async()=>'));
- assert.ok(native.includes('editScopes.clear();scopedApprovalId=null;refreshState();'));
+ assert.ok(native.includes('editScopes.clear();scopedApprovalId=null;autoEditActionId=null;refreshState();'));
  assert.ok(native.includes('"revoke_task_edit_scopes",{taskId}'));
  assert.ok(native.includes('this does not terminate an executing Windows action'));
  assert.ok(native.includes('editScopeApprove.disabled=sending||editScopeIssuing||editScopeRevoking||!ready'));

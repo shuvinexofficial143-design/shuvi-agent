@@ -218,6 +218,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const paidSelect=created.find(x=>x.attributes["aria-label"]==="Owner-approved paid AI request count for each task");
  if(paidSelect)paidSelect.value=String(paidRequestLimit);
  const allow=created.find(x=>x.textContent==="Allow once");
+ const editApprove=created.find(x=>x.textContent==="Allow exact-file task editing scope (4 actions / 10 min)");
  const projectApprove=created.find(x=>x.textContent==="Allow selected-project inventory (8 reads / 3 min)");
   const revokeProject=created.find(x=>x.textContent==="Revoke selected-project inventory");
   const inspectApprove=created.find(x=>x.textContent==="Allow read-only window scope (8 actions / 3 min)");
@@ -230,7 +231,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,editApprove,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -1942,7 +1943,7 @@ test("owner four-action exact-file grant automatically continues one safe follow
   simulateRustJournal:true,paidRequestLimit:8});
  await until(()=>s.transport.connected(),"native connected");
  await s.transport.send("@master Make two bounded edits to project notes","delegated-editor",0);
- const btn=s.composerParent.children.find(x=>x.textContent==="Allow exact-file task editing scope (4 actions / 10 min)");
+ const btn=s.editApprove;
  assert.ok(btn&&!btn.hidden,"owner must deliberately grant the bounded edit scope");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
  btn.listeners.get("click")();
@@ -1963,7 +1964,7 @@ test("delegated exact-file scope never automatically executes fifth file mutatio
   simulateRustJournal:true,paidRequestLimit:8,budgetActions:24});
  await until(()=>s.transport.connected(),"native connected");
  await s.transport.send("@master Edit this one markdown document within owner limits","edit-four",0);
- const btn=s.composerParent.children.find(x=>x.textContent==="Allow exact-file task editing scope (4 actions / 10 min)");
+ const btn=s.editApprove;
  btn.listeners.get("click")();
  await until(()=>s.staged.length===5,"fifth edit pending review");
  await until(()=>s.calls.filter(x=>x.name==="execute_action").length===4,"four native scoped writes");
