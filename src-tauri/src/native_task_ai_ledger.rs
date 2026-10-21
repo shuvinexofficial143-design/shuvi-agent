@@ -113,8 +113,9 @@ fn transaction<R>(path:&Path,op:impl FnOnce(&[Receipt])->Result<(R,Option<Receip
   line.push(b'\n');
   // A reservation must leave disk headroom for its eventual terminal receipt.
   // Never bill first and discover that the ledger could not record the outcome.
+  let terminal_headroom=if next.status=="reserved"{MAX_LINE}else{0};
   if line.len()>MAX_LINE||rows.len()>=MAX_ROWS||
-     bytes.len()+line.len()+if next.status=="reserved"{MAX_LINE}else{0}>MAX_BYTES{
+     bytes.len().saturating_add(line.len()).saturating_add(terminal_headroom)>MAX_BYTES{
    return Err("Task AI ledger full; refuse paid request.".into());
   }
   handle.write_all(&line).map_err(|_|"Task AI receipt append failed.")?;
