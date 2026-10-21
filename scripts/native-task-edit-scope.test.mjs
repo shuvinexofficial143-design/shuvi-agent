@@ -73,3 +73,13 @@ test("owner UI click explicitly requests narrow scope; generic Allow once remain
  assert.ok(native.includes('approval.hidden=false;'));
  assert.ok(native.includes('Master waiting for approval of next task step.'));
 });
+
+test("owner can explicitly revoke task editing scope without claiming process termination",()=>{
+ assert.ok(native.includes('const revokeEditing=field("button","Revoke task editing scopes")'));
+ assert.ok(native.includes('composerParent.insertBefore(revokeEditing,chatForm)'));
+ assert.ok(native.includes('revokeEditing.addEventListener("click",async()=>'));
+ assert.ok(native.includes('editScopes.clear();scopedApprovalId=null;refreshState();'));
+ assert.ok(native.includes('"revoke_task_edit_scopes",{taskId}'));
+ assert.ok(native.includes('this does not terminate an executing Windows action'));
+ assert.ok(native.includes('editScopeApprove.disabled=sending||editScopeIssuing||editScopeRevoking||!ready'));
+});
