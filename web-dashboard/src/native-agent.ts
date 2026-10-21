@@ -1255,8 +1255,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     let result:ActionResult;
     try{
      const scope=editScopes.get(current.threadId);
-     const useScope=scopedApprovalId===current.action.id&&scope&&
-      scope.tool===current.action.kind&&scope.path===exactEditPath(current.proposal??undefined);
+     const useScope=requiresScopedEdit&&scope&&activeEdit(current.threadId,current.proposal??undefined);
      if(requiresScopedEdit&&!useScope){
       haltTask(current.threadId,"edit_scope_revoked");
       throw Error("Owner scoped edit revoked before dispatch. No Windows action sent.");
@@ -1273,6 +1272,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       haltTask(current.threadId,"inspection_scope_invalid");
       throw Error("Owner UI inspection scope expired or revoked. No execute IPC sent.");
      }
+     if(useScope)scope.remainingActions-=1;
      if(useProject)project.remainingActions-=1;
      if(useInspection)inspection.remainingActions-=1; // in-memory cap is spent before native dispatch
      try{
@@ -1284,6 +1284,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
        :{actionId:current.action.id});
      }finally{
+      if(useScope&&scope.remainingActions<=0){
+       editScopes.delete(current.threadId);autoEditActionId=null;
+       void invoke<void>("revoke_task_edit_scopes",{taskId:scope.taskId}).catch(()=>{
+        showActionFeedback("Delegated edit cap reached; Rust revoke uncertain. Check Audit.");
+       });
+      }
       if(useProject&&project.remainingActions<=0){
         projectScopes.delete(current.threadId);
         void invoke<void>("revoke_task_project_scopes",{taskId:project.taskId}).catch(()=>{
@@ -1578,6 +1584,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }finally{
    sending=false;
    if(scopedApprovalId===current.action.id)scopedApprovalId=null;
+   const nextEdit=autoEditActionId;
+   if(nextEdit&&pending&&pending!==current&&pending.action.id===nextEdit&&
+      activeEdit(pending.threadId,pending.proposal??undefined)){
+    autoEditActionId=null;scopedApprovalId=nextEdit;
+    showActionFeedback("Owner-delegated same-file edit: new prepared Rust action is separately audited.");
+    void decide(true);
+   }else if(nextEdit)autoEditActionId=null;
    if(scopedInspectActionId===current.action.id)scopedInspectActionId=null;
    if(scopedProjectActionId===current.action.id)scopedProjectActionId=null;
    const nextProject=autoProjectActionId;
@@ -1708,12 +1721,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     editScopes.delete(current.threadId);existing=undefined;
    }
    if(!existing){
-    const view=await invoke<{id:string;taskId:string;allowedTools:string[];exactPath:string;remainingActions:number;authorizedPaidRequests:number}>(
+    const view=await invoke<{id:string;taskId:string;allowedTools:string[];exactPath:string;expiresAtMs:number;remainingActions:number;authorizedPaidRequests:number}>(
      "issue_task_edit_scope",{taskId,actionId:current.action.id});
     if(!view||view.taskId!==taskId||view.allowedTools?.length!==1||
        view.allowedTools[0]!==current.action.kind||view.remainingActions!==4||
-       view.authorizedPaidRequests!==0||typeof view.id!=="string")throw Error("Invalid Rust editing scope response");
-    existing={id:view.id,taskId,tool:current.action.kind,path};
+       view.authorizedPaidRequests!==0||typeof view.id!=="string"||
+       typeof view.exactPath!=="string"||view.exactPath.length===0||
+       !Number.isSafeInteger(view.expiresAtMs)||view.expiresAtMs<=Date.now()||
+       view.expiresAtMs>Date.now()+600_000)throw Error("Invalid Rust editing scope response");
+    existing={id:view.id,taskId,tool:current.action.kind,path,
+      expiresAtMs:view.expiresAtMs,remainingActions:view.remainingActions};
     if(pending!==current){
      await invoke<void>("revoke_task_edit_scopes",{taskId});
      return;
