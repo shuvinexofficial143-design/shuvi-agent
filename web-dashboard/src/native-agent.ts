@@ -279,7 +279,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  };
  const activeInspect=(id:string,p:Record<string,unknown>|undefined)=>{
   const x=inspectScopes.get(id);
-  return Boolean(x&&x.window===readWindow(p)&&Date.now()<x.expiresAtMs);
+  return Boolean(x&&x.window===readWindow(p)&&Date.now()<x.expiresAtMs&&
+   taskBudgets.get(id)&&x.taskId===taskRecoveryIds.get(taskBudgets.get(id)!));
  };
  let editScopeIssuing=false;
  let editScopeRevoking=false;
@@ -435,6 +436,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    // Acknowledgement is an explicit abandonment of the old execution scope.
    // Never reuse old budgets, goal roots, window evidence or worker state.
    taskBudgets.clear();
+   for(const scope of inspectScopes.values())
+    void invoke<void>("revoke_task_inspection_scopes",{taskId:scope.taskId}).catch(()=>{});
+   inspectScopes.clear();autoInspectActionId=null;scopedInspectActionId=null;
    taskGoalRoots.clear();
    taskStates.clear();
    taskEvidence.clear();
@@ -657,6 +661,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){
+  const inspection=inspectScopes.get(id);
+  if(inspection){
+   inspectScopes.delete(id);autoInspectActionId=null;
+   void invoke<void>("revoke_task_inspection_scopes",{taskId:inspection.taskId}).catch(()=>{
+    showActionFeedback("Local read scope revoked; Rust revocation uncertain. Inspect Audit.");
+   });
+  }
   const active=editScopes.get(id);
   if(active){
    editScopes.delete(id);
@@ -1015,6 +1026,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }
    pending={...task,action:next,proposal:response.tool_proposal,step:task.step+1,seen:new Set([...seen,fp]),
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
+   if(activeInspect(task.threadId,response.tool_proposal))autoInspectActionId=next.id;
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+redactNativeError(next.summary)+"\nRisk: "+redactNativeError(next.risk)+"\n"+redactNativeError(next.detail);
@@ -1096,10 +1108,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   // A scoped owner click can NEVER silently downgrade to ordinary Allow once
   // if another user action revokes that scope during asynchronous persistence.
   const requiresScopedEdit=scopedApprovalId===current.action.id;
+  const requiresInspect=scopedInspectActionId===current.action.id;
   sending=true;
   approve.disabled=deny.disabled=true;
   try {
    if(!allowed){
+    const scope=inspectScopes.get(current.threadId);
+    if(scope){
+     inspectScopes.delete(current.threadId);autoInspectActionId=null;
+     try{await invoke<void>("revoke_task_inspection_scopes",{taskId:scope.taskId});}
+     catch{showActionFeedback("Local read scope revoked; native revocation uncertain.");}
+    }
     await invoke<void>("deny_action",{actionId:current.action.id});
     const deniedBudget=taskBudgets.get(current.threadId);
     if(deniedBudget)await persistRecovery(deniedBudget,"paused",current.action.id);
@@ -1188,7 +1207,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       haltTask(current.threadId,"edit_scope_revoked");
       throw Error("Owner scoped edit revoked before dispatch. No Windows action sent.");
      }
-     result=await invoke<ActionResult>("execute_action",useScope
+     const inspection=inspectScopes.get(current.threadId);
+     const useInspection=requiresInspect&&inspection&&activeInspect(current.threadId,current.proposal??undefined);
+     if(requiresInspect&&!useInspection){
+      haltTask(current.threadId,"inspection_scope_invalid");
+      throw Error("Owner UI inspection scope expired or revoked. No execute IPC sent.");
+     }
+     result=await invoke<ActionResult>("execute_action",useInspection
+      ?{actionId:current.action.id,inspectionScopeId:inspection.id,taskId:inspection.taskId}
+      :useScope
       ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
       :{actionId:current.action.id});
     }finally{
@@ -1470,12 +1497,65 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }finally{
    sending=false;
    if(scopedApprovalId===current.action.id)scopedApprovalId=null;
+   if(scopedInspectActionId===current.action.id)scopedInspectActionId=null;
+   const nextAuto=autoInspectActionId;
+   if(nextAuto&&pending&&pending!==current&&pending.action.id===nextAuto&&
+      activeInspect(pending.threadId,pending.proposal??undefined)){
+    autoInspectActionId=null;
+    scopedInspectActionId=nextAuto;
+    showActionFeedback("Bounded owner-approved read-only inspection proceeding with new Rust-prepared action.");
+    void decide(true);
+   }else if(nextAuto)autoInspectActionId=null;
    // Do not discard the NEXT approval that the Master staged after this
    // verified action. Clear only the approval that was just decided.
    if(pending===current)clearPending();
    refreshState();
   }
  }
+ inspectApprove.addEventListener("click",async()=>{
+  const current=pending;
+  const window=readWindow(current?.proposal??undefined);
+  if(!ready||!current||!window||sending||inspectIssuing||inspectRevoking)return;
+  const budget=taskBudgets.get(current.threadId);
+  const taskId=budget?recoveryTaskId(budget):null;
+  if(!taskId)return;
+  inspectIssuing=true;refreshState();
+  try{
+   if(inspectScopes.has(current.threadId))throw Error("Scope cannot be enlarged.");
+   const view=await invoke<{id:string;taskId:string;window:string;allowedTools:string[];
+    expiresAtMs:number;remainingActions:number;authorizedPaidRequests:number}>(
+    "issue_task_inspection_scope",{taskId,actionId:current.action.id});
+   if(!view||typeof view.id!=="string"||view.taskId!==taskId||view.window!==window||
+      view.remainingActions!==8||view.authorizedPaidRequests!==0||view.allowedTools?.length!==2||
+      !view.allowedTools.includes("ui_discover")||!view.allowedTools.includes("ui_find")||
+      !Number.isSafeInteger(view.expiresAtMs)||view.expiresAtMs<=Date.now()||
+      view.expiresAtMs>Date.now()+180_000)throw Error("Invalid native scope witness.");
+   if(pending!==current){
+    await invoke<void>("revoke_task_inspection_scopes",{taskId});return;
+   }
+   inspectScopes.set(current.threadId,{id:view.id,taskId,window,expiresAtMs:view.expiresAtMs});
+  }catch{
+   inspectScopes.delete(current.threadId);
+   showActionFeedback("Native inspection scope not authorized. Allow once remains available.");
+   return;
+  }finally{inspectIssuing=false;refreshState();}
+  if(pending===current){scopedInspectActionId=current.action.id;await decide(true);}
+ });
+ revokeInspect.addEventListener("click",async()=>{
+  if(!ready||inspectIssuing||inspectRevoking||inspectScopes.size===0)return;
+  inspectRevoking=true;
+  const tasks=[...new Set([...inspectScopes.values()].map(x=>x.taskId))];
+  inspectScopes.clear();scopedInspectActionId=null;autoInspectActionId=null;refreshState();
+  let failed=false;
+  for(const taskId of tasks){
+   try{await invoke<void>("revoke_task_inspection_scopes",{taskId});}
+   catch{failed=true;}
+  }
+  inspectRevoking=false;
+  showActionFeedback(failed?"Local read scope revoked; native revocation uncertain. Check Audit.":
+   "Rust read-only inspection scope revoked; running action termination NOT verified.");
+  refreshState();
+ });
  editScopeApprove.addEventListener("click",async()=>{
   const current=pending;
   const path=exactEditPath(current?.proposal??undefined);
@@ -1536,7 +1616,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const actionId=activeNativeActionId;
   if(!ready||!actionId||ownerStopRequestedIds.has(actionId))return;
   ownerStopRequestedIds.add(actionId);
-  const active=pending?editScopes.get(pending.threadId):null;
+  const inspection=pending?inspectScopes.get(pending.threadId):null;
+   if(inspection){
+    inspectScopes.delete(pending!.threadId);
+    scopedInspectActionId=null;autoInspectActionId=null;
+    void invoke<void>("revoke_task_inspection_scopes",{taskId:inspection.taskId}).catch(()=>{
+     stopFeedback.hidden=false;stopFeedback.textContent="Inspection revoke uncertain; inspect Audit.";
+    });
+   }
+   const active=pending?editScopes.get(pending.threadId):null;
   if(active){
    editScopes.delete(pending!.threadId);
    void invoke<void>("revoke_task_edit_scopes",{taskId:active.taskId}).catch(()=>{
