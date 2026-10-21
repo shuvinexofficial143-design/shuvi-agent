@@ -181,6 +181,9 @@ const MAX_PROVIDER_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 // Prevent unbounded billable output on native cloud chat calls.
 // This is NOT a dollar-denominated spend limit: input tokens and model rates vary.
 const MAX_PROVIDER_OUTPUT_TOKENS: u32 = 4096;
+// Native owner-task requests never receive a high-output generation grant
+// merely because ordinary chat uses a larger cap. This is NOT a USD bill.
+const MAX_NATIVE_TASK_OUTPUT_TOKENS: u32 = 2048;
 const MAX_ASSISTANT_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_PROVIDER_MODEL_BYTES: usize = 256;
 const MAX_PROVIDER_BASE_URL_BYTES: usize = 4 * 1024;
@@ -635,6 +638,8 @@ struct ChatInput {
     orchestration_context: Option<String>,
     #[serde(default)]
     task_ai_ticket: Option<NativeTaskAiTicket>,
+    #[serde(skip)]
+    native_task_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2305,7 +2310,7 @@ async fn openai_compatible_chat(
     } else {
         "max_tokens"
     };
-    payload[output_key] = json!(MAX_PROVIDER_OUTPUT_TOKENS);
+    payload[output_key] = json!(input.native_task_output_tokens.unwrap_or(MAX_PROVIDER_OUTPUT_TOKENS));
     let mut request = http_client()?.post(&url).json(&payload);
 
     if let Some(key) = api_key.filter(|key| !key.is_empty()) {
@@ -2378,7 +2383,7 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
 
     let mut payload = json!({
         "contents": contents,
-        "generationConfig": { "maxOutputTokens": MAX_PROVIDER_OUTPUT_TOKENS }
+        "generationConfig": { "maxOutputTokens": input.native_task_output_tokens.unwrap_or(MAX_PROVIDER_OUTPUT_TOKENS) }
     });
     if !system_parts.is_empty() {
         payload["systemInstruction"] = json!({ "parts": system_parts });
@@ -2455,7 +2460,7 @@ async fn anthropic_chat(
         .header("anthropic-version", "2023-06-01")
         .json(&json!({
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": input.native_task_output_tokens.unwrap_or(2048),
             "system": system,
             "messages": messages
         }));
@@ -20736,6 +20741,10 @@ async fn chat(
         }
         native_task_ai_ledger::reserve(&app,&ticket.task_id,&ticket.request_id,
             ticket.request_index,&input.provider,&input.model)?;
+        // Set only AFTER exact owner task recovery, immutable quota,
+        // data budget and durable receipt preflight. WebView cannot supply
+        // this field: #[serde(skip)] ignores client-provided values.
+        input.native_task_output_tokens=Some(MAX_NATIVE_TASK_OUTPUT_TOKENS);
     }
     let answer=send_chat(input,key).await;
     if let Some(ticket)=ticket{

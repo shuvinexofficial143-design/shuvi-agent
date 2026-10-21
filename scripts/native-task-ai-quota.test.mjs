@@ -46,3 +46,19 @@ test("dashboard includes owner limit in the FIRST chat ticket without separate s
  assert.ok(quota.includes('grant.committed_context_bytes=cumulative;'));
  assert.ok(quota.includes('grant.next_request_index=index+1;'));
 });
+
+test("native Rust caps output tokens at provider request for only paid owner tasks",()=>{
+ const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+ assert.ok(lib.includes("const MAX_NATIVE_TASK_OUTPUT_TOKENS: u32 = 2048"));
+ assert.ok(lib.includes("native_task_output_tokens: Option<u32>"));
+ assert.ok(lib.includes("input.native_task_output_tokens=Some(MAX_NATIVE_TASK_OUTPUT_TOKENS);"));
+ for(const adapter of [
+  "payload[output_key] = json!(input.native_task_output_tokens.unwrap_or(MAX_PROVIDER_OUTPUT_TOKENS))",
+  '"generationConfig": { "maxOutputTokens": input.native_task_output_tokens.unwrap_or(MAX_PROVIDER_OUTPUT_TOKENS) }',
+  '"max_tokens": input.native_task_output_tokens.unwrap_or(2048)'
+ ])assert.ok(lib.includes(adapter),adapter);
+ const reserve=lib.indexOf("native_task_ai_ledger::reserve(&app,&ticket.task_id,");
+ const taskCap=lib.indexOf("input.native_task_output_tokens=Some(MAX_NATIVE_TASK_OUTPUT_TOKENS);");
+ const send=lib.indexOf("let answer=send_chat(input,key).await;",reserve);
+ assert.ok(reserve>0&&taskCap>reserve&&send>taskCap);
+});
