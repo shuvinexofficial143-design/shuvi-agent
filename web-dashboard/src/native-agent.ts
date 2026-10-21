@@ -619,7 +619,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   editScopeApprove.hidden=!pending||exactEditPath(pending.proposal??undefined)===null;
   editScopeApprove.disabled=sending||editScopeIssuing||editScopeRevoking||!ready;
   revokeEditing.hidden=editScopes.size===0;
-  revokeEditing.disabled=editScopeRevoking||!ready||editScopes.size===0;
+  revokeEditing.disabled=editScopeIssuing||editScopeRevoking||!ready||editScopes.size===0;
   stopCurrent.hidden=!activeNativeActionId;
   stopCurrent.disabled=!ready||!activeNativeActionId||ownerStopRequestedIds.has(activeNativeActionId);
   const phase=readNativeRecovery(recoveryStorage)?.phase??null;
@@ -1012,6 +1012,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   // Tool execution and later Master planning are separate evidence phases.
   let executionVerified=false;
   if(!current||sending||editScopeIssuing)return;
+  // A scoped owner click can NEVER silently downgrade to ordinary Allow once
+  // if another user action revokes that scope during asynchronous persistence.
+  const requiresScopedEdit=scopedApprovalId===current.action.id;
   sending=true;
   approve.disabled=deny.disabled=true;
   try {
@@ -1100,6 +1103,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      const scope=editScopes.get(current.threadId);
      const useScope=scopedApprovalId===current.action.id&&scope&&
       scope.tool===current.action.kind&&scope.path===exactEditPath(current.proposal??undefined);
+     if(requiresScopedEdit&&!useScope){
+      haltTask(current.threadId,"edit_scope_revoked");
+      throw Error("Owner scoped edit revoked before dispatch. No Windows action sent.");
+     }
      result=await invoke<ActionResult>("execute_action",useScope
       ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
       :{actionId:current.action.id});
@@ -1425,7 +1432,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(pending===current){scopedApprovalId=current.action.id;await decide(true);}
  });
  revokeEditing.addEventListener("click",async()=>{
-  if(!ready||editScopeRevoking||editScopes.size===0)return;
+  if(!ready||editScopeIssuing||editScopeRevoking||editScopes.size===0)return;
   editScopeRevoking=true;
   const owned=[...new Set([...editScopes.values()].map(s=>s.taskId))];
   // Local execution permissions disappear before any async IPC. Remote
