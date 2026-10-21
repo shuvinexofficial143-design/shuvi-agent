@@ -42,7 +42,7 @@ test("Rust consumes exact edit file authority under native ownership before work
  assert.ok(rust.includes('Selected project workspace disappeared before scoped execution.'));
  assert.ok(scope.includes('s.task_id!=task_id||s.tool!=tool'));
  assert.ok(scope.includes('s.dispatched.contains(action_id)'));
- assert.ok(scope.includes('if checked!=s.exact_file'));
+ assert.ok(scope.includes('selected_workspace!=s.workspace||checked!=s.exact_file'));
 });
 
 test("scope has finite time and uses, no paid request authority and no persistent grant",()=>{
