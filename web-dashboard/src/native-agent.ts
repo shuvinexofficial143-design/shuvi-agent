@@ -13,6 +13,8 @@ import {verifiedSimpleOpening} from "./native-opening-completion.mjs";
 import {auditedYouTubeLaunch,youtubeReadbackProposal,verifiedYouTubeHome,youtubeSearchReadbackProposal,verifiedYouTubeSearch} from "./native-browser-completion.mjs";
 import {classifyNativeProviderFailure} from "./native-provider-failure.mjs";
 import {newApplicationContinuity,recordAuditedApplication,selectApplicationContinuity,continuityReadback,continuityHint,confirmedContinuityHint,checkConfirmedContinuity} from "./native-application-continuity.mjs";
+import {auditedSystemOpening,systemOpeningReadback,observeSystemOpening} from "./native-system-browser-context.mjs";
+import {recoveryButtonState} from "./native-recovery-controls.mjs";
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 import {actionFingerprint,seenAfterAuditedChange} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
@@ -203,6 +205,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  recoveryPanel.setAttribute("role","region");
  recoveryPanel.setAttribute("aria-label","Windows task recovery controls next to chat composer");
  recoveryPanel.append(recoveryNotice,recoveryCheck,recoveryRetry,recoveryOwnerDone,recoveryDismiss);
+ const recoveryDiagnostics=field("p");recoveryDiagnostics.setAttribute("role","status");recoveryDiagnostics.hidden=true;recoveryPanel.append(recoveryDiagnostics);
  budgetNote.className="shuvi-native-note";
  panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus);
  chat.parentElement?.insertBefore(panel,chat);
@@ -345,7 +348,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    taskGoalRoots.clear();
    taskStates.clear();
    taskEvidence.clear();
-   browserLaunchProofs.clear();
+   browserLaunchProofs.clear();systemLaunchProofs.clear();
    pendingSearchProofs.clear();
    verifiedWindows.clear();
    observedWindows.clear();observedControls.clear();pendingUiReadback.clear();
@@ -400,7 +403,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     ?"The AI provider returned a failure response. The previous audited Windows action is STILL VERIFIED; only the next AI planning request failed. Owner may authorize another paid planning request. No Windows action will be replayed."
     :phase==="planning_outcome_unknown"
     ?"The next AI planning request may have failed or been billed. The previous audited Windows action is STILL VERIFIED. Owner consent and remaining budget are required before a new AI request; no Windows action will be replayed."
-    :"Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
+    : "Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
+   if(phase==="planning_response_failed"||phase==="planning_outcome_unknown"){
+    taskStatus.textContent="Windows Action VERIFIED (Rust Audit) · AI Provider "+
+     (phase==="planning_response_failed"?"FAILED HTTP response":"request uncertain");
+    goalStatus.textContent="Original Goal UNVERIFIED · not the Windows action outcome.";
+    recoveryNotice.textContent+=" Windows Action VERIFIED · Original Goal UNVERIFIED · "+
+     (phase==="planning_response_failed"?"Provider HTTP FAILURE":"Provider REQUEST OUTCOME UNKNOWN")+
+     ". Choose Owner-approved Retry or Acknowledge/Abandon before an independent new task.";
+   }
    recoveryNotice.hidden=false;
    recoveryCheck.hidden=!actionId;
    recoveryDismiss.hidden=false;
@@ -538,6 +549,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  });
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const browserLaunchProofs=new Map<string,NonNullable<ReturnType<typeof auditedYouTubeLaunch>>>();
+ const systemLaunchProofs=new Map<string,NonNullable<ReturnType<typeof auditedSystemOpening>>>();
  const pendingSearchProofs=new Map<string,{actionId:string;pid:number}>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
  const observedWindows=new Map<string,ReturnType<typeof newAuditedWindowObservation>>();
@@ -565,6 +577,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(text)status.textContent=text;
   approve.disabled=sending;
   deny.disabled=sending;
+  const phase=readNativeRecovery(recoveryStorage)?.phase??null;
+  const guard=recoveryButtonState({ready,sending,pending:!!pending,phase,disabled:recoveryDismiss.disabled});
+  recoveryDiagnostics.hidden=recoveryNotice.hidden;
+  recoveryDiagnostics.textContent="Recovery guard: "+guard.reason+"; journal phase: "+guard.phase+
+   "; DOM disabled: "+guard.domDisabled+"; pending approval: "+Boolean(pending)+
+   "; request running: "+sending+". Derived from live runtime, not CSS.";
+  recoveryPanel.setAttribute("data-recovery-guard",guard.reason);
   onChange();
  }
  function showActionFeedback(message:string){
@@ -647,6 +666,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
   const plannedReadback=nextMasterReadbackProposal(task.objective,result.tool)??
+   (result.tool==="open_url"?systemOpeningReadback(systemLaunchProofs.get(task.threadId)):null)??
    (result.tool==="browser_start"?youtubeReadbackProposal(browserLaunchProofs.get(task.threadId)):null)??
    youtubeSearchReadbackProposal(task.objective,task.action.id,task.proposal,result)?.proposal??null;
   const taskBudget=taskBudgets.get(task.threadId);
@@ -1042,6 +1062,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      // Only evidence with an exact successful Rust audit can update this
      // cross-command hint. The next command still needs its OWN readback.
      recordAuditedApplication(applicationContinuity,current.proposal,result,current.action.id);
+     if(result.tool==="open_url"){
+      const proof=auditedSystemOpening(current.objective,current.action.id,current.proposal,result);
+      if(proof)systemLaunchProofs.set(current.threadId,proof);
+      else systemLaunchProofs.delete(current.threadId);
+     }
      if(result.tool==="browser_start"){
       const launchProof=auditedYouTubeLaunch(current.objective,current.action.id,current.proposal,result);
       if(launchProof)browserLaunchProofs.set(current.threadId,launchProof);
@@ -1159,6 +1184,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        current.objective,current.action.id,current.proposal,result,
        taskEvidence.get(current.threadId)??null,
        browserLaunchProofs.get(current.threadId)??null,true):null;
+     const systemObservation=verified&&result.tool==="ui_windows"?observeSystemOpening(
+      systemLaunchProofs.get(current.threadId),current.action.id,result,
+      taskEvidence.get(current.threadId)??null):null;
      const youtubeSearch=verified?verifiedYouTubeSearch(
       current.objective,current.action.id,current.proposal,result,
       taskEvidence.get(current.threadId)??null,
@@ -1196,6 +1224,22 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       showActionFeedback(completedMessage);
       goalStatus.textContent=completedMessage;
       refreshState(appName+" window opening verified; no additional paid model call.");
+      return;
+     }
+     if(systemObservation){
+      // An explorer launch + OS window never proves the page URL loaded.
+      const b=taskBudgets.get(current.threadId);
+      const saved=Boolean(b&&await persistRecovery(b,"paused",current.action.id));
+      haltTask(current.threadId,saved?"no_next_tool":"recovery_journal_failed");
+      if(saved&&b)showOwnerCompletionChoice(b,current.action.id);
+      const msg="System browser/PWA inspection: "+systemObservation.kind+
+       " ("+systemObservation.count+" observed window(s)). Windows Action VERIFIED, "+
+       "Original Goal UNVERIFIED: a window title cannot prove loaded URL. "+
+       "No unmanaged CDP attach and no additional paid planning request. "+
+       "Owner may confirm visually, or Acknowledge/Abandon and issue new command.";
+      appendReply(current.threadId,current.promptIndex,msg);
+      goalStatus.textContent="Original Goal UNVERIFIED · OS window is not webpage URL verification.";
+      showActionFeedback(msg);refreshState("Windows Action VERIFIED · Goal UNVERIFIED.");
       return;
      }
      if(verified)await continueAfterVerifiedAction(current,result);
@@ -1297,8 +1341,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);browserLaunchProofs.delete(threadId);pendingSearchProofs.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);observedControls.delete(threadId);pendingUiReadback.delete(threadId);pendingContinuity.delete(threadId);confirmedContinuity.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();browserLaunchProofs.clear();pendingSearchProofs.clear();verifiedWindows.clear();observedWindows.clear();observedControls.clear();pendingUiReadback.clear();pendingContinuity.clear();confirmedContinuity.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);browserLaunchProofs.delete(threadId);systemLaunchProofs.delete(threadId);pendingSearchProofs.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);observedControls.delete(threadId);pendingUiReadback.delete(threadId);pendingContinuity.delete(threadId);confirmedContinuity.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();browserLaunchProofs.clear();systemLaunchProofs.clear();pendingSearchProofs.clear();verifiedWindows.clear();observedWindows.clear();observedControls.clear();pendingUiReadback.clear();pendingContinuity.clear();confirmedContinuity.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -1331,8 +1375,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     pausedClarificationRecord.phase==="paused"&&
     pausedClarificationRecord.taskId===taskRecoveryIds.get(pausedClarificationBudget)&&
     !recoveryCheckpointFailed);
-   if(route.role!=="chat"&&!recoveryAcknowledged&&!canContinueOriginalClarification)return {ok:false,error:
-    "The previous Windows task may have an unresolved action or paid request. Review Rust Audit, then explicitly acknowledge and clear the interrupted task journal before starting another Windows task. Nothing was sent."};
+   if(route.role!=="chat"&&!recoveryAcknowledged&&!canContinueOriginalClarification){
+    const phase=readNativeRecovery(recoveryStorage)?.phase??"unavailable";
+    recoveryNotice.hidden=false;recoveryDismiss.hidden=false;
+    refreshState("Old journal: "+phase+"; no new Windows task dispatched.");
+    return {ok:false,error:"The previous Windows task may have an unresolved action or paid request. "+
+     "Phase: "+phase+". For same-goal continuation use Owner-approved Planning Retry; for a separate new goal "+
+     "Acknowledge/Abandon the old journal in the composer Recovery Panel. No paid request or Windows action was replayed. Nothing was sent."};
+   }
    if(route.role!=="chat"&&!waitingForChoice&&completedVerifiedBudget){
     // A completed original goal has a paired terminal checkpoint. Retirement
     // is conditional on its exact persisted identity, never a generic clear.
@@ -1426,7 +1476,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       observedWindows.delete(threadId);
       verifiedWindows.delete(threadId);
       taskEvidence.delete(threadId);
-      browserLaunchProofs.delete(threadId);
+      browserLaunchProofs.delete(threadId);systemLaunchProofs.delete(threadId);
       pendingSearchProofs.delete(threadId);
       taskStates.delete(threadId);
      }

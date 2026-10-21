@@ -27,7 +27,7 @@ function mentionsWebsite(request,origin){
  return key.length>=3&&new RegExp(`(^|[^a-z0-9])${key.replace(/[^a-z0-9]/gu,"")}([^a-z0-9]|$)`,"iu").test(request);
 }
 function validTime(now,at){return Number.isSafeInteger(now)&&Number.isSafeInteger(at)&&now>=at&&now-at<MAX_AGE;}
-export function newApplicationContinuity(){return {browsers:new Map(),windows:[],windowObservedAt:0};}
+export function newApplicationContinuity(){return {browsers:new Map(),windows:[],windowObservedAt:0,systemUrls:[]};}
 
 /** Caller MUST first match a successful Rust executed audit to this action. */
 export function recordAuditedApplication(registry,proposal,result,actionId,now=Date.now()){
@@ -35,6 +35,16 @@ export function recordAuditedApplication(registry,proposal,result,actionId,now=D
     (result.exit_code!==null&&result.exit_code!==0)||typeof actionId!=="string"||!actionId||
     !Number.isSafeInteger(now)||now<=0)return false;
  const args=proposal.arguments??{};
+ if(result.tool==="open_url"){
+  // explorer launcher PID is NEVER stored as browser ownership/CDP target.
+  try{
+   const url=new URL(args.url);
+   if(!["http:","https:"].includes(url.protocol)||url.username||url.password)return false;
+   registry.systemUrls=[...(registry.systemUrls??[]).filter(x=>validTime(now,x.observedAt)),
+    {origin:url.origin,site:hostKey(url.origin),observedAt:now,actionId}].slice(-12);
+   return true;
+  }catch{return false;}
+ }
  if(result.tool==="browser_start"){
   const match=BROWSER_START.exec(result.stdout??"");
   const pid=Number(match?.[2]);
@@ -88,8 +98,20 @@ export function selectApplicationContinuity(registry,request,now=Date.now()){
   const terms=request.toLowerCase().match(/[a-z0-9]{4,}/gu)?.filter(x=>!COMMAND_WORDS.has(x))??[];
   desktop=knownWindows.filter(x=>terms.some(term=>processKey(x.process).includes(term)));
  }
+ // System URL hints never authorize CDP: a fresh Rust-audited OS inventory
+ // is required and yields ONLY an OS/PWA window candidate.
+ const systemSites=(registry.systemUrls??[]).filter(x=>validTime(now,x.observedAt)&&
+  mentionsWebsite(request,x.origin));
+ const systemWindows=knownWindows.filter(w=>
+  systemSites.some(site=>site.site.length>=3&&
+   new RegExp("(^|[^a-z0-9])"+site.site+"([^a-z0-9]|$)","iu").test(w.title))&&
+  /^(?:msedge|chrome|firefox|msedgewebview2)(?:\.exe)?$/iu.test(w.process)&&
+  typeof w.processStartTicks==="string");
  let candidates=[...browserCandidates,...desktop.map(x=>({kind:"window",...x,
-  observedAt:registry.windowObservedAt}))];
+  observedAt:registry.windowObservedAt})),...systemWindows.map(x=>({kind:"window",
+  source:"system_browser_or_pwa",...x,observedAt:registry.windowObservedAt}))];
+ candidates=candidates.filter((x,i)=>candidates.findIndex(y=>x.kind===y.kind&&
+  x.pid===y.pid&&(x.kind==="browser"||x.hwnd===y.hwnd))===i);
  if(candidates.length===0&&SAME_CONTEXT.test(request)&&apps.length===0){
   const windows=knownWindows;
   candidates=[...knownBrowsers,...windows.map(x=>({kind:"window",...x,
@@ -110,7 +132,7 @@ export function continuityReadback(candidate,proposal){
   return {tool:"browser_page_state",arguments:{pid:candidate.pid}};
  }
  if(candidate.kind==="window"&&[
-  "launch_app","premiere_launch","blender_session_start","photoshop_launch","after_effects_launch",
+  "open_url","launch_app","premiere_launch","blender_session_start","photoshop_launch","after_effects_launch",
   "ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse",
   "ui_find","ui_discover","inspect_screen"
  ].includes(proposal.tool))return {tool:"ui_windows",arguments:{}};
@@ -134,7 +156,11 @@ export function checkConfirmedContinuity(candidate,proposal){
   if(["browser_navigate","browser_dom_read","browser_dom_click","browser_dom_set_value","browser_page_state"].includes(proposal.tool)&&
    proposal.arguments?.pid!==candidate.pid)return {allowed:false,reason:"Browser action PID differs from the freshly verified managed session."};
  }
- if(candidate.kind==="window"&&["launch_app","premiere_launch","blender_session_start","photoshop_launch","after_effects_launch"].includes(proposal.tool))
+ if(candidate.kind==="window"&&candidate.source==="system_browser_or_pwa"&&
+  ["browser_start","browser_navigate","browser_dom_read","browser_dom_click",
+   "browser_dom_set_value","browser_page_state"].includes(proposal.tool))
+  return {allowed:false,reason:"Unmanaged OS browser/PWA is not Rust-owned CDP. No DevTools attach or browser PID adoption."};
+ if(candidate.kind==="window"&&["open_url","launch_app","premiere_launch","blender_session_start","photoshop_launch","after_effects_launch"].includes(proposal.tool))
   return {allowed:false,reason:"A matching live desktop window was just verified; relaunch requires a new explicit owner request."};
  return {allowed:true,reason:"same_verified_session"};
 }
@@ -143,6 +169,8 @@ export function confirmedContinuityHint(candidate){
  if(!candidate||candidate.kind==="ambiguous")return "";
  if(candidate.kind==="browser")return "This task already obtained an owner-approved, Rust-audited fresh CDP readback of managed "+
   candidate.browser+" PID "+candidate.pid+". Use that same PID for the next browser action. Do not launch a new browser or repeat the prior readback without a changed reason.";
- return "This task already obtained an owner-approved, Rust-audited fresh ui_windows observation confirming "+
+ return (candidate.source==="system_browser_or_pwa"?
+  "This is an OS-observed system browser/PWA, NOT a managed CDP target. Never use browser DOM tools or assert URL load. ":"")+
+  "This task already obtained an owner-approved, Rust-audited fresh ui_windows observation confirming "+
   candidate.process+" PID "+candidate.pid+" HWND "+candidate.hwnd+". Continue with the exact observed window, and separately inspect controls and obtain Allow once for every mutation. Do not relaunch.";
 }
