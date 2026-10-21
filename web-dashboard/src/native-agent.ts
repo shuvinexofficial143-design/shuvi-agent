@@ -401,7 +401,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const verifiedAction=Boolean(actionId&&b.stagedActions>0);
    const states=providerRecoveryStates(phase,verifiedAction,lastProviderHttpStatus);
    recoveryNotice.textContent=phase==="native_denied"
-    ?"Rust Audit recorded expired/denied native approval. No execution authorized."
+    ?"Rust Audit recorded expired/denied native approval. No execution authorized. Review Activity/Audit and acknowledge this prior task before issuing another Windows command."
     :phase==="planning_response_failed"||phase==="planning_outcome_unknown"
     ?"AI planning interrupted. Windows Action: "+states.action+
      "; Original Goal: "+states.goal+"; Provider: "+states.provider+
