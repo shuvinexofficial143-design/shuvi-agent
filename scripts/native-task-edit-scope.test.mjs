@@ -23,7 +23,7 @@ test("scope cannot be granted from model text or a read permission",()=>{
 test("Rust consumes exact edit file authority under native ownership before worker start",()=>{
  const execute=rust.slice(rust.indexOf("async fn execute_action("),rust.indexOf("async fn execute_powershell("));
  const lease=execute.indexOf("claim_monitored_native_execution");
- const consume=execute.indexOf(".consume(task,scope_id,&action_id,&prepared.tool,path,now_ms())?");
+ const consume=execute.indexOf(".consume(task,scope_id,&action_id,&prepared.tool,path,&workspace,now_ms())?");
  const begin=execute.indexOf("native_worker_job::begin(");
  assert.ok(lease>=0&&consume>lease&&begin>consume);
  assert.ok(execute.includes('Cannot combine read grant and edit scope.'));
