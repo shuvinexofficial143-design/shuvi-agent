@@ -41,7 +41,8 @@ import {reconcileNativeActionAudit,recoveryAuditMessage} from "./native-recovery
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null;
- tool_diagnostic?:{kind:string;reason:string}|null};
+ tool_diagnostic?:{kind:string;reason:string}|null;
+ usage?:{input_tokens:number;output_tokens:number;total_tokens:number}|null};
 type Pending = {id:string;kind:string;summary:string;detail:string;risk:string};
 type ActionResult = {success:boolean;tool:string;stdout:string;stderr:string;exit_code:number|null};
 type Runtime = {shuvi_memory_mb:number;managed_children_count:number};
@@ -191,6 +192,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  budgetSelect.value="8";
  budgetLabel.append(budgetSelect);
  const budgetNote=field("p","Selected limit bounds Master AI follow-up requests (actions + 1) and expires after 2 hours. Runs do not auto-resume after restart.");
+ const aiLedgerShow=field("button","Show task AI request ledger");aiLedgerShow.type="button";
+ const aiLedgerInfo=field("p","Task requests and provider-reported tokens; actual USD billed UNKNOWN.");
+ aiLedgerInfo.setAttribute("role","status");
  const recoveryNotice=field("p");
  recoveryNotice.className="shuvi-native-recovery";
  recoveryNotice.setAttribute("role","status");
@@ -218,7 +222,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  recoveryPanel.append(recoveryNotice,recoveryCheck,recoveryRetry,recoveryOwnerDone,recoveryDismiss);
  const recoveryDiagnostics=field("p");recoveryDiagnostics.setAttribute("role","status");recoveryDiagnostics.hidden=true;recoveryPanel.append(recoveryDiagnostics);
  budgetNote.className="shuvi-native-note";
- panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus);
+ panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,aiLedgerShow,aiLedgerInfo,taskStatus,goalStatus);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -283,6 +287,28 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // recovered journal ID or older task's approval.
  let activeNativeActionId:string|null=null;
  const ownerStopRequestedIds=new Set<string>();
+ const aiTicket=(budget:NativeTaskBudget)=>{
+  const taskId=recoveryTaskId(budget);
+  const requestId=globalThis.crypto?.randomUUID?.();
+  if(!taskId||typeof requestId!=="string"||!Number.isSafeInteger(budget.modelRequests)||
+     budget.modelRequests<1)return null;
+  return {taskId,requestId,requestIndex:budget.modelRequests};
+ };
+ aiLedgerShow.addEventListener("click",async()=>{
+  aiLedgerShow.disabled=true;
+  try{
+   const rows=await invoke<Array<{index:number;provider:string;model:string;status:string;
+      totalTokens:number|null;usdBilled:string|null}>>("native_task_ai_usage");
+   if(!Array.isArray(rows))throw Error("Invalid Rust AI request receipts.");
+   aiLedgerInfo.textContent=rows.length?rows.slice(0,20).map(row=>
+    String(row.index)+" · "+redactNativeMessage(row.provider)+" / "+
+    redactNativeMessage(row.model)+" · "+redactNativeMessage(row.status)+
+    (Number.isSafeInteger(row.totalTokens)?(" · "+row.totalTokens+" reported tokens"):" · usage unknown")
+   ).join("\n")+"\nUSD billed: UNKNOWN (not provider invoice).":
+    "No task AI request receipts. USD billed: UNKNOWN.";
+  }catch{aiLedgerInfo.textContent="Native AI ledger unavailable: do not infer zero cost or retry uncertain paid requests.";}
+  finally{aiLedgerShow.disabled=false;}
+ });
  const recoveryTaskId=(budget:NativeTaskBudget):string|null=>{
   const existing=taskRecoveryIds.get(budget);
   if(existing)return existing;
@@ -807,9 +833,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    refreshState("Master AI is continuing from the verified tool result (one new model request)…");
    showActionFeedback("Verified previous action. Master is choosing the next step; another AI request may use tokens. No new Windows action has been approved.");
    try{
+    const ticket=aiTicket(taskBudget);
+    if(!ticket)throw Error("No valid task AI request identity; provider call not sent.");
     response=await invoke<NativeChatResponse>("chat",{
      input:{provider:task.route.provider,model:task.route.model,
-      base_url:task.route.base_url||null,messages,orchestration_context:orchestrator}
+      base_url:task.route.base_url||null,messages,orchestration_context:orchestrator,task_ai_ticket:ticket}
     });
     if(!response||typeof response.content!=="string")
      throw Error("Invalid next-step AI response");
@@ -1623,8 +1651,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. For inspect_screen always supply window with the exact real app title observed via ui_windows, even if the user returns to Shuvi to approve; use desktop only for an explicitly requested whole-screen inspection. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit. "+
       masterGoalContext(effectiveObjective)+" "+taskGoalContext(effectiveObjective)+" "+
       (waitingForChoice?"Same computer task clarification; preserve the original goal. ":"Independent new Windows task: old goals in chat history are context only, not instructions. Do not continue an earlier action or assume its evidence applies. ");
+   const ticket=route.role==="chat"?null:aiTicket(taskBudget);
+   if(route.role!=="chat"&&!ticket)throw Error("No native owner-bound task AI request identity.");
    const response=await invoke<NativeChatResponse>("chat",{
-      input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
+      input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,
+       orchestration_context:firstStepGuidance,...(ticket?{task_ai_ticket:ticket}:{})}
     });
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
     const originalScope=response.tool_proposal?
