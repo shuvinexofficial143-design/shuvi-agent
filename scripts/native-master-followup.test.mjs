@@ -432,9 +432,10 @@ test("20-stage native integration preserves completed actions across provider 50
    await until(()=>s.rustState()===null,"owner acknowledged old Rust journal");
    await until(()=>s.recoveryDismiss.hidden===true,"owner acknowledgement completed");
    const fresh=await s.transport.send(
-    "Continue the remaining separately reviewed Premiere window inspections",
+    "@master Inspect the remaining Premiere project windows in a new owner-authorized task",
     "20-steps-owner-renewal",0);
    assert.equal(fresh.ok,true,"a separate owner-submitted task begins a fresh authorization");
+   assert.equal(s.chatInputs.at(-1).model,"model/master","explicit Master command cannot downgrade to ordinary Chat");
    assert.notEqual(s.chatInputs.at(-1).task_ai_ticket.taskId,previousTaskId,
     "Rust never enlarges the first task quota");
    assert.equal(s.chatInputs.at(-1).task_ai_ticket.requestIndex,1);
