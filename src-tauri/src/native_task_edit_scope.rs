@@ -16,6 +16,7 @@ const EXTENSIONS:&[&str]=&["txt","md","json","css","html","js","ts","jsx","tsx"]
 #[derive(Clone)]
 struct Scope {
     task_id:String,
+    origin_action_id:String,
     tool:String,
     exact_file:PathBuf,
     workspace:PathBuf,
@@ -166,6 +167,27 @@ fn snapshot(path:&Path)->Result<Option<([u8;32],u64)>,String>{
     let sha:[u8;32]=Sha256::digest(&bytes).into();
     Ok(Some((sha,bytes.len() as u64)))
 }
+/// A string UUID from the renderer is never sufficient to issue editing
+/// authority. Match the latest fsynced native task+action checkpoint first.
+pub(crate) fn owner_checkpoint_allows(
+    record:Option<&crate::native_recovery::NativeRecoveryRecord>,
+    task_id:&str,action_id:&str,phase:&str,now:u64,
+)->Result<(),String>{
+    if !valid_uuid(task_id)||!valid_uuid(action_id)||
+       !matches!(phase,"awaiting_approval"|"executing")||now==0{
+        return Err("Invalid owner task scope checkpoint request.".into());
+    }
+    let r=record.ok_or("Rust owner task journal missing; editing scope denied.")?;
+    if r.version!=2||r.revision.is_none()||
+       r.task_id.as_deref()!=Some(task_id)||
+       r.action_id.as_deref()!=Some(action_id)||
+       r.phase!=phase||
+       r.model_requests==0||r.staged_actions==0||
+       now>=r.expires_at{
+        return Err("Native task scope does not match the latest owner-approved action phase.".into());
+    }
+    Ok(())
+}
 impl TaskEditScopeStore{
     fn prune(&mut self,now:u64){
         self.scopes.retain(|_,s|now<s.expires_at_ms&&s.remaining>0);
@@ -194,7 +216,7 @@ impl TaskEditScopeStore{
             expires_at_ms:now+TTL_MS,remaining_actions:MAX_ACTIONS,
             authorized_paid_requests:0,
         };
-        self.scopes.insert(id,Scope{task_id:task_id.into(),tool:tool.into(),
+        self.scopes.insert(id,Scope{task_id:task_id.into(),origin_action_id:action_id.into(),tool:tool.into(),
             exact_file,workspace:selected_workspace,file_snapshot,expires_at_ms:now+TTL_MS,
             remaining:MAX_ACTIONS,dispatched:HashSet::new()});
         Ok(view)
@@ -249,7 +271,8 @@ impl TaskEditScopeStore{
         self.scopes.retain(|_,s|s.task_id!=task_id);
     }
     pub(crate) fn revoke_action(&mut self,action_id:&str){
-        self.scopes.retain(|_,s|!s.dispatched.contains(action_id));
+        self.scopes.retain(|_,s|s.origin_action_id!=action_id&&
+            !s.dispatched.contains(action_id));
     }
 }
 #[cfg(test)]
@@ -300,6 +323,31 @@ mod tests{
             assert!(store.issue(&t,&a,"write_file",&hidden.to_string_lossy(),&dir.to_string_lossy(),100).is_err());
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn denial_of_original_prepared_action_revokes_scope_before_any_dispatch(){
+        let (dir,path)=fixture();
+        let task=Uuid::new_v4().to_string();let origin=Uuid::new_v4().to_string();
+        let mut store=TaskEditScopeStore::default();
+        let grant=store.issue(&task,&origin,"write_file",&path,&dir.to_string_lossy(),100).unwrap();
+        store.revoke_action(&origin);
+        assert!(store.consume(&task,&grant.id,&origin,"write_file",&path,&dir.to_string_lossy(),101).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn owner_journal_identity_phase_and_deadline_are_required(){
+        let id=Uuid::new_v4().to_string();let action=Uuid::new_v4().to_string();
+        let record=crate::native_recovery::NativeRecoveryRecord{
+            version:2,task_id:Some(id.clone()),revision:Some(3),max_actions:8,
+            staged_actions:1,model_requests:1,expires_at:10_000,updated_at:100,
+            phase:"awaiting_approval".into(),action_id:Some(action.clone()),
+        };
+        assert!(owner_checkpoint_allows(Some(&record),&id,&action,"awaiting_approval",200).is_ok());
+        assert!(owner_checkpoint_allows(Some(&record),&Uuid::new_v4().to_string(),&action,"awaiting_approval",200).is_err());
+        assert!(owner_checkpoint_allows(Some(&record),&id,&Uuid::new_v4().to_string(),"awaiting_approval",200).is_err());
+        assert!(owner_checkpoint_allows(Some(&record),&id,&action,"executing",200).is_err());
+        assert!(owner_checkpoint_allows(Some(&record),&id,&action,"awaiting_approval",10_000).is_err());
+        assert!(owner_checkpoint_allows(None,&id,&action,"awaiting_approval",200).is_err());
     }
     #[test]
     fn stop_revokes_entire_scope_without_unknown_worker_replay(){

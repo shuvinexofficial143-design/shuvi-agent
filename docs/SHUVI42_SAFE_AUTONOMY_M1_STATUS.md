@@ -46,3 +46,9 @@ Branch: feature/shuvi42-combined-runtime
 - Provider-reported usage tokens are observational. Unknown HTTP outcomes never mean zero spend or authorize replay. The actual USD charge remains UNKNOWN without an authoritative price and invoice; **no hard dollar limit** is implemented yet.
 - A Dashboard control reads ledger receipts for user review without granting permissions. Ordinary Chat and existing specialist API flows remain independent; editing scopes continue to grant zero paid calls.
 - Real Windows E2E is still pending. M1 remains INCOMPLETE.
+
+## M1 Rust ownership gate — exact action and recovery phase
+- Owner-issued editing scope now requires a live v2 Rust recovery checkpoint bound to the *same task UUID* and *same prepared action UUID* in `awaiting_approval`. No free-form WebView UUID alone can mint task scope.
+- Every scoped file edit is rechecked under the native execution lock against Rust's exact `executing` checkpoint, its task/action identity, staged reservation and deadline before worker begin. Mismatches fail closed.
+- Denying the original prepared action revokes the whole scope before first dispatch; revoke/Stop also invalidates its origin and dispatched UUIDs. Legacy `Allow once` and read grants remain distinct.
+- Unit tests cover correct/forged task IDs, mismatched action, phase mismatch, TTL and denial-before-dispatch.

@@ -39,6 +39,11 @@ test("Rust consumes exact edit file authority under native ownership before work
  assert.ok(scope.includes('selected_workspace!=s.workspace'));
  assert.ok(scope.includes('!exact_file.starts_with(&selected_workspace)'));
  assert.ok(rust.includes('Select a Shuvi project workspace before issuing task editing scope.'));
+ assert.ok(rust.includes('owner_checkpoint_allows(record.as_ref(),&task_id,&action_id'));
+ assert.ok(rust.includes('owner_checkpoint_allows(owner_record.as_ref(),task,'));
+ assert.ok(scope.includes('r.action_id.as_deref()!=Some(action_id)'));
+ assert.ok(scope.includes('r.phase!=phase'));
+ assert.ok(scope.includes('now>=r.expires_at'));
  assert.ok(rust.includes('Selected project workspace disappeared before scoped execution.'));
  assert.ok(scope.includes('s.task_id!=task_id||s.tool!=tool'));
  assert.ok(scope.includes('s.dispatched.contains(action_id)'));
@@ -58,6 +63,8 @@ test("scope has finite time and uses, no paid request authority and no persisten
  assert.ok(scope.includes('Scoped edit forbids reserved Windows device filename.'));
  assert.ok(scope.includes('Scoped edits require a local drive, never UNC or device namespace.'));
  assert.ok(scope.includes('revoke_task(&mut self,task_id:&str)'));
+ assert.ok(scope.includes('s.origin_action_id!=action_id'));
+ assert.ok(rust.includes('Denying the grant\'s original prepared action revokes the complete'));
 });
 
 test("owner UI click explicitly requests narrow scope; generic Allow once remains",()=>{

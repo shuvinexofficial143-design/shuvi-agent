@@ -21328,6 +21328,9 @@ fn issue_task_edit_scope(
         ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>path,
         _=>return Err("Sensitive or non-file operation needs Allow once.".into()),
     };
+    let record=native_recovery::load(&app)?;
+    native_task_edit_scope::owner_checkpoint_allows(record.as_ref(),&task_id,&action_id,
+        "awaiting_approval",now_ms())?;
     let mut scopes=state.task_edit_scopes.lock()
         .map_err(|_|"Rust task edit scope store unavailable.".to_string())?;
     let workspace=read_workspace(&app)?
@@ -21355,6 +21358,11 @@ fn deny_action(
         .remove(&action_id);
 
     if let Some(action) = action {
+        // Denying the grant's original prepared action revokes the complete
+        // scope, even if no scoped edit was dispatched yet.
+        state.task_edit_scopes.lock()
+            .map_err(|_|"Rust task edit scope store unavailable.".to_string())?
+            .revoke_action(&action_id);
         let audit_detail = audit_safe_action_detail(&action.tool, &action.detail);
         append_audit(
             &app,
@@ -21641,6 +21649,9 @@ async fn execute_action(
                     ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>path,
                     _=>return Err("Scoped editing cannot authorize this native tool.".into()),
                 };
+                let owner_record=native_recovery::load(&app)?;
+                native_task_edit_scope::owner_checkpoint_allows(owner_record.as_ref(),task,
+                    &action_id,"executing",now_ms())?;
                 let workspace=read_workspace(&app)?
                     .ok_or("Selected project workspace disappeared before scoped execution.")?;
                 state.task_edit_scopes.lock()
