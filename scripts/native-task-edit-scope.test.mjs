@@ -105,3 +105,13 @@ test("revoking while a scoped action is pending never falls back to unscoped All
  assert.ok(native.includes('revokeEditing.disabled=editScopeIssuing||editScopeRevoking||!ready'));
  assert.ok(native.includes('if(!ready||editScopeIssuing||editScopeRevoking||editScopes.size===0)return;'));
 });
+
+test("an expired or exhausted edit grant requires explicit owner revoke before reissue",()=>{
+ assert.ok(scope.includes("retired_task_ids:HashSet<String>"));
+ assert.ok(scope.includes("self.retired_task_ids.insert(s.task_id.clone())"));
+ assert.ok(scope.includes("self.retired_task_ids.contains(task_id)"));
+ assert.ok(scope.includes("self.retired_task_ids.remove(task_id)"));
+ assert.ok(scope.includes("expired_or_exhausted_grant_cannot_reissue_without_owner_revoke"));
+ const grant=scope.slice(scope.indexOf("pub(crate) fn issue("),scope.indexOf("pub(crate) fn consume("));
+ assert.ok(grant.indexOf("self.prune(now)")<grant.indexOf("self.retired_task_ids.contains(task_id)"));
+});
