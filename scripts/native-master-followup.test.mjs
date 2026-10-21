@@ -38,8 +38,9 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
+ const issuedRustAiQuota=new Map();
  let persistedRust=rustRecord;
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -73,6 +74,30 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
   if(name==="chat"){
+   // Simulate the immutable Rust-side paid request-count contract instead of
+   // accidentally treating the mocked IPC as unlimited authority.
+   if(strictRustQuota&&params.input?.model==="model/master"){
+    const ticket=params.input.task_ai_ticket;
+    assert.ok(ticket&&typeof ticket.taskId==="string","paid Master request requires a native task ticket");
+    assert.match(ticket.taskId,/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    if(simulateRustJournal){
+     assert.equal(persistedRust?.phase,"model_reserved","Rust reservation precedes provider");
+     assert.equal(ticket.taskId,persistedRust.taskId,"exact Rust recovery task identity");
+     assert.equal(ticket.requestIndex,persistedRust.modelRequests,"exact Rust recovery request index");
+    }
+    const existing=issuedRustAiQuota.get(ticket.taskId);
+    if(!existing){
+     assert.equal(ticket.requestIndex,1,"new task quota begins at its first paid request");
+     assert.equal(ticket.maxRequests,paidRequestLimit,"owner selection is carried into first Rust preflight");
+     assert.ok([2,4,8,16].includes(ticket.maxRequests));
+     issuedRustAiQuota.set(ticket.taskId,{max:ticket.maxRequests,next:2});
+    }else{
+     assert.equal(ticket.maxRequests,undefined,"follow-up cannot escalate original task");
+     assert.equal(ticket.requestIndex,existing.next,"paid request UUID/index never silently reuses a slot");
+     assert.ok(ticket.requestIndex<=existing.max,"Rust would block a request past the owner cap");
+     existing.next++;
+    }
+   }
    chatInputs.push(params.input);
    if(chatFailures?.[chatInputs.length])throw Error(chatFailures[chatInputs.length]);
    const response=replies.shift()??{content:"Done",tool_proposal:null};
@@ -129,6 +154,8 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const transport=mountNativeAgent(()=>{});
  const budgetSelect=created.find(x=>x.attributes["aria-label"]==="Maximum Windows actions per task");
  if(budgetSelect)budgetSelect.value=String(budgetActions);
+ const paidSelect=created.find(x=>x.attributes["aria-label"]==="Owner-approved paid AI request count for each task");
+ if(paidSelect)paidSelect.value=String(paidRequestLimit);
  const allow=created.find(x=>x.textContent==="Allow once");
  const deny=created.find(x=>x.textContent==="Deny");
  const approval=created.find(x=>x.attributes["aria-label"]==="Windows action needs your approval");
@@ -138,7 +165,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -347,7 +374,8 @@ test("eight distinct stages have no fixed six-action cutoff",async()=>{
  const action=(i)=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
   provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
  const s=setup({first:detection,second:action(2),
-  following:[action(3),action(4),action(5),action(6),action(7),action(8)]});
+  following:[action(3),action(4),action(5),action(6),action(7),action(8)],
+  paidRequestLimit:8,strictRustQuota:true});
  await until(()=>s.transport.connected(),"IPC");
  await s.transport.send("Open Premiere and check the necessary windows","long-task",0);
  for(let step=1;step<=7;step++){
@@ -367,8 +395,13 @@ test("eight distinct stages have no fixed six-action cutoff",async()=>{
 test("20-stage native integration preserves completed actions across provider 503 and owner-approved planning resume",async()=>{
  const action=(i)=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
   provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
+ // 20 separate native actions need >16 paid turns once the HTTP 503 also
+ // consumed a reservation. There is NO unlimited or same-task quota top-up.
+ // After the original task reaches its immutable limit the owner must review,
+ // explicitly abandon its old permission scope and issue a fresh command.
  const s=setup({first:detection,second:action(2),
   following:Array.from({length:18},(_,i)=>action(i+3)),budgetActions:24,
+  paidRequestLimit:16,strictRustQuota:true,
   simulateRustJournal:true,retryAuditReceipt:true,
   chatFailures:{9:"Provider returned 503 Service Unavailable: upstream overloaded."}});
  await until(()=>s.transport.connected(),"native IPC");
@@ -386,14 +419,36 @@ test("20-stage native integration preserves completed actions across provider 50
    assert.equal(s.recoveryRetry.hidden,false);
    s.recoveryRetry.listeners.get("click")();
   }
+  if(i===15){
+   // 15 successful actions plus the failed provider request consume 16 paid
+   // request slots. The 16th Windows action must NOT be prepared automatically.
+   await until(()=>s.rustState()?.phase==="paused","bounded task paused on owner paid quota");
+   await until(()=>s.recoveryDismiss.hidden===false,"owner review available at quota limit");
+   assert.equal(s.staged.length,15,"no cross-quota native staging");
+   assert.equal(s.issuedRustAiQuota.size,1);
+   assert.equal(s.chatInputs.length,16,"HTTP 503 consumes one of the 16 slots");
+   const previousTaskId=s.chatInputs[0].task_ai_ticket.taskId;
+   s.recoveryDismiss.listeners.get("click")();
+   await until(()=>s.rustState()===null,"owner acknowledged old Rust journal");
+   await until(()=>s.recoveryDismiss.hidden===true,"owner acknowledgement completed");
+   const fresh=await s.transport.send(
+    "Continue the remaining separately reviewed Premiere window inspections",
+    "20-steps-owner-renewal",0);
+   assert.equal(fresh.ok,true,"a separate owner-submitted task begins a fresh authorization");
+   assert.notEqual(s.chatInputs.at(-1).task_ai_ticket.taskId,previousTaskId,
+    "Rust never enlarges the first task quota");
+   assert.equal(s.chatInputs.at(-1).task_ai_ticket.requestIndex,1);
+   assert.equal(s.chatInputs.at(-1).task_ai_ticket.maxRequests,16);
+  }
   if(i<20)await until(()=>s.staged.length===i+1,"next prepared action "+(i+1));
  }
  await until(()=>s.calls.filter(c=>c.name==="execute_action").length===20,"20 audited actions");
  assert.equal(s.staged.length,20);
  assert.equal(new Set(s.calls.filter(c=>c.name==="execute_action").map(c=>c.params.actionId)).size,20,
-  "no completed action UUID is executed twice across provider failure");
- assert.equal(s.chatInputs.length>=21,true,"provider failure and owner paid retry each counted");
- assert.equal(s.rustState().maxActions,24,"owner-selected budget is never raised");
+  "no completed action UUID is executed twice across provider failure and new owner task");
+ assert.equal(s.chatInputs.length,21,"20 planned steps plus one HTTP 503 attempt");
+ assert.equal(s.issuedRustAiQuota.size,2,"two separate immutable owner-authorized task quotas");
+ assert.equal(s.rustState().maxActions,24,"new task retains owner-selected native action limit");
 });
 
 test("Premiere opening has separate detect, launch and window-inspection approvals",async()=>{
@@ -958,7 +1013,8 @@ test("Owner limit permits eight approvals but never stages a ninth action",async
  const action=i=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
   provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
  const s=setup({first:detection,second:action(2),
-  following:[action(3),action(4),action(5),action(6),action(7),action(8),action(9)]});
+  following:[action(3),action(4),action(5),action(6),action(7),action(8),action(9)],
+  paidRequestLimit:16,strictRustQuota:true});
  await until(()=>s.transport.connected(),"native budget setup");
  await s.transport.send("Open Premiere and inspect available windows","budget-cap",0);
  for(let step=1;step<=8;step++){
@@ -1530,7 +1586,7 @@ test("Shuvi39 chained native action requires fresh window and real UIA readback 
  const d=()=>prop("ui_discover",{window:"Adobe Premiere Pro 2026"});
  const click=name=>prop("ui_click",{window:"Adobe Premiere Pro 2026",name,automation_id:name==="New Project"?"new_project":"save"});
  const s=setup({first:w(),second:d(),following:[click("New Project"),w(),d(),click("Save")],
-  stdoutFor:{
+  paidRequestLimit:8,strictRustQuota:true,stdoutFor:{
    ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:500,ProcessName:"Premiere",NativeWindowHandle:1000}]),
    ui_discover:JSON.stringify([
     {Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,IsOffscreen:false,ObservedWindowHwnd:1000,ObservedWindowPid:500},
@@ -1570,7 +1626,8 @@ test("Shuvi39 rejects forged new native root on second audited discovery; no add
   ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:500,ProcessName:"Premiere",NativeWindowHandle:1000}]),
   get ui_discover(){discoveries++;return rows(discoveries===1?500:501)}
  };
- const s=setup({first:w(),second:d(),following:[click("New Project"),w(),d(),click("Save")],stdoutFor});
+ const s=setup({first:w(),second:d(),following:[click("New Project"),w(),d(),click("Save")],
+  paidRequestLimit:8,strictRustQuota:true,stdoutFor});
  await until(()=>s.transport.connected(),"native ready");
  await s.transport.send("Premiere project then save","shuvi39-foreign-readback",0);
  for(let i=1;i<=5;i++){

@@ -792,6 +792,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(taskBudget&&!plannedReadback&&
      taskBudget.modelRequests>=(taskAiQuotas.get(taskBudget)??0)){
    const saved=await persistRecovery(taskBudget,"paused",task.action.id);
+   // A genuine immutable Rust quota exhaustion is not task completion.
+   // Surface paired owner review/abandonment so the old durable journal never
+   // traps the owner behind a hidden control or silently mints more authority.
+   if(saved)showOwnerCompletionChoice(taskBudget,task.action.id);
    haltTask(task.threadId,saved?"owner_paid_request_quota_exhausted":"recovery_journal_failed");
    appendReply(task.threadId,task.promptIndex,
     "Task paused: owner paid request count exhausted. No model request or new Windows edit sent.");

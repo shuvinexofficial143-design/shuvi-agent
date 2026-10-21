@@ -62,3 +62,9 @@ Branch: feature/shuvi42-combined-runtime
 ## Compatibility fix: first paid Chat preflight owns quota issuance
 - Removed the extra Rust quota-setup IPC. The first task `chat` request itself supplies the owner-selected request limit, which Rust checks against the exact original `model_reserved` checkpoint, creates immutable in-memory quota and reserves the paid request in one pre-dispatch path.
 - Follow-up tickets omit the limit and cannot escalate it. This preserves existing Chat integration transport and avoids a mock-only approval bypass. Hard REQUEST count remains distinct from USD billing.
+
+## M1 quota-bound continuation compatibility and owner-review availability (pending new CI)
+- Multi-stage integration fixtures select an explicit owner paid-request count rather than accidentally interpreting the default 4-call cap as unlimited multi-action authority; a strict test IPC fixture validates first-ticket maxRequests, task UUID, request index, no follow-up escalation and ordered Rust model reservations.
+- Quota exhaustion after a verified Windows action now shows the existing owner recovery/review and abandonment controls. It never reports full-goal completion, silently renews the same task quota, or automatically purchases a model request.
+- The 20-stage simulated scenario spans **two distinct explicitly owner-submitted tasks**: the first stops after 15 verified native actions plus one billed/unknown 503 request at a 16-request hard limit, and the owner must abandon/review the old scope and reissue the remaining separate task. This is NOT same-task unattended 20-step autonomy, which remains pending broader task authorization.
+- Existing Rust action audit, original action identity, separate per-task immutable quota and ordinary Allow once are unchanged. Windows owner-host E2E and actual USD price control remain pending.
