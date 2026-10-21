@@ -30,3 +30,11 @@ test("old Allow once, native audit, recovery and no replay path remain",()=>{
  assert.match(source,/verifiedExecutionReceipt\(current\.action,result,receipts\)/);
  assert.match(source,/persistRecovery\(currentBudget,"executing",current\.action\.id\)/);
 });
+
+// Stop-requested failures must never schedule the read-only recovery successor.
+test("Stop wins over failed execution and asynchronous recovery staging",()=>{
+ assert.match(source,/if\(ownerStopRequestedIds\.has\(current\.action\.id\)\)return false;/);
+ assert.match(source,/if\(ownerStopRequestedIds\.has\(current\.action\.id\)\)\{[\s\S]{0,190}deny_action/);
+ const handler=source.slice(source.indexOf("async function decide("),source.indexOf('stopCurrent.addEventListener("click"'));
+ assert.match(handler,/if\(ownerStopRequestedIds\.has\(current\.action\.id\)\)\{[\s\S]{0,450}no recovery action or paid planning/);
+});
