@@ -17,7 +17,7 @@ test("native paid task reservation is checked by Rust before dispatch",()=>{
  assert.ok(lib.includes('native_task_ai_usage,'));
 });
 test("native AI receipts preserve unknown outcome and refuse replay",()=>{
- assert.ok(rust.includes('static LOCK:Mutex<()>=Mutex::new()'));
+ assert.ok(rust.includes('static LOCK:Mutex<()>=Mutex::new(())'));
  assert.ok(rust.includes('handle.sync_all()'));
  assert.ok(rust.includes('rows.iter().any(|r|r.request_id==id)'));
  assert.ok(rust.includes('rows.len()+2>MAX_ROWS'));
