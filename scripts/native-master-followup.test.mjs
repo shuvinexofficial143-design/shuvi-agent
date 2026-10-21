@@ -392,6 +392,27 @@ test("eight distinct stages have no fixed six-action cutoff",async()=>{
  assert.equal(s.approval.hidden,false);
  assert.doesNotMatch(s.transport.getReplies("long-task")[0],/step safety limit/);
 });
+test("default four paid AI requests pause after four audited actions with owner review visible",async()=>{
+ const action=i=>({content:"check "+i,provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
+ const s=setup({first:detection,second:action(2),following:[action(3),action(4),action(5)],
+  simulateRustJournal:true,strictRustQuota:true});
+ await until(()=>s.transport.connected(),"native ready");
+ const submitted=await s.transport.send("Open Premiere and inspect windows","four-paid-cap",0);
+ assert.equal(submitted.ok,true);
+ for(let step=1;step<=4;step++){
+  await until(()=>s.staged.length===step,"authorized action "+step);
+  await until(()=>!s.allow.disabled,"explicit allow "+step);
+  s.allow.listeners.get("click")();
+ }
+ await until(()=>s.rustState()?.phase==="paused","exact default quota reached");
+ assert.equal(s.staged.length,4,"fifth native action cannot stage with exhausted default request cap");
+ assert.equal(s.chatInputs.length,4,"no fifth paid provider request");
+ assert.equal(s.chatInputs[0].task_ai_ticket.maxRequests,4,"default Rust quota is owner-bound");
+ assert.equal(s.recoveryDismiss.hidden,false,"owner review and safe abandonment remain available");
+ assert.equal(s.recoveryRetry.hidden,true,"no hidden paid retry or same-task quota renewal");
+});
+
 test("20-stage native integration preserves completed actions across provider 503 and owner-approved planning resume",async()=>{
  const action=(i)=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
   provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
@@ -447,7 +468,8 @@ test("20-stage native integration preserves completed actions across provider 50
  assert.equal(s.staged.length,20);
  assert.equal(new Set(s.calls.filter(c=>c.name==="execute_action").map(c=>c.params.actionId)).size,20,
   "no completed action UUID is executed twice across provider failure and new owner task");
- assert.equal(s.chatInputs.length,21,"20 planned steps plus one HTTP 503 attempt");
+ await until(()=>s.chatInputs.length===22,"final Master goal inspection after 20th audited action");
+ assert.equal(s.chatInputs.length,22,"20 planned stages + one 503 + separate final unverified goal check");
  assert.equal(s.issuedRustAiQuota.size,2,"two separate immutable owner-authorized task quotas");
  assert.equal(s.rustState().maxActions,24,"new task retains owner-selected native action limit");
 });
