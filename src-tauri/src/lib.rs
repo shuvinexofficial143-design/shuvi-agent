@@ -637,7 +637,10 @@ struct ChatInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
-struct NativeTaskAiTicket { task_id:String, request_id:String, request_index:u32 }
+struct NativeTaskAiTicket {
+    task_id:String, request_id:String, request_index:u32,
+    #[serde(default)] max_requests:Option<u8>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentPlanMeta {
@@ -20704,9 +20707,23 @@ async fn chat(
            now_ms()>=record.expires_at {
            return Err("AI request identity or owner-approved task budget changed; dispatch blocked.".into());
         }
-        state.task_ai_quota.lock()
-            .map_err(|_|"Cannot read owner AI request quota.".to_string())?
-            .check(&ticket.task_id,ticket.request_index,now_ms())?;
+        {
+            let mut quotas=state.task_ai_quota.lock()
+                .map_err(|_|"Cannot read owner AI request quota.".to_string())?;
+            if ticket.request_index==1{
+                if record.staged_actions!=0||record.action_id.is_some(){
+                    return Err("Initial native task AI quota requires a fresh unexecuted task.".into());
+                }
+                let selected=ticket.max_requests
+                    .ok_or("Native task owner did not select a paid request count.")?;
+                // One atomic preflight inside the first real paid chat request.
+                // No separate setup IPC and no automatic allowance escalation.
+                quotas.issue(&ticket.task_id,selected,record.expires_at,now_ms())?;
+            }else if ticket.max_requests.is_some(){
+                return Err("Task AI quota cannot be changed after the first request.".into());
+            }
+            quotas.check(&ticket.task_id,ticket.request_index,now_ms())?;
+        }
         native_task_ai_ledger::reserve(&app,&ticket.task_id,&ticket.request_id,
             ticket.request_index,&input.provider,&input.model)?;
     }
@@ -20719,26 +20736,6 @@ async fn chat(
         }
     }
     answer
-}
-
-/// Owner-confirmed hard request COUNT for this native task, never USD billed.
-/// Created exactly once at the first fsynced model reservation.
-#[tauri::command]
-fn issue_native_task_ai_quota(
-    task_id:String,max_requests:u8,state:State<'_,ActionState>,app:AppHandle,
-)->Result<(),String>{
-    let recovery=native_recovery::load(&app)?
-        .ok_or("Native task AI request quota needs a durable recovery checkpoint.")?;
-    if recovery.version!=2||recovery.revision.is_none()||
-       recovery.task_id.as_deref()!=Some(&task_id)||
-       recovery.phase!="model_reserved"||recovery.model_requests!=1||
-       recovery.staged_actions!=0||recovery.action_id.is_some()||
-       now_ms()>=recovery.expires_at {
-        return Err("Task AI quota can only be issued for the original model reservation.".into());
-    }
-    state.task_ai_quota.lock()
-        .map_err(|_|"Native task AI quota lock unavailable.".to_string())?
-        .issue(&task_id,max_requests,recovery.expires_at,now_ms())
 }
 
 /// Inspection-only: provider-reported tokens are not a verified USD bill.
@@ -22424,7 +22421,6 @@ pub fn run() {
             delete_frame_io_oauth_config,
             frame_io_credential_status,
             chat,
-            issue_native_task_ai_quota,
             native_task_ai_usage,
             runtime_status,
             native_worker_status,

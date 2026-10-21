@@ -58,3 +58,7 @@ Branch: feature/shuvi42-combined-runtime
 - New Rust quota is issued only after the task's first fsynced `model_reserved` Recovery Journal snapshot with one request, zero staged actions and matching task UUID.
 - The limit is immutable for the same task and enforced by Rust `chat` before the task AI ledger reservation and any provider call. After restart no quota is resurrected. Ordinary Chat remains independent.
 - Request count, provider-reported tokens, and dollar-billed amount remain distinct. Full USD spending limit is not yet delivered. Existing `Allow once`, editing scopes and request ledger are preserved.
+
+## Compatibility fix: first paid Chat preflight owns quota issuance
+- Removed the extra Rust quota-setup IPC. The first task `chat` request itself supplies the owner-selected request limit, which Rust checks against the exact original `model_reserved` checkpoint, creates immutable in-memory quota and reserves the paid request in one pre-dispatch path.
+- Follow-up tickets omit the limit and cannot escalate it. This preserves existing Chat integration transport and avoids a mock-only approval bypass. Hard REQUEST count remains distinct from USD billing.

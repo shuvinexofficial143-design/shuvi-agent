@@ -301,7 +301,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const requestId=globalThis.crypto?.randomUUID?.();
   if(!taskId||typeof requestId!=="string"||!Number.isSafeInteger(budget.modelRequests)||
      budget.modelRequests<1)return null;
-  return {taskId,requestId,requestIndex:budget.modelRequests};
+  const ownerLimit=taskAiQuotas.get(budget);
+  return {taskId,requestId,requestIndex:budget.modelRequests,
+   ...(budget.modelRequests===1&&ownerLimit?{maxRequests:ownerLimit}:{})};
  };
  aiLedgerShow.addEventListener("click",async()=>{
   aiLedgerShow.disabled=true;
@@ -1659,21 +1661,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     refreshState("Native recovery journal unavailable; no provider call sent.");
     return {ok:false,error:"Native recovery journal could not be saved. No paid AI request sent."};
    }
-   // The owner selects a hard native-task paid REQUEST COUNT before the first
-   // provider call. Once issued this quota cannot be raised for this task.
+   // The first paid request carries the selected immutable quota INSIDE
+   // its Rust preflight. No extra setup IPC or automatic paid call is needed.
    if(route.role!=="chat"&&!ownerBudget){
-    try{
-     const taskId=recoveryTaskId(taskBudget);
-     if(!taskId)throw Error("Task UUID unavailable.");
-     const selectedLimit=Number(aiQuotaSelect.value);
-     await invoke<void>("issue_native_task_ai_quota",
-      {taskId,maxRequests:selectedLimit});
-     taskAiQuotas.set(taskBudget,selectedLimit);
-    }catch{
+    const selectedLimit=Number(aiQuotaSelect.value);
+    if(![2,4,8,16].includes(selectedLimit)){
      sending=false;
-     refreshState("Task AI quota authorization failed; no provider request sent.");
-     return {ok:false,error:"Cannot authorize the new task AI quota. Review the recovery state; no paid call was sent."};
+     return {ok:false,error:"Select a valid native-task paid AI request limit."};
     }
+    taskAiQuotas.set(taskBudget,selectedLimit);
    }
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),
