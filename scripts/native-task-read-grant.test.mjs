@@ -80,7 +80,8 @@ test("Read grants cannot survive restart or escape their 5-minute eight-use expi
 test("New native IPC commands are registered and retain existing explicit approval path",()=>{
   assert.match(rust,/issue_task_read_grant,\s*revoke_task_read_grants,\s*deny_action/);
   assert.match(rust,/async fn execute_action\(\s*action_id: String,\s*grant_id: Option<String>,\s*task_id: Option<String>/);
-  assert.match(rust,/execute_action\(action_id, None, None, None, state, app\)\.await/);
+  assert.match(rust,/execute_action\(action_id, None, None, None, None, state, app\)\.await/);
+  assert.match(rust,/inspection_scope_id: Option<String>/);
   assert.match(ui,/const approve = chatPermission\.querySelector<HTMLButtonElement>\("#chatApprove"\)/);
 });
 
