@@ -1592,6 +1592,54 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    refreshState();
   }
  }
+ projectApprove.addEventListener("click",async()=>{
+  const current=pending;
+  const path=readProjectPath(current?.proposal??undefined);
+  if(!ready||!current||!path||sending||projectIssuing||projectRevoking)return;
+  const budget=taskBudgets.get(current.threadId);
+  const taskId=budget?recoveryTaskId(budget):null;
+  if(!taskId)return;
+  projectIssuing=true;refreshState();
+  try{
+   if(projectScopes.has(current.threadId))throw Error("Project grant cannot be enlarged.");
+   const view=await invoke<{id:string;taskId:string;exactPath:string;allowedTools:string[];
+    expiresAtMs:number;remainingActions:number;authorizedPaidRequests:number}>(
+     "issue_task_project_scope",{taskId,actionId:current.action.id});
+   if(!view||typeof view.id!=="string"||view.taskId!==taskId||view.exactPath!==path||
+    view.remainingActions!==8||view.authorizedPaidRequests!==0||view.allowedTools?.length!==2||
+    !view.allowedTools.includes("list_directory")||!view.allowedTools.includes("workspace_scan")||
+    !Number.isSafeInteger(view.expiresAtMs)||view.expiresAtMs<=Date.now()||
+    view.expiresAtMs>Date.now()+180_000)throw Error("Invalid native project scope witness.");
+   if(pending!==current){
+    await invoke<void>("revoke_task_project_scopes",{taskId});
+    return;
+   }
+   projectScopes.set(current.threadId,{id:view.id,taskId,path,
+    expiresAtMs:view.expiresAtMs,remainingActions:view.remainingActions});
+  }catch{
+   projectScopes.delete(current.threadId);
+   showActionFeedback("Project scope not verified by Rust; ordinary Allow once remains required.");
+   return;
+  }finally{projectIssuing=false;refreshState();}
+  if(pending===current){scopedProjectActionId=current.action.id;await decide(true);}
+ });
+ revokeProject.addEventListener("click",async()=>{
+  if(!ready||projectIssuing||projectRevoking||projectScopes.size===0)return;
+  projectRevoking=true;
+  const tasks=[...new Set([...projectScopes.values()].map(x=>x.taskId))];
+  projectScopes.clear();scopedProjectActionId=null;autoProjectActionId=null;
+  refreshState();
+  let failed=false;
+  for(const taskId of tasks){
+   try{await invoke<void>("revoke_task_project_scopes",{taskId});}
+   catch{failed=true;}
+  }
+  projectRevoking=false;
+  showActionFeedback(failed
+    ?"Project scope stopped locally; Rust revoke uncertain. Review native Audit."
+    :"Rust project inventory scope revoked. Worker termination is not asserted.");
+  refreshState();
+ });
  inspectApprove.addEventListener("click",async()=>{
   const current=pending;
   const window=readWindow(current?.proposal??undefined);
