@@ -111,7 +111,10 @@ fn transaction<R>(path:&Path,op:impl FnOnce(&[Receipt])->Result<(R,Option<Receip
  if let Some(next)=next{
   let mut line=serde_json::to_vec(&next).map_err(|_|"Task AI receipt encode failed.")?;
   line.push(b'\n');
-  if line.len()>MAX_LINE||rows.len()>=MAX_ROWS||bytes.len()+line.len()>MAX_BYTES{
+  // A reservation must leave disk headroom for its eventual terminal receipt.
+  // Never bill first and discover that the ledger could not record the outcome.
+  if line.len()>MAX_LINE||rows.len()>=MAX_ROWS||
+     bytes.len()+line.len()+if next.status=="reserved"{MAX_LINE}else{0}>MAX_BYTES{
    return Err("Task AI ledger full; refuse paid request.".into());
   }
   handle.write_all(&line).map_err(|_|"Task AI receipt append failed.")?;
