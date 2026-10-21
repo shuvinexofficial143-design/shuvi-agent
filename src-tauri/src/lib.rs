@@ -21653,6 +21653,14 @@ async fn execute_action(
         return Err("Prepared action expired before execution and must be prepared again.".into());
     }
     let action = action.ok_or_else(|| "Prepared action could not be claimed for execution.".to_string())?;
+    // PendingAction is moved into native execution; retain only exact scoped
+    // file identity for post-audit snapshot advancement.
+    let scoped_file_path=if edit_scope_id.is_some(){
+        match &action.action{
+            ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>Some(path.clone()),
+            _=>None,
+        }
+    }else{None};
 
     // M55: only the real prepared/allowed dispatch may bind these exact UUIDs.
     // No untrusted read-only status, AI text or FIFO queue selection can bind them.
@@ -21868,10 +21876,8 @@ async fn execute_action(
                 let mut scopes=state.task_edit_scopes.lock()
                     .map_err(|_|"Native edit scope audit reconciliation unavailable.".to_string())?;
                 if result.success{
-                    let path=match &action.action{
-                        ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>path,
-                        _=>return Err("Audited scoped tool no longer matches file operation.".into()),
-                    };
+                    let path=scoped_file_path.as_deref()
+                        .ok_or("Audited scoped tool no longer matches file operation.")?;
                     let workspace=read_workspace(&app)?
                         .ok_or("Selected workspace missing after audited edit; no continuation.")?;
                     scopes.record_audited_success(task,scope_id,&action_id,path,&workspace)?;
