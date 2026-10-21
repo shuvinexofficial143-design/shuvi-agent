@@ -156,13 +156,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  actionFeedback.hidden=true;
  const pendingText=field("p");
  const approve=field("button","Allow once");approve.type="button";
+ const editScopeApprove=field("button","Allow exact-file task editing scope (4 actions / 10 min)");
+ editScopeApprove.type="button";editScopeApprove.hidden=true;
+ editScopeApprove.setAttribute("aria-label","Owner authorizes only this prepared file operation, not paid AI requests");
  const stopCurrent=field("button","Request Stop (current native action)");stopCurrent.type="button";
  stopCurrent.className="shuvi-native-stop-action";
  stopCurrent.setAttribute("aria-label","Request Stop for the exact currently running native action");
  stopCurrent.hidden=true;stopCurrent.disabled=true;
  const stopFeedback=field("p");stopFeedback.setAttribute("role","status");stopFeedback.hidden=true;
  const deny=field("button","Deny");deny.type="button";
- approval.append(pendingText,approve,deny);
+ approval.append(pendingText,approve,editScopeApprove,deny);
  const mobile=field("div");mobile.className="shuvi-native-mobile";
  const mobileTitle=field("strong","Mobile → Windows Agent pairing");
  const mobileCode=field("input");mobileCode.type="password";
@@ -237,6 +240,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
  const taskGoalRoots=new Map<string,string>();
  const taskBudgets=new Map<string,NativeTaskBudget>();
+ const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string}>();
+ let editScopeIssuing=false;
+ let scopedApprovalId:string|null=null;
+ const exactEditPath=(proposal:Record<string,unknown>|undefined):string|null=>{
+  if(!proposal||!["write_file","replace_text"].includes(String(proposal.tool)))return null;
+  const args=proposal.arguments;
+  if(!args||typeof args!=="object"||Array.isArray(args))return null;
+  const path=(args as Record<string,unknown>).path;
+  return typeof path==="string"&&path.length>0?path:null;
+ };
  // Cross-command hints are independent of the per-goal task/approval maps.
  // They never survive an app restart and never carry owner permission.
  const applicationContinuity=newApplicationContinuity();
@@ -578,7 +591,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    ? currentObservedWindows(observedWindows.get(id)):null;
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
- function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
+ function haltTask(id:string,why:string){
+  const active=editScopes.get(id);
+  if(active){
+   editScopes.delete(id);
+   void invoke<void>("revoke_task_edit_scopes",{taskId:active.taskId}).catch(()=>{
+    showActionFeedback("Task editing stopped locally; Rust scope revocation needs owner review.");
+   });
+  }
+  const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));
+ }
  function updateReply(threadId:string,index:number,value:string){
   const records=replies.get(threadId)||[];
   records[index]=value.slice(0,14000);
@@ -587,8 +609,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  function refreshState(text?:string){
   if(text)status.textContent=text;
-  approve.disabled=sending;
-  deny.disabled=sending;
+  approve.disabled=sending||editScopeIssuing;
+  deny.disabled=sending||editScopeIssuing;
+  editScopeApprove.hidden=!pending||exactEditPath(pending.proposal??undefined)===null;
+  editScopeApprove.disabled=sending||editScopeIssuing||!ready;
   stopCurrent.hidden=!activeNativeActionId;
   stopCurrent.disabled=!ready||!activeNativeActionId||ownerStopRequestedIds.has(activeNativeActionId);
   const phase=readNativeRecovery(recoveryStorage)?.phase??null;
@@ -609,6 +633,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   approval.hidden=true;
   pendingText.textContent="";
   approve.disabled=deny.disabled=false;
+  editScopeApprove.hidden=true;
  }
  async function load(){
   try{
@@ -979,7 +1004,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const current=pending;
   // Tool execution and later Master planning are separate evidence phases.
   let executionVerified=false;
-  if(!current||sending)return;
+  if(!current||sending||editScopeIssuing)return;
   sending=true;
   approve.disabled=deny.disabled=true;
   try {
@@ -1065,7 +1090,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     refreshState("Executing only the approved native action "+current.action.id.slice(0,8)+"…");
     let result:ActionResult;
     try{
-     result=await invoke<ActionResult>("execute_action",{actionId:current.action.id});
+     const scope=editScopes.get(current.threadId);
+     const useScope=scopedApprovalId===current.action.id&&scope&&
+      scope.tool===current.action.kind&&scope.path===exactEditPath(current.proposal??undefined);
+     result=await invoke<ActionResult>("execute_action",useScope
+      ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
+      :{actionId:current.action.id});
     }finally{
      if(activeNativeActionId===current.action.id)activeNativeActionId=null;
      refreshState();
@@ -1344,18 +1374,63 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }
   }finally{
    sending=false;
+   if(scopedApprovalId===current.action.id)scopedApprovalId=null;
    // Do not discard the NEXT approval that the Master staged after this
    // verified action. Clear only the approval that was just decided.
    if(pending===current)clearPending();
    refreshState();
   }
  }
+ editScopeApprove.addEventListener("click",async()=>{
+  const current=pending;
+  const path=exactEditPath(current?.proposal??undefined);
+  if(!ready||!current||!path||sending||editScopeIssuing)return;
+  const budget=taskBudgets.get(current.threadId);
+  const taskId=budget?recoveryTaskId(budget):null;
+  if(!taskId)return;
+  editScopeIssuing=true;refreshState();
+  try{
+   let existing=editScopes.get(current.threadId);
+   if(existing&&(existing.taskId!==taskId||existing.tool!==current.action.kind||existing.path!==path)){
+    await invoke<void>("revoke_task_edit_scopes",{taskId:existing.taskId});
+    editScopes.delete(current.threadId);existing=undefined;
+   }
+   if(!existing){
+    const view=await invoke<{id:string;taskId:string;allowedTools:string[];exactPath:string;remainingActions:number;authorizedPaidRequests:number}>(
+     "issue_task_edit_scope",{taskId,actionId:current.action.id});
+    if(!view||view.taskId!==taskId||view.allowedTools?.length!==1||
+       view.allowedTools[0]!==current.action.kind||view.remainingActions!==4||
+       view.authorizedPaidRequests!==0||typeof view.id!=="string")throw Error("Invalid Rust editing scope response");
+    existing={id:view.id,taskId,tool:current.action.kind,path};
+    if(pending!==current){
+     await invoke<void>("revoke_task_edit_scopes",{taskId});
+     return;
+    }
+    editScopes.set(current.threadId,existing);
+   }
+   if(pending!==current)return;
+  }catch{
+   showActionFeedback("Rust exact-file scope was not authorized. Use Allow once or review the target. No action executed.");
+   return;
+  }finally{editScopeIssuing=false;refreshState();}
+  // The owner click authorizes THIS prepared action. Later edits still need
+  // review until cost reservation and autonomous guards are implemented.
+  if(pending===current){scopedApprovalId=current.action.id;await decide(true);}
+ });
  stopCurrent.addEventListener("click",()=>{
   // Request Stop is a separate cancellation signal, NOT an assertion that
   // the running native worker has terminated. Never kill arbitrary processes.
   const actionId=activeNativeActionId;
   if(!ready||!actionId||ownerStopRequestedIds.has(actionId))return;
   ownerStopRequestedIds.add(actionId);
+  const active=pending?editScopes.get(pending.threadId):null;
+  if(active){
+   editScopes.delete(pending!.threadId);
+   void invoke<void>("revoke_task_edit_scopes",{taskId:active.taskId}).catch(()=>{
+    stopFeedback.hidden=false;
+    stopFeedback.textContent="Rust editing scope revocation uncertain; inspect Audit before continuing.";
+   });
+  }
   stopCurrent.disabled=true;
   stopFeedback.hidden=false;
   stopFeedback.textContent="Stop requested for current native action. Verifying the Rust result; termination is not yet confirmed.";
