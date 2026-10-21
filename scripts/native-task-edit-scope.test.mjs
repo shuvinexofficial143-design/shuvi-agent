@@ -30,6 +30,10 @@ test("Rust consumes exact edit file authority under native ownership before work
  assert.ok(execute.includes('Scoped editing cannot authorize this native tool.'));
  assert.ok(execute.includes('task_id.as_deref().ok_or("Scoped editing needs exact task ID.")?'));
  assert.ok(scope.includes('checked_file(path)?'));
+ assert.ok(scope.includes('snapshot(&checked)?!=s.file_snapshot'));
+ assert.ok(scope.includes('record_audited_success(&mut self'));
+ assert.ok(rust.includes('scopes.record_audited_success(task,scope_id,&action_id,path,&workspace)?'));
+ assert.ok(rust.includes('if let Ok(mut scopes)=state.task_edit_scopes.lock(){scopes.revoke_action(&action_id);}'));
  assert.ok(scope.includes('selected_workspace!=s.workspace'));
  assert.ok(scope.includes('!exact_file.starts_with(&selected_workspace)'));
  assert.ok(rust.includes('Select a Shuvi project workspace before issuing task editing scope.'));

@@ -34,3 +34,8 @@ Branch: feature/shuvi42-combined-runtime
 - Exact-file scopes now bind to the **saved owner-selected workspace directory** at grant time and re-check it at native dispatch; switching workspace, editing an outside file, symlink/junction workspace ancestry, or targeting the filesystem root is denied before mutation.
 - Reject Windows alternate data streams, device filenames, trailing-dot/space names and UNC/device namespace paths for scope use. Normal single-action `Allow once` remains available; broader project capabilities are not yet authorized.
 - Regression tests expanded for cross-workspace mismatch, outside target, unsafe names and legacy read grant compatibility.
+
+## Next M1 file-consistency gate — stale-edit protection
+- Rust scope captures a bounded SHA-256 + byte length snapshot of the exact file at issuance and rechecks it immediately before native worker start. A file changed outside Shuvi after approval blocks subsequent scoped mutation.
+- After an exact successful native audit, the Rust scope fingerprint advances for the next *separately prepared and owner-reviewed* action. Failures revoke the corresponding editing scope rather than authorizing an unknown replay.
+- Snapshot checks do not replace the existing atomic backup/write verification or turn native worker success into original-goal completion. Maximum 2 MiB existing file for scope snapshots; larger files fall back to Allow once.

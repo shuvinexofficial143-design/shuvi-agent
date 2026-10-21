@@ -2,12 +2,14 @@
 //! Never a read grant, paid model permission, or blanket Windows automation.
 //! A native owner click must nominate an already PREPARED filesystem action.
 use serde::Serialize;
-use std::{collections::{HashMap, HashSet},fs,path::{Component,Path,PathBuf}};
+use sha2::{Digest,Sha256};
+use std::{collections::{HashMap, HashSet},fs,io::Read,path::{Component,Path,PathBuf}};
 use uuid::Uuid;
 
 const TTL_MS:u64=10*60*1000;
 const MAX_ACTIONS:u8=4;
 const MAX_SCOPES:usize=8;
+const MAX_SNAPSHOT_BYTES:u64=2_097_152;
 const ALLOWED:&[&str]=&["write_file","replace_text"];
 const EXTENSIONS:&[&str]=&["txt","md","json","css","html","js","ts","jsx","tsx"];
 
@@ -17,6 +19,7 @@ struct Scope {
     tool:String,
     exact_file:PathBuf,
     workspace:PathBuf,
+    file_snapshot:Option<([u8;32],u64)>,
     expires_at_ms:u64,
     remaining:u8,
     dispatched:HashSet<String>,
@@ -141,6 +144,28 @@ fn checked_workspace(raw:&str)->Result<PathBuf,String>{
     }
     Ok(canonical)
 }
+// A file approved before a later outside editor change must not be silently
+// overwritten under a ten-minute scope. This is an observation, NOT proof
+// of a successful edit; authoritative success still comes from native audit.
+fn snapshot(path:&Path)->Result<Option<([u8;32],u64)>,String>{
+    let meta=match fs::symlink_metadata(path){
+        Ok(meta)=>meta,
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None),
+        Err(_)=>return Err("Scoped file snapshot cannot be inspected.".into()),
+    };
+    if !meta.is_file()||redirected(&meta)||meta.len()>MAX_SNAPSHOT_BYTES{
+        return Err("Scoped file must be an ordinary bounded text file.".into());
+    }
+    let file=fs::File::open(path).map_err(|_|"Scoped file cannot be opened for fingerprint.")?;
+    let mut bytes=Vec::new();
+    file.take(MAX_SNAPSHOT_BYTES+1).read_to_end(&mut bytes)
+        .map_err(|_|"Scoped file fingerprint read failed.")?;
+    if bytes.len() as u64>MAX_SNAPSHOT_BYTES{
+        return Err("Scoped file fingerprint exceeded text-edit size budget.".into());
+    }
+    let sha:[u8;32]=Sha256::digest(&bytes).into();
+    Ok(Some((sha,bytes.len() as u64)))
+}
 impl TaskEditScopeStore{
     fn prune(&mut self,now:u64){
         self.scopes.retain(|_,s|now<s.expires_at_ms&&s.remaining>0);
@@ -153,6 +178,7 @@ impl TaskEditScopeStore{
         }
         let exact_file=checked_file(path)?;
         let selected_workspace=checked_workspace(workspace)?;
+        let file_snapshot=snapshot(&exact_file)?;
         if !exact_file.starts_with(&selected_workspace){
             return Err("Exact edit file is outside the owner-selected project.".into());
         }
@@ -169,7 +195,7 @@ impl TaskEditScopeStore{
             authorized_paid_requests:0,
         };
         self.scopes.insert(id,Scope{task_id:task_id.into(),tool:tool.into(),
-            exact_file,workspace:selected_workspace,expires_at_ms:now+TTL_MS,
+            exact_file,workspace:selected_workspace,file_snapshot,expires_at_ms:now+TTL_MS,
             remaining:MAX_ACTIONS,dispatched:HashSet::new()});
         Ok(view)
     }
@@ -194,8 +220,29 @@ impl TaskEditScopeStore{
             !checked.starts_with(&selected_workspace){
             return Err("Scoped edit target is outside the exact owner-approved file.".into());
         }
+        if snapshot(&checked)?!=s.file_snapshot{
+            return Err("Scoped file changed after authorization; refresh owner approval.".into());
+        }
         s.dispatched.insert(action_id.to_owned());
         s.remaining-=1;
+        Ok(())
+    }
+    /// Only after the caller recorded the exact successful native audit may
+    /// the file fingerprint advance for a DIFFERENT, newly prepared action.
+    /// If file readback fails the scope remains bound to its old fingerprint.
+    pub(crate) fn record_audited_success(&mut self,task_id:&str,scope_id:&str,
+        action_id:&str,path:&str,workspace:&str)->Result<(),String>{
+        let scope=self.scopes.get_mut(scope_id)
+            .ok_or("Previously issued edit scope is no longer active.")?;
+        if scope.task_id!=task_id||!scope.dispatched.contains(action_id){
+            return Err("Cannot advance edit scope without its exact execution identity.".into());
+        }
+        let checked=checked_file(path)?;
+        let selected_workspace=checked_workspace(workspace)?;
+        if checked!=scope.exact_file||selected_workspace!=scope.workspace{
+            return Err("Audited edit scope file or project changed.".into());
+        }
+        scope.file_snapshot=snapshot(&checked)?;
         Ok(())
     }
     pub(crate) fn revoke_task(&mut self,task_id:&str){
@@ -229,6 +276,7 @@ mod tests{
         store.consume(&task,&grant.id,&prepared,"write_file",&path,&dir.to_string_lossy(),11).unwrap();
         assert!(store.consume(&task,&grant.id,&prepared,"write_file",&path,&dir.to_string_lossy(),12).is_err());
         let second=Uuid::new_v4().to_string();
+        store.record_audited_success(&task,&grant.id,&prepared,&path,&dir.to_string_lossy()).unwrap();
         store.consume(&task,&grant.id,&second,"write_file",&path,&dir.to_string_lossy(),12).unwrap();
         store.revoke_task(&task);
         assert!(store.consume(&task,&grant.id,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),13).is_err());
@@ -261,6 +309,22 @@ mod tests{
         store.consume(&t,&view.id,&a,"write_file",&path,&dir.to_string_lossy(),101).unwrap();
         store.revoke_action(&a);
         assert!(store.consume(&t,&view.id,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),102).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn changed_file_before_execution_is_denied_until_explicit_new_scope(){
+        let (dir,path)=fixture();
+        fs::write(&path,b"baseline").unwrap();
+        let task=Uuid::new_v4().to_string();let action=Uuid::new_v4().to_string();
+        let mut store=TaskEditScopeStore::default();
+        let granted=store.issue(&task,&action,"replace_text",&path,&dir.to_string_lossy(),100).unwrap();
+        fs::write(&path,b"outside update").unwrap();
+        assert!(store.consume(&task,&granted.id,&action,"replace_text",&path,&dir.to_string_lossy(),101).is_err());
+        let next=store.issue(&task,&action,"replace_text",&path,&dir.to_string_lossy(),102).unwrap();
+        store.consume(&task,&next.id,&action,"replace_text",&path,&dir.to_string_lossy(),103).unwrap();
+        fs::write(&path,b"authorized edit").unwrap();
+        store.record_audited_success(&task,&next.id,&action,&path,&dir.to_string_lossy()).unwrap();
+        store.consume(&task,&next.id,&Uuid::new_v4().to_string(),"replace_text",&path,&dir.to_string_lossy(),104).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

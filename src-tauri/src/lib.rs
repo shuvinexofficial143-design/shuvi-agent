@@ -21864,9 +21864,25 @@ async fn execute_action(
             if scheduled_step.is_some(){
                 native_scheduler::finish(&app,&action_id,&result.tool,Some(result.success))?;
             }
+            if let (Some(scope_id),Some(task))=(edit_scope_id.as_deref(),task_id.as_deref()){
+                let mut scopes=state.task_edit_scopes.lock()
+                    .map_err(|_|"Native edit scope audit reconciliation unavailable.".to_string())?;
+                if result.success{
+                    let path=match &action.action{
+                        ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>path,
+                        _=>return Err("Audited scoped tool no longer matches file operation.".into()),
+                    };
+                    let workspace=read_workspace(&app)?
+                        .ok_or("Selected workspace missing after audited edit; no continuation.")?;
+                    scopes.record_audited_success(task,scope_id,&action_id,path,&workspace)?;
+                }else{scopes.revoke_action(&action_id);}
+            }
             Ok(result)
         }
         Err(error) => {
+            if edit_scope_id.is_some(){
+                if let Ok(mut scopes)=state.task_edit_scopes.lock(){scopes.revoke_action(&action_id);}
+            }
             append_audit(
                 &app,
                 &AuditEntry {
