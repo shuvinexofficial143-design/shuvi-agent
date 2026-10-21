@@ -25,6 +25,7 @@ mod native_worker_job;
 mod native_job_history;
 mod native_scheduler;
 mod native_task_grant;
+mod native_task_edit_scope;
 mod native_task_delivery;
 mod session_checkpoint_guard;
 mod native_premiere_project_sha;
@@ -1169,6 +1170,7 @@ struct BrowserSession {
 struct ActionState {
     native_execution_owned: AtomicBool,
     task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
+    task_edit_scopes: Mutex<native_task_edit_scope::TaskEditScopeStore>,
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
@@ -21269,6 +21271,35 @@ fn revoke_task_read_grants(
     grants.revoke(&task_id);
     Ok(())
 }
+/// Rust restricts these owner-authorized task edits to one prepared exact
+/// filesystem file/tool. This is NOT a task-level AI/paid request permission.
+#[tauri::command]
+fn issue_task_edit_scope(
+    task_id:String, action_id:String, state:State<'_,ActionState>,
+)->Result<native_task_edit_scope::EditScopeView,String>{
+    let pending=state.pending.lock()
+        .map_err(|_|"Native prepared-action state unavailable.".to_string())?;
+    let action=pending.get(&action_id)
+        .ok_or("Task editing scope requires an existing prepared native action.")?;
+    if now_ms().saturating_sub(action.created_at_ms)>PENDING_ACTION_TTL_MS{
+        return Err("Prepared edit expired before scope authorization.".into());
+    }
+    let path=match &action.action{
+        ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>path,
+        _=>return Err("Sensitive or non-file operation needs Allow once.".into()),
+    };
+    let mut scopes=state.task_edit_scopes.lock()
+        .map_err(|_|"Rust task edit scope store unavailable.".to_string())?;
+    scopes.issue(&task_id,&action_id,&action.tool,path,now_ms())
+}
+#[tauri::command]
+fn revoke_task_edit_scopes(task_id:String,state:State<'_,ActionState>)->Result<(),String>{
+    Uuid::parse_str(&task_id).map_err(|_|"Invalid edit task ID.")?;
+    state.task_edit_scopes.lock()
+        .map_err(|_|"Rust task edit scope store unavailable.".to_string())?
+        .revoke_task(&task_id);
+    Ok(())
+}
 #[tauri::command]
 fn deny_action(
     action_id: String,
@@ -21408,6 +21439,11 @@ fn cancel_running_action(
         }
     }
 
+    // An exact owner Stop also invalidates further edits under the same scope.
+    state.task_edit_scopes.lock()
+        .map_err(|_|"Rust task edit scope store unavailable.".to_string())?
+        .revoke_action(&action_id);
+
     for _ in 0..50 {
         let active_tool = state
             .running_action_tools
@@ -21519,6 +21555,7 @@ async fn execute_action(
     action_id: String,
     grant_id: Option<String>,
     task_id: Option<String>,
+    edit_scope_id: Option<String>,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
@@ -21555,7 +21592,17 @@ async fn execute_action(
             // a currently valid Rust grant for THIS prepared action's exact
             // typed arguments. No permission extends to a second action or
             // across restart; the grant is consumed before native dispatch.
-            if grant_id.is_some()||task_id.is_some() {
+            if let Some(scope_id)=edit_scope_id.as_deref(){
+                if grant_id.is_some(){return Err("Cannot combine read grant and edit scope.".into());}
+                let task=task_id.as_deref().ok_or("Scoped editing needs exact task ID.")?;
+                let path=match &prepared.action{
+                    ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>path,
+                    _=>return Err("Scoped editing cannot authorize this native tool.".into()),
+                };
+                state.task_edit_scopes.lock()
+                    .map_err(|_|"Rust task edit scope store unavailable.".to_string())?
+                    .consume(task,scope_id,&action_id,&prepared.tool,path,now_ms())?;
+            }else if grant_id.is_some()||task_id.is_some() {
                 let id=grant_id.as_deref().ok_or("Missing native read grant ID.")?;
                 let task=task_id.as_deref().ok_or("Missing native grant task ID.")?;
                 let sig=prepared.grant_signature.as_deref()
@@ -21845,7 +21892,7 @@ async fn execute_powershell(
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, None, None, state, app).await
+    execute_action(action_id, None, None, None, state, app).await
 }
 
 #[tauri::command]
@@ -22295,6 +22342,8 @@ pub fn run() {
             prepare_powershell,
             issue_task_read_grant,
             revoke_task_read_grants,
+            issue_task_edit_scope,
+            revoke_task_edit_scopes,
             deny_action,
             cancel_running_action,
             cancel_native_approved_parent,
