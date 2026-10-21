@@ -22,3 +22,10 @@ Branch: feature/shuvi42-combined-runtime
 3. Ensure Stop revokes scope and stops further scheduling while never lying about termination.
 4. Add a per-task ledger and cost reservation; no uncertain paid request replays.
 5. Multi-action simulated tests plus real Windows owner acceptance; keep the existing Allow once path as fallback until then.
+
+## Subsequent M1 foundation increment (post-27011a8)
+- Rust `native_task_edit_scope.rs` introduces owner-issued **one exact-file/one tool** in-memory scope, restricted to `write_file` and `replace_text`, maximum 4 actions/10 minutes. Parents are canonicalized; path traversals, reparse points and dangerous operation categories remain outside scope. Rust consumes task+scope+action identity under the existing executor/pending lock before worker start.
+- Native UI offers an **explicit owner opt-in** button for eligible prepared actions. Existing `Allow once` remains available, and **each later prepared action still awaits human approval**. No blanket autonomous mutation path is enabled.
+- Stop requests revoke scopes associated with executing scoped actions, and failed-action recovery refuses staging after owner Stop (including the post-async-prepare race).
+- This scope itself authorizes **0 paid provider calls**. Provider-level monetary reservation/ledger, broader project/app manifests, sensitive-action approvals, app/Windows E2E, and true unattended continuation **remain pending**. There is no assertion of Milestone 1 completion.
+- Acceptance remains GitHub frontend + Rust + unsigned installer CI distinct from real owner-Windows tests. Tests cover exact path/tool/task/quota/expiry/revoke/duplicate constraints.
