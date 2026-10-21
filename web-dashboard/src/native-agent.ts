@@ -156,6 +156,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  actionFeedback.hidden=true;
  const pendingText=field("p");
  const approve=field("button","Allow once");approve.type="button";
+ const stopCurrent=field("button","Request Stop (current native action)");stopCurrent.type="button";
+ stopCurrent.className="shuvi-native-stop-action";
+ stopCurrent.setAttribute("aria-label","Request Stop for the exact currently running native action");
+ stopCurrent.hidden=true;stopCurrent.disabled=true;
+ const stopFeedback=field("p");stopFeedback.setAttribute("role","status");stopFeedback.hidden=true;
  const deny=field("button","Deny");deny.type="button";
  approval.append(pendingText,approve,deny);
  const mobile=field("div");mobile.className="shuvi-native-mobile";
@@ -215,11 +220,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const composerParent=chatForm?.parentElement;
  if(composerParent){
   composerParent.insertBefore(actionFeedback,chatForm);
+  composerParent.insertBefore(stopFeedback,chatForm);
+  composerParent.insertBefore(stopCurrent,chatForm);
   composerParent.insertBefore(approval,chatForm);
   composerParent.insertBefore(recoveryPanel,chatForm);
  }else{
   // Defensive fallback for an incomplete preview; never lose an approval UI.
-  panel.append(actionFeedback,approval,recoveryPanel);
+  panel.append(actionFeedback,stopFeedback,stopCurrent,approval,recoveryPanel);
  }
  let team:ModelTeamHandle|null=null;
  let ready=false;
@@ -254,6 +261,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // reconstructed from a persisted journal after restart.
  let pausedPlanning: {task:PendingTask;result:ActionResult;budget:NativeTaskBudget}|null=null;
  let lastProviderHttpStatus:number|null=null;
+ // Bound strictly to the presently running native action; never a PID, app name,
+ // recovered journal ID or older task's approval.
+ let activeNativeActionId:string|null=null;
+ const ownerStopRequestedIds=new Set<string>();
  const recoveryTaskId=(budget:NativeTaskBudget):string|null=>{
   const existing=taskRecoveryIds.get(budget);
   if(existing)return existing;
@@ -578,6 +589,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(text)status.textContent=text;
   approve.disabled=sending;
   deny.disabled=sending;
+  stopCurrent.hidden=!activeNativeActionId;
+  stopCurrent.disabled=!ready||!activeNativeActionId||ownerStopRequestedIds.has(activeNativeActionId);
   const phase=readNativeRecovery(recoveryStorage)?.phase??null;
   const guard=recoveryButtonState({ready,sending,pending:!!pending,phase,disabled:recoveryDismiss.disabled});
   recoveryDiagnostics.hidden=recoveryNotice.hidden;
@@ -1041,8 +1054,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      goalStatus.textContent=taskGoalLabel(current.objective);
     }
     updateTask(current.threadId,executeTask(getTask(current.threadId),current.action.id));
+    activeNativeActionId=current.action.id;
     refreshState("Executing only the approved native action "+current.action.id.slice(0,8)+"…");
-    const result=await invoke<ActionResult>("execute_action",{actionId:current.action.id});
+    let result:ActionResult;
+    try{
+     result=await invoke<ActionResult>("execute_action",{actionId:current.action.id});
+    }finally{
+     if(activeNativeActionId===current.action.id)activeNativeActionId=null;
+     refreshState();
+    }
     // Native Result is not self-attested success: require the exact audited action receipt.
     const receipts=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("audit_log",{limit:200});
     const matched=receipts.find(r=>r.action_id===current.action.id &&
@@ -1061,6 +1081,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
      taskEvidence.set(current.threadId,recordAuditedEvidence(
       taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
+     if(ownerStopRequestedIds.delete(current.action.id)){
+      const budget=taskBudgets.get(current.threadId);
+      const saved=Boolean(budget&&await persistRecovery(budget,"paused",current.action.id));
+      haltTask(current.threadId,saved?"no_next_tool":"recovery_journal_failed");
+      appendReply(current.threadId,current.promptIndex,
+       "You requested Stop. This Windows action has an exact successful Rust Audit, but no later Windows action or paid Planning request was sent. Review the goal before continuing.");
+      showActionFeedback("Stop requested: no next AI planning or Windows step. Owner review required.");
+      refreshState("Stopped continuation after audited action; original goal not automatically completed.");
+      return;
+     }
      // Only evidence with an exact successful Rust audit can update this
      // cross-command hint. The next command still needs its OWN readback.
      recordAuditedApplication(applicationContinuity,current.proposal,result,current.action.id);
@@ -1303,6 +1333,23 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    refreshState();
   }
  }
+ stopCurrent.addEventListener("click",()=>{
+  // Request Stop is a separate cancellation signal, NOT an assertion that
+  // the running native worker has terminated. Never kill arbitrary processes.
+  const actionId=activeNativeActionId;
+  if(!ready||!actionId||ownerStopRequestedIds.has(actionId))return;
+  ownerStopRequestedIds.add(actionId);
+  stopCurrent.disabled=true;
+  stopFeedback.hidden=false;
+  stopFeedback.textContent="Stop requested for current native action. Verifying the Rust result; termination is not yet confirmed.";
+  void invoke<boolean>("cancel_running_action",{actionId}).then(accepted=>{
+   stopFeedback.textContent=accepted
+    ?"Native Stop request accepted. A successful request is not proof that the original goal or worker has terminated."
+    :"The running action is no longer cancellable or was not found. Further planning is stopped; inspect Rust Audit.";
+  }).catch(()=>{
+   stopFeedback.textContent="Native Stop request failed or outcome is uncertain. Further planning is stopped; inspect Rust Audit and Recovery.";
+  }).finally(()=>refreshState());
+ });
  approve.addEventListener("click",()=>{void decide(true);});
  deny.addEventListener("click",()=>{void decide(false);});
  async function refreshMobile(){
