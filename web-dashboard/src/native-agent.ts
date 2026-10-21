@@ -164,6 +164,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  stopCurrent.setAttribute("aria-label","Request Stop for the exact currently running native action");
  stopCurrent.hidden=true;stopCurrent.disabled=true;
  const stopFeedback=field("p");stopFeedback.setAttribute("role","status");stopFeedback.hidden=true;
+ const revokeEditing=field("button","Revoke task editing scopes");
+ revokeEditing.type="button";revokeEditing.hidden=true;revokeEditing.disabled=true;
+ revokeEditing.setAttribute("aria-label","Revoke current task edit scopes without assuming running actions terminated");
  const deny=field("button","Deny");deny.type="button";
  approval.append(pendingText,approve,editScopeApprove,deny);
  const mobile=field("div");mobile.className="shuvi-native-mobile";
@@ -225,11 +228,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   composerParent.insertBefore(actionFeedback,chatForm);
   composerParent.insertBefore(stopFeedback,chatForm);
   composerParent.insertBefore(stopCurrent,chatForm);
+  composerParent.insertBefore(revokeEditing,chatForm);
   composerParent.insertBefore(approval,chatForm);
   composerParent.insertBefore(recoveryPanel,chatForm);
  }else{
   // Defensive fallback for an incomplete preview; never lose an approval UI.
-  panel.append(actionFeedback,stopFeedback,stopCurrent,approval,recoveryPanel);
+  panel.append(actionFeedback,stopFeedback,stopCurrent,revokeEditing,approval,recoveryPanel);
  }
  let team:ModelTeamHandle|null=null;
  let ready=false;
@@ -242,6 +246,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskBudgets=new Map<string,NativeTaskBudget>();
  const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string}>();
  let editScopeIssuing=false;
+ let editScopeRevoking=false;
  let scopedApprovalId:string|null=null;
  const exactEditPath=(proposal:Record<string,unknown>|undefined):string|null=>{
   if(!proposal||!["write_file","replace_text"].includes(String(proposal.tool)))return null;
@@ -612,7 +617,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   approve.disabled=sending||editScopeIssuing;
   deny.disabled=sending||editScopeIssuing;
   editScopeApprove.hidden=!pending||exactEditPath(pending.proposal??undefined)===null;
-  editScopeApprove.disabled=sending||editScopeIssuing||!ready;
+  editScopeApprove.disabled=sending||editScopeIssuing||editScopeRevoking||!ready;
+  revokeEditing.hidden=editScopes.size===0;
+  revokeEditing.disabled=editScopeRevoking||!ready||editScopes.size===0;
   stopCurrent.hidden=!activeNativeActionId;
   stopCurrent.disabled=!ready||!activeNativeActionId||ownerStopRequestedIds.has(activeNativeActionId);
   const phase=readNativeRecovery(recoveryStorage)?.phase??null;
@@ -1384,7 +1391,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  editScopeApprove.addEventListener("click",async()=>{
   const current=pending;
   const path=exactEditPath(current?.proposal??undefined);
-  if(!ready||!current||!path||sending||editScopeIssuing)return;
+  if(!ready||!current||!path||sending||editScopeIssuing||editScopeRevoking)return;
   const budget=taskBudgets.get(current.threadId);
   const taskId=budget?recoveryTaskId(budget):null;
   if(!taskId)return;
@@ -1416,6 +1423,24 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   // The owner click authorizes THIS prepared action. Later edits still need
   // review until cost reservation and autonomous guards are implemented.
   if(pending===current){scopedApprovalId=current.action.id;await decide(true);}
+ });
+ revokeEditing.addEventListener("click",async()=>{
+  if(!ready||editScopeRevoking||editScopes.size===0)return;
+  editScopeRevoking=true;
+  const owned=[...new Set([...editScopes.values()].map(s=>s.taskId))];
+  // Local execution permissions disappear before any async IPC. Remote
+  // revoke failure must not restore them or imply a native process stopped.
+  editScopes.clear();scopedApprovalId=null;refreshState();
+  const failures=[] as string[];
+  for(const taskId of owned){
+   try{await invoke<void>("revoke_task_edit_scopes",{taskId});}
+   catch{failures.push(taskId);}
+  }
+  editScopeRevoking=false;
+  showActionFeedback(failures.length
+   ? "Local editing scope revoked; Rust revocation could not be verified. No scope will be reused. Inspect Audit before further edits."
+   : "Rust task editing scope revoked. No further scoped edits; this does not terminate an executing Windows action.");
+  refreshState();
  });
  stopCurrent.addEventListener("click",()=>{
   // Request Stop is a separate cancellation signal, NOT an assertion that
