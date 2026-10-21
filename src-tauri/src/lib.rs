@@ -22066,7 +22066,7 @@ async fn execute_powershell(
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, None, None, None, state, app).await
+    execute_action(action_id, None, None, None, None, state, app).await
 }
 
 #[tauri::command]
