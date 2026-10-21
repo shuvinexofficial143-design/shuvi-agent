@@ -29,7 +29,7 @@ fn observed_identity(stdout:&str)->Result<Identity,String>{
             .filter(|v|*v>0&&*v<=u32::MAX as u64)
             .ok_or("Missing real native window PID in UIA readback.")? as u32;
         let start=item.get("ObservedWindowProcessStartTicks").and_then(Value::as_str)
-            .filter(|v|!v.is_empty()&&v.len()<=24&&v.bytes().all(|c|c.is_ascii_digit())&&v!="0")
+            .filter(|v|!v.is_empty()&&v.len()<=24&&v.bytes().all(|c|c.is_ascii_digit())&&*v!="0")
             .ok_or("Missing verified process generation in UIA readback.")?;
         let actual=Identity{hwnd,pid,start_ticks:start.to_string()};
         if identity.as_ref().is_some_and(|old|old!=&actual){

@@ -42,3 +42,8 @@ test("native executor pins HWND, PID and process generation before returning sco
  assert.ok(verify>=0&&audited>verify,"OS root must be verified BEFORE a successful native action audit");
  assert.ok(scope.includes("if verdict.is_err(){self.scopes.remove(scope);}"));
 });
+
+test("the OS generation metadata check compares dereferenced &str (Rust E0277 regression)",()=>{
+ assert.ok(scope.includes('v.bytes().all(|c|c.is_ascii_digit())&&*v!="0"'));
+ assert.ok(!scope.includes('v.bytes().all(|c|c.is_ascii_digit())&&v!="0"'));
+});
