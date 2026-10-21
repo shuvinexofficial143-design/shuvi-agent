@@ -26,6 +26,7 @@ mod native_job_history;
 mod native_scheduler;
 mod native_task_grant;
 mod native_task_edit_scope;
+mod native_task_ai_ledger;
 mod native_task_delivery;
 mod session_checkpoint_guard;
 mod native_premiere_project_sha;
@@ -629,7 +630,13 @@ struct ChatInput {
     messages: Vec<ChatMessage>,
     #[serde(default)]
     orchestration_context: Option<String>,
+    #[serde(default)]
+    task_ai_ticket: Option<NativeTaskAiTicket>,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct NativeTaskAiTicket { task_id:String, request_id:String, request_index:u32 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentPlanMeta {
@@ -12607,6 +12614,7 @@ try {{
                         ChatMessage{role:"user".into(),content:prompt},
                     ],
                     orchestration_context:None,
+                    task_ai_ticket:None,
                 },
                 key
             ).await?;
@@ -12702,6 +12710,7 @@ try {{
                         ChatMessage{role:"user".into(),content:prompt},
                     ],
                     orchestration_context:None,
+                    task_ai_ticket:None,
                 },
                 key
             ).await?;
@@ -20679,7 +20688,38 @@ async fn chat(
     );
 
     let key = load_api_key(&input.provider)?;
-    send_chat(input, key).await
+    // Only the owner-task flow can present a durable, current model_reserved
+    // checkpoint. An ordinary chat is independent of task quotas.
+    let ticket=input.task_ai_ticket.take();
+    if let Some(ref ticket)=ticket{
+        let record=native_recovery::load(&app)?
+            .ok_or("Native AI request has no durable task reservation.")?;
+        if record.version!=2||record.revision.is_none()||
+           record.task_id.as_deref()!=Some(&ticket.task_id)||
+           record.phase!="model_reserved"||
+           record.model_requests!=ticket.request_index||
+           ticket.request_index==0||ticket.request_index>record.max_actions+1||
+           now_ms()>=record.expires_at {
+           return Err("AI request identity or owner-approved task budget changed; dispatch blocked.".into());
+        }
+        native_task_ai_ledger::reserve(&app,&ticket.task_id,&ticket.request_id,
+            ticket.request_index,&input.provider,&input.model)?;
+    }
+    let answer=send_chat(input,key).await;
+    if let Some(ticket)=ticket{
+        let usage=answer.as_ref().ok().and_then(|r|r.usage.as_ref())
+            .map(|u|(u.input_tokens,u.output_tokens,u.total_tokens));
+        if native_task_ai_ledger::complete(&app,&ticket.request_id,usage,answer.is_ok()).is_err(){
+            return Err("Native task AI request may have been billed but its ledger outcome is unknown. No automatic paid retry.".into());
+        }
+    }
+    answer
+}
+
+/// Inspection-only: provider-reported tokens are not a verified USD bill.
+#[tauri::command]
+fn native_task_ai_usage(app:AppHandle)->Result<Vec<native_task_ai_ledger::Receipt>,String>{
+    native_task_ai_ledger::read(&app)
 }
 
 #[tauri::command]
@@ -22348,6 +22388,7 @@ pub fn run() {
             delete_frame_io_oauth_config,
             frame_io_credential_status,
             chat,
+            native_task_ai_usage,
             runtime_status,
             native_worker_status,
             native_worker_history,
