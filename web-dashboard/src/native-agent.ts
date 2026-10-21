@@ -256,6 +256,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
  const taskGoalRoots=new Map<string,string>();
  const taskBudgets=new Map<string,NativeTaskBudget>();
+ const taskAiQuotas=new WeakMap<NativeTaskBudget,number>();
  const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string}>();
  let editScopeIssuing=false;
  let editScopeRevoking=false;
@@ -783,6 +784,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Continuation context safety limit; task paused without a paid request.");
     return;
    }
+  }
+  // Do not create another paid planning journal reservation if the owner
+  // limit is exhausted. A deterministic readback remains model-free.
+  if(taskBudget&&!plannedReadback&&
+     taskBudget.modelRequests>=(taskAiQuotas.get(taskBudget)??0)){
+   const saved=await persistRecovery(taskBudget,"paused",task.action.id);
+   haltTask(task.threadId,saved?"owner_paid_request_quota_exhausted":"recovery_journal_failed");
+   appendReply(task.threadId,task.promptIndex,
+    "Task paused: owner paid request count exhausted. No model request or new Windows edit sent.");
+   showActionFeedback("Paid AI request quota reached; no paid request sent.");
+   return;
   }
   // After a VERIFIED launch, an independent ui_windows observation is the
   // deterministic next proposal; it spends no model tokens and STILL needs
@@ -1633,6 +1645,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const ownerBudget=waitingForChoice ? taskBudgets.get(threadId) : undefined;
    const taskBudget=ownerBudget ?? createNativeTaskBudget(Number(budgetSelect.value));
    if(!taskBudget)return {ok:false,error:"Select a valid Windows task budget: 8, 24 or 48 actions."};
+   if(route.role!=="chat"&&ownerBudget&&
+      ownerBudget.modelRequests>=(taskAiQuotas.get(ownerBudget)??0))
+    return {ok:false,error:"Owner-paid AI request quota exhausted; no provider call sent."};
    if(!reserveNativeModelRequest(taskBudget))return {ok:false,error:
     "Owner-selected AI request budget or task deadline exhausted. No paid AI request was sent. Start a new task to authorize more work."};
    taskBudgets.set(threadId,taskBudget);
@@ -1650,8 +1665,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{
      const taskId=recoveryTaskId(taskBudget);
      if(!taskId)throw Error("Task UUID unavailable.");
+     const selectedLimit=Number(aiQuotaSelect.value);
      await invoke<void>("issue_native_task_ai_quota",
-      {taskId,maxRequests:Number(aiQuotaSelect.value)});
+      {taskId,maxRequests:selectedLimit});
+     taskAiQuotas.set(taskBudget,selectedLimit);
     }catch{
      sending=false;
      refreshState("Task AI quota authorization failed; no provider request sent.");
