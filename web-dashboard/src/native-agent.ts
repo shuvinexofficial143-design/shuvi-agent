@@ -191,7 +191,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  budgetSelect.value="8";
  budgetLabel.append(budgetSelect);
- const budgetNote=field("p","Selected limit bounds Master AI follow-up requests (actions + 1) and expires after 2 hours. Runs do not auto-resume after restart.");
+ const aiQuotaLabel=field("label","Native Task · paid AI request limit");
+ const aiQuotaSelect=field("select");
+ aiQuotaSelect.setAttribute("aria-label","Owner-approved paid AI request count for each task");
+ for(const count of [2,4,8,16]){
+  const choice=field("option",String(count)+" requests");choice.value=String(count);
+  aiQuotaSelect.append(choice);
+ }
+ aiQuotaSelect.value="4";aiQuotaLabel.append(aiQuotaSelect);
+ const budgetNote=field("p","Windows actions remain bounded by 8/24/48 and expire after 2 hours. A separate 2/4/8/16 hard PAID REQUEST count limit is owner-selected. This is not a USD spending cap or verified bill. No auto-resume after restart.");
  const aiLedgerShow=field("button","Show task AI request ledger");aiLedgerShow.type="button";
  const aiLedgerInfo=field("p","Task requests and provider-reported tokens; actual USD billed UNKNOWN.");
  aiLedgerInfo.setAttribute("role","status");
@@ -222,7 +230,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  recoveryPanel.append(recoveryNotice,recoveryCheck,recoveryRetry,recoveryOwnerDone,recoveryDismiss);
  const recoveryDiagnostics=field("p");recoveryDiagnostics.setAttribute("role","status");recoveryDiagnostics.hidden=true;recoveryPanel.append(recoveryDiagnostics);
  budgetNote.className="shuvi-native-note";
- panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,aiLedgerShow,aiLedgerInfo,taskStatus,goalStatus);
+ panel.append(title,status,showDetails,openSettings,notes,budgetLabel,aiQuotaLabel,budgetNote,aiLedgerShow,aiLedgerInfo,taskStatus,goalStatus);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -1635,6 +1643,20 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     sending=false;
     refreshState("Native recovery journal unavailable; no provider call sent.");
     return {ok:false,error:"Native recovery journal could not be saved. No paid AI request sent."};
+   }
+   // The owner selects a hard native-task paid REQUEST COUNT before the first
+   // provider call. Once issued this quota cannot be raised for this task.
+   if(route.role!=="chat"&&!ownerBudget){
+    try{
+     const taskId=recoveryTaskId(taskBudget);
+     if(!taskId)throw Error("Task UUID unavailable.");
+     await invoke<void>("issue_native_task_ai_quota",
+      {taskId,maxRequests:Number(aiQuotaSelect.value)});
+    }catch{
+     sending=false;
+     refreshState("Task AI quota authorization failed; no provider request sent.");
+     return {ok:false,error:"Cannot authorize the new task AI quota. Review the recovery state; no paid call was sent."};
+    }
    }
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),

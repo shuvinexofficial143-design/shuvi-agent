@@ -27,6 +27,7 @@ mod native_scheduler;
 mod native_task_grant;
 mod native_task_edit_scope;
 mod native_task_ai_ledger;
+mod native_task_ai_quota;
 mod native_task_delivery;
 mod session_checkpoint_guard;
 mod native_premiere_project_sha;
@@ -1178,6 +1179,7 @@ struct ActionState {
     native_execution_owned: AtomicBool,
     task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
     task_edit_scopes: Mutex<native_task_edit_scope::TaskEditScopeStore>,
+    task_ai_quota: Mutex<native_task_ai_quota::Store>,
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
@@ -20702,6 +20704,9 @@ async fn chat(
            now_ms()>=record.expires_at {
            return Err("AI request identity or owner-approved task budget changed; dispatch blocked.".into());
         }
+        state.task_ai_quota.lock()
+            .map_err(|_|"Cannot read owner AI request quota.".to_string())?
+            .check(&ticket.task_id,ticket.request_index,now_ms())?;
         native_task_ai_ledger::reserve(&app,&ticket.task_id,&ticket.request_id,
             ticket.request_index,&input.provider,&input.model)?;
     }
@@ -20714,6 +20719,26 @@ async fn chat(
         }
     }
     answer
+}
+
+/// Owner-confirmed hard request COUNT for this native task, never USD billed.
+/// Created exactly once at the first fsynced model reservation.
+#[tauri::command]
+fn issue_native_task_ai_quota(
+    task_id:String,max_requests:u8,state:State<'_,ActionState>,app:AppHandle,
+)->Result<(),String>{
+    let recovery=native_recovery::load(&app)?
+        .ok_or("Native task AI request quota needs a durable recovery checkpoint.")?;
+    if recovery.version!=2||recovery.revision.is_none()||
+       recovery.task_id.as_deref()!=Some(&task_id)||
+       recovery.phase!="model_reserved"||recovery.model_requests!=1||
+       recovery.staged_actions!=0||recovery.action_id.is_some()||
+       now_ms()>=recovery.expires_at {
+        return Err("Task AI quota can only be issued for the original model reservation.".into());
+    }
+    state.task_ai_quota.lock()
+        .map_err(|_|"Native task AI quota lock unavailable.".to_string())?
+        .issue(&task_id,max_requests,recovery.expires_at,now_ms())
 }
 
 /// Inspection-only: provider-reported tokens are not a verified USD bill.
@@ -22399,6 +22424,7 @@ pub fn run() {
             delete_frame_io_oauth_config,
             frame_io_credential_status,
             chat,
+            issue_native_task_ai_quota,
             native_task_ai_usage,
             runtime_status,
             native_worker_status,

@@ -52,3 +52,9 @@ Branch: feature/shuvi42-combined-runtime
 - Every scoped file edit is rechecked under the native execution lock against Rust's exact `executing` checkpoint, its task/action identity, staged reservation and deadline before worker begin. Mismatches fail closed.
 - Denying the original prepared action revokes the whole scope before first dispatch; revoke/Stop also invalidates its origin and dispatched UUIDs. Legacy `Allow once` and read grants remain distinct.
 - Unit tests cover correct/forged task IDs, mismatched action, phase mismatch, TTL and denial-before-dispatch.
+
+## M1 separate owner-approved native task AI request limit
+- Owner selects 2,4,8 or 16 **paid model requests per native task**, default 4. This is independent from the Windows action limit. It is **a hard REQUEST-COUNT cap**, NOT a dollar cap or a verified bill.
+- New Rust quota is issued only after the task's first fsynced `model_reserved` Recovery Journal snapshot with one request, zero staged actions and matching task UUID.
+- The limit is immutable for the same task and enforced by Rust `chat` before the task AI ledger reservation and any provider call. After restart no quota is resurrected. Ordinary Chat remains independent.
+- Request count, provider-reported tokens, and dollar-billed amount remain distinct. Full USD spending limit is not yet delivered. Existing `Allow once`, editing scopes and request ledger are preserved.
