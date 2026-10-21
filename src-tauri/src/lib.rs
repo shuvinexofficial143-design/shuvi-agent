@@ -27,6 +27,7 @@ mod native_scheduler;
 mod native_task_grant;
 mod native_task_edit_scope;
 mod native_task_inspection_scope;
+mod native_task_project_scope;
 mod native_task_ai_ledger;
 mod native_task_ai_quota;
 mod native_task_delivery;
@@ -1184,6 +1185,7 @@ struct ActionState {
     task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
     task_edit_scopes: Mutex<native_task_edit_scope::TaskEditScopeStore>,
     task_inspection_scopes: Mutex<native_task_inspection_scope::Store>,
+    task_project_scopes: Mutex<native_task_project_scope::Store>,
     task_ai_quota: Mutex<native_task_ai_quota::Store>,
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
@@ -21335,6 +21337,49 @@ fn revoke_task_read_grants(
     grants.revoke(&task_id);
     Ok(())
 }
+/// Owner-only eight-use exact selected-project root inventory permission.
+#[tauri::command]
+fn issue_task_project_scope(task_id:String,action_id:String,
+    state:State<'_,ActionState>,app:AppHandle)->Result<native_task_project_scope::View,String>{
+    let pending=state.pending.lock()
+        .map_err(|_|"Prepared inventory action unavailable.".to_string())?;
+    let action=pending.get(&action_id)
+        .ok_or("Project scope requires an owner-reviewed prepared action.")?;
+    if now_ms().saturating_sub(action.created_at_ms)>PENDING_ACTION_TTL_MS{
+        return Err("Prepared project inventory action expired.".into());
+    }
+    let recovery=native_recovery::load(&app)?;
+    native_task_edit_scope::owner_checkpoint_allows(recovery.as_ref(),
+        &task_id,&action_id,"awaiting_approval",now_ms())?;
+    let root=read_workspace(&app)?
+        .ok_or("Select a project workspace before granting inventory.")?;
+    let mut scopes=state.task_project_scopes.lock()
+        .map_err(|_|"Project scope store unavailable.".to_string())?;
+    let issued=scopes.issue(&task_id,&action_id,&action.action,&root,now_ms())?;
+    if let Err(error)=append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"project_scope_issued".into(),
+        tool:action.tool.clone(),
+        detail:"Owner-approved exact selected-project inventory; no contents, mutations, or paid AI requests.".into(),
+        success:true,action_id:Some(action_id),
+    }){
+        scopes.revoke_task(&task_id);
+        return Err(error);
+    }
+    Ok(issued)
+}
+#[tauri::command]
+fn revoke_task_project_scopes(task_id:String,state:State<'_,ActionState>,
+    app:AppHandle)->Result<(),String>{
+    Uuid::parse_str(&task_id).map_err(|_|"Invalid project scope task UUID.")?;
+    state.task_project_scopes.lock()
+        .map_err(|_|"Project scope revocation unavailable.".to_string())?
+        .revoke_task(&task_id);
+    append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"project_scope_revoked".into(),tool:"workspace_scan".into(),
+        detail:"Owner project inventory scope revoked; running worker termination not asserted.".into(),
+        success:true,action_id:None,
+    })
+}
 /// Owner-issued bounded read-only UI inspection scope. Existing native action
 /// preparation, OS identity, audit and approval journal checks stay mandatory.
 #[tauri::command]
@@ -21434,6 +21479,9 @@ fn deny_action(
             .revoke_action(&action_id);
         state.task_inspection_scopes.lock()
             .map_err(|_|"Inspection scope store unavailable.".to_string())?
+            .revoke_action(&action_id);
+        state.task_project_scopes.lock()
+            .map_err(|_|"Project scope store unavailable.".to_string())?
             .revoke_action(&action_id);
         let audit_detail = audit_safe_action_detail(&action.tool, &action.detail);
         append_audit(
@@ -21568,6 +21616,9 @@ fn cancel_running_action(
     state.task_inspection_scopes.lock()
         .map_err(|_|"Inspection scope store unavailable.".to_string())?
         .revoke_action(&action_id);
+    state.task_project_scopes.lock()
+        .map_err(|_|"Project scope store unavailable.".to_string())?
+        .revoke_action(&action_id);
 
     for _ in 0..50 {
         let active_tool = state
@@ -21682,6 +21733,7 @@ async fn execute_action(
     task_id: Option<String>,
     edit_scope_id: Option<String>,
     inspection_scope_id: Option<String>,
+    project_scope_id: Option<String>,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
@@ -21718,7 +21770,20 @@ async fn execute_action(
             // a currently valid Rust grant for THIS prepared action's exact
             // typed arguments. No permission extends to a second action or
             // across restart; the grant is consumed before native dispatch.
-            if let Some(scope_id)=inspection_scope_id.as_deref(){
+            if let Some(scope_id)=project_scope_id.as_deref(){
+                if grant_id.is_some()||edit_scope_id.is_some()||inspection_scope_id.is_some(){
+                    return Err("Project grant cannot combine with another authorization.".into());
+                }
+                let task=task_id.as_deref().ok_or("Scoped project inventory needs exact task UUID.")?;
+                let recovery=native_recovery::load(&app)?;
+                native_task_edit_scope::owner_checkpoint_allows(recovery.as_ref(),
+                    task,&action_id,"executing",now_ms())?;
+                let root=read_workspace(&app)?
+                    .ok_or("Owner-selected project workspace is unavailable.")?;
+                state.task_project_scopes.lock()
+                    .map_err(|_|"Project scope dispatch guard unavailable.".to_string())?
+                    .consume(task,scope_id,&action_id,&prepared.action,&root,now_ms())?;
+            }else if let Some(scope_id)=inspection_scope_id.as_deref(){
                 if grant_id.is_some()||edit_scope_id.is_some(){
                     return Err("Inspection scope cannot combine with other permissions.".into());
                 }
@@ -21979,6 +22044,20 @@ async fn execute_action(
     // sequence before publishing a successful Rust action audit or returning
     // any observed controls to the renderer. Uncertain reads fail closed.
     let execution=match execution {
+        Ok(result) if project_scope_id.is_some()&&result.success=>{
+            match (project_scope_id.as_deref(),task_id.as_deref(),read_workspace(&app)){
+                (Some(scope),Some(task),Ok(Some(root)))=>{
+                    match state.task_project_scopes.lock(){
+                        Ok(mut grants)=>grants.confirm(task,scope,&action_id,&root).map(|_|result),
+                        Err(_)=>Err("Project inventory result could not be validated.".into()),
+                    }
+                }
+                _=>Err("Selected project root unavailable during result verification.".into()),
+            }
+        }
+        other=>other,
+    };
+    let execution=match execution {
         Ok(result) if inspection_scope_id.is_some()&&result.success=>{
             match (inspection_scope_id.as_deref(),task_id.as_deref()){
                 (Some(scope),Some(task))=>{
@@ -22030,6 +22109,11 @@ async fn execute_action(
             if scheduled_step.is_some(){
                 native_scheduler::finish(&app,&action_id,&result.tool,Some(result.success))?;
             }
+            if project_scope_id.is_some()&&!result.success {
+                state.task_project_scopes.lock()
+                    .map_err(|_|"Project scope failure revocation unavailable.".to_string())?
+                    .revoke_action(&action_id);
+            }
             if inspection_scope_id.is_some()&&!result.success {
                 state.task_inspection_scopes.lock()
                     .map_err(|_|"Inspection failure revocation unavailable.".to_string())?
@@ -22049,6 +22133,11 @@ async fn execute_action(
             Ok(result)
         }
         Err(error) => {
+            if project_scope_id.is_some(){
+                if let Ok(mut grants)=state.task_project_scopes.lock(){
+                    grants.revoke_action(&action_id);
+                }
+            }
             if inspection_scope_id.is_some(){
                 if let Ok(mut scopes)=state.task_inspection_scopes.lock(){
                     scopes.revoke_action(&action_id);
@@ -22086,7 +22175,7 @@ async fn execute_powershell(
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, None, None, None, None, state, app).await
+    execute_action(action_id, None, None, None, None, None, state, app).await
 }
 
 #[tauri::command]
@@ -22542,6 +22631,8 @@ pub fn run() {
             revoke_task_edit_scopes,
             issue_task_inspection_scope,
             revoke_task_inspection_scopes,
+            issue_task_project_scope,
+            revoke_task_project_scopes,
             cancel_running_action,
             cancel_native_approved_parent,
             execute_action,
