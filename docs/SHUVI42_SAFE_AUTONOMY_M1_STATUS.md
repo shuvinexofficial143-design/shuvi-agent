@@ -39,3 +39,10 @@ Branch: feature/shuvi42-combined-runtime
 - Rust scope captures a bounded SHA-256 + byte length snapshot of the exact file at issuance and rechecks it immediately before native worker start. A file changed outside Shuvi after approval blocks subsequent scoped mutation.
 - After an exact successful native audit, the Rust scope fingerprint advances for the next *separately prepared and owner-reviewed* action. Failures revoke the corresponding editing scope rather than authorizing an unknown replay.
 - Snapshot checks do not replace the existing atomic backup/write verification or turn native worker success into original-goal completion. Maximum 2 MiB existing file for scope snapshots; larger files fall back to Allow once.
+
+## M1 Task-bound paid AI request ledger (in development)
+- Each Native Dashboard paid Master request carries a fresh request UUID, current task UUID and a monotonically increasing request index. Rust checks the matching authoritative native recovery model_reserved checkpoint before the provider call.
+- The bounded append-only native-task-ai-ledger journal reserves each request with fsync before dispatch. Duplicate request IDs, unresolved earlier requests, malformed records or full journal refuse the next paid request.
+- Provider-reported usage tokens are observational. Unknown HTTP outcomes never mean zero spend or authorize replay. The actual USD charge remains UNKNOWN without an authoritative price and invoice; **no hard dollar limit** is implemented yet.
+- A Dashboard control reads ledger receipts for user review without granting permissions. Ordinary Chat and existing specialist API flows remain independent; editing scopes continue to grant zero paid calls.
+- Real Windows E2E is still pending. M1 remains INCOMPLETE.
