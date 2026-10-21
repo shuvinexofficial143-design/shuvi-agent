@@ -157,6 +157,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  actionFeedback.hidden=true;
  const pendingText=field("p");
  const approve=field("button","Allow once");approve.type="button";
+ const inspectApprove=field("button","Allow read-only window scope (8 actions / 3 min)");
+ inspectApprove.type="button";inspectApprove.hidden=true;
+ inspectApprove.setAttribute("aria-label","Approve bounded native UI inspection only; no clicks or paid requests");
+ const revokeInspect=field("button","Revoke read-only window scope");
+ revokeInspect.type="button";revokeInspect.hidden=true;revokeInspect.disabled=true;
  const editScopeApprove=field("button","Allow exact-file task editing scope (4 actions / 10 min)");
  editScopeApprove.type="button";editScopeApprove.hidden=true;
  editScopeApprove.setAttribute("aria-label","Owner authorizes only this prepared file operation, not paid AI requests");
@@ -169,7 +174,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  revokeEditing.type="button";revokeEditing.hidden=true;revokeEditing.disabled=true;
  revokeEditing.setAttribute("aria-label","Revoke current task edit scopes without assuming running actions terminated");
  const deny=field("button","Deny");deny.type="button";
- approval.append(pendingText,approve,editScopeApprove,deny);
+ approval.append(pendingText,approve,inspectApprove,editScopeApprove,deny);
  const mobile=field("div");mobile.className="shuvi-native-mobile";
  const mobileTitle=field("strong","Mobile → Windows Agent pairing");
  const mobileCode=field("input");mobileCode.type="password";
@@ -241,11 +246,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   composerParent.insertBefore(stopFeedback,chatForm);
   composerParent.insertBefore(stopCurrent,chatForm);
   composerParent.insertBefore(revokeEditing,chatForm);
+  composerParent.insertBefore(revokeInspect,chatForm);
   composerParent.insertBefore(approval,chatForm);
   composerParent.insertBefore(recoveryPanel,chatForm);
  }else{
   // Defensive fallback for an incomplete preview; never lose an approval UI.
-  panel.append(actionFeedback,stopFeedback,stopCurrent,revokeEditing,approval,recoveryPanel);
+  panel.append(actionFeedback,stopFeedback,stopCurrent,revokeEditing,revokeInspect,approval,recoveryPanel);
  }
  let team:ModelTeamHandle|null=null;
  let ready=false;
@@ -258,6 +264,23 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskBudgets=new Map<string,NativeTaskBudget>();
  const taskAiQuotas=new WeakMap<NativeTaskBudget,number>();
  const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string}>();
+ const inspectScopes=new Map<string,{id:string;taskId:string;window:string;expiresAtMs:number}>();
+ let inspectIssuing=false,inspectRevoking=false;
+ let scopedInspectActionId:string|null=null,autoInspectActionId:string|null=null;
+ const readWindow=(p:Record<string,unknown>|undefined):string|null=>{
+  if(!p||!["ui_discover","ui_find"].includes(String(p.tool)))return null;
+  const a=p.arguments;
+  if(!a||typeof a!=="object"||Array.isArray(a))return null;
+  const args=a as Record<string,unknown>;
+  if(p.tool==="ui_find"&&![args.name,args.automation_id].some(x=>typeof x==="string"&&x.trim()))return null;
+  const w=args.window;
+  return typeof w==="string"&&w.trim()===w&&w.length>0&&w.length<=160&&
+   !/[\u0000-\u001f]/.test(w)?w:null;
+ };
+ const activeInspect=(id:string,p:Record<string,unknown>|undefined)=>{
+  const x=inspectScopes.get(id);
+  return Boolean(x&&x.window===readWindow(p)&&Date.now()<x.expiresAtMs);
+ };
  let editScopeIssuing=false;
  let editScopeRevoking=false;
  let scopedApprovalId:string|null=null;
@@ -651,9 +674,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  function refreshState(text?:string){
   if(text)status.textContent=text;
-  approve.disabled=sending||editScopeIssuing;
-  deny.disabled=sending||editScopeIssuing;
-  editScopeApprove.hidden=!pending||exactEditPath(pending.proposal??undefined)===null;
+  approve.disabled=sending||editScopeIssuing||inspectIssuing;
+  deny.disabled=sending||editScopeIssuing||inspectIssuing;
+  inspectApprove.hidden=!pending||readWindow(pending.proposal??undefined)===null;
+   inspectApprove.disabled=!ready||sending||inspectIssuing||inspectRevoking||editScopeIssuing;
+   revokeInspect.hidden=inspectScopes.size===0;
+   revokeInspect.disabled=!ready||inspectIssuing||inspectRevoking||inspectScopes.size===0;
+   editScopeApprove.hidden=!pending||exactEditPath(pending.proposal??undefined)===null;
   editScopeApprove.disabled=sending||editScopeIssuing||editScopeRevoking||!ready;
   revokeEditing.hidden=editScopes.size===0;
   revokeEditing.disabled=editScopeIssuing||editScopeRevoking||!ready||editScopes.size===0;
