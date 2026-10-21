@@ -85,12 +85,30 @@ fn checked_file(raw:&str)->Result<PathBuf,String>{
         }
     }
     let extension=path.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let leaf=path.file_name().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let stem=path.file_stem().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+    // Owner-delegated editing cannot silently rewrite security/auth/payment
+    // code, package scripts, deployment settings or credential files. Those
+    // remain separately reviewable with the ordinary one-action approval.
+    if leaf.starts_with(".env")||
+       ["package.json","package-lock.json","pnpm-lock.yaml","yarn.lock",
+        "next.config.js","next.config.ts","vite.config.ts","vite.config.js",
+        "tsconfig.json","vercel.json","netlify.toml","wrangler.json",
+        "wrangler.jsonc"].contains(&leaf.as_str())||
+       ["auth","authentication","authorization","security","permission",
+        "permissions","billing","payment","payments","checkout","secret",
+        "secrets","credential","credentials","private_key","token","tokens",
+        "oauth","middleware","policy","policies"].contains(&stem.as_str()){
+        return Err("Sensitive project configuration, identity or payment file needs a separate Allow once.".into());
+    }
     if !EXTENSIONS.contains(&extension.as_str()){
         return Err("This file type requires a separate Allow once approval.".into());
     }
     for segment in path.components(){
         let component=segment.as_os_str().to_string_lossy().to_ascii_lowercase();
-        if [".git",".ssh","node_modules",".shuvi-release"].contains(&component.as_str()){
+        if [".git",".github",".husky",".ssh",".aws",".azure",".vscode",
+            "node_modules",".shuvi-release","secrets","credentials",
+            "certificates","private_keys"].contains(&component.as_str()){
             return Err("Protected internal directory cannot be task-scoped.".into());
         }
     }
@@ -205,6 +223,9 @@ impl TaskEditScopeStore{
             return Err("Exact edit file is outside the owner-selected project.".into());
         }
         self.prune(now);
+        if self.scopes.values().any(|scope|scope.task_id==task_id){
+            return Err("This task already owns an immutable editing scope; owner must revoke it before new authorization.".into());
+        }
         if self.scopes.len()>=MAX_SCOPES{return Err("Too many unexpired task scopes.".into());}
         let id=Uuid::new_v4().to_string();
         let project_root=&selected_workspace;
@@ -368,6 +389,9 @@ mod tests{
         let granted=store.issue(&task,&action,"replace_text",&path,&dir.to_string_lossy(),100).unwrap();
         fs::write(&path,b"outside update").unwrap();
         assert!(store.consume(&task,&granted.id,&action,"replace_text",&path,&dir.to_string_lossy(),101).is_err());
+        assert!(store.issue(&task,&action,"replace_text",&path,&dir.to_string_lossy(),102).is_err(),
+            "same task cannot evade edit count/fingerprint via a new grant");
+        store.revoke_task(&task);
         let next=store.issue(&task,&action,"replace_text",&path,&dir.to_string_lossy(),102).unwrap();
         store.consume(&task,&next.id,&action,"replace_text",&path,&dir.to_string_lossy(),103).unwrap();
         fs::write(&path,b"authorized edit").unwrap();
@@ -384,6 +408,8 @@ mod tests{
         let foreign=std::env::temp_dir();
         assert!(store.issue(&task,&action,"write_file",&path,&foreign.to_string_lossy(),100).is_ok(),
             "a broader chosen workspace can include file, but exact file remains pinned");
+        assert!(store.issue(&task,&action,"write_file",&path,&dir.to_string_lossy(),100).is_err());
+        store.revoke_task(&task);
         let view=store.issue(&task,&action,"write_file",&path,&dir.to_string_lossy(),100).unwrap();
         assert!(store.consume(&task,&view.id,&action,"write_file",&path,&foreign.to_string_lossy(),101).is_err(),
             "switching selected workspace cannot reuse an approved scope");
@@ -394,6 +420,42 @@ mod tests{
             let file=dir.join(bad).to_string_lossy().into_owned();
             assert!(store.issue(&task,&action,"write_file",&file,&dir.to_string_lossy(),101).is_err(),"{bad}");
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sensitive_project_files_and_code_require_individual_owner_review(){
+        let (dir,_path)=fixture();let task=Uuid::new_v4().to_string();
+        let origin=Uuid::new_v4().to_string();let mut scopes=TaskEditScopeStore::default();
+        for file in ["package.json","tsconfig.json","auth.ts","payment.ts",
+                     "security.ts","middleware.ts","credentials.json",".env.ts"]{
+            let path=dir.join(file).to_string_lossy().into_owned();
+            assert!(scopes.issue(&task,&origin,"write_file",&path,&dir.to_string_lossy(),100).is_err(),
+                "{file} should never be silently edited under a delegated scope");
+        }
+        for folder in [".github",".vscode",".aws","secrets"]{
+            let root=dir.join(folder);fs::create_dir_all(&root).unwrap();
+            let file=root.join("deployment.ts").to_string_lossy().into_owned();
+            assert!(scopes.issue(&task,&origin,"write_file",&file,&dir.to_string_lossy(),100).is_err(),
+                "{folder} must need Allow once");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn owner_cannot_reissue_four_action_scope_without_explicit_revoke(){
+        let (dir,path)=fixture();let task=Uuid::new_v4().to_string();let origin=Uuid::new_v4().to_string();
+        let mut s=TaskEditScopeStore::default();
+        let grant=s.issue(&task,&origin,"write_file",&path,&dir.to_string_lossy(),100).unwrap();
+        assert!(s.issue(&task,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),101).is_err());
+        for index in 0..4{
+            let id=if index==0{origin.clone()}else{Uuid::new_v4().to_string()};
+            s.consume(&task,&grant.id,&id,"write_file",&path,&dir.to_string_lossy(),101).unwrap();
+            s.record_audited_success(&task,&grant.id,&id,&path,&dir.to_string_lossy()).unwrap();
+        }
+        assert!(s.consume(&task,&grant.id,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),102).is_err());
+        // The exhausted scope cannot mint another permission without owner reauthorization.
+        s.revoke_task(&task);
+        assert!(s.issue(&task,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),103).is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
 
