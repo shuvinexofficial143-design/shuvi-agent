@@ -314,7 +314,26 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const args=proposal.arguments;
   if(!args||typeof args!=="object"||Array.isArray(args))return null;
   const path=(args as Record<string,unknown>).path;
-  return typeof path==="string"&&path.length>0?path:null;
+  if(typeof path!=="string"||!path||path.length>2048||/[\\u0000-\\u001f]/.test(path))return null;
+  // Renderer is an OWNER-UX filter only. Rust validates the canonical
+  // exact file and workspace again before issuing/executing any grant.
+  const components=path.toLowerCase().split(/[\\\\/]+/).filter(Boolean);
+  const leaf=components.at(-1)??"";
+  const extension=leaf.slice(leaf.lastIndexOf(".")+1);
+  if(!["txt","md","json","css","html","js","ts","jsx","tsx"].includes(extension))return null;
+  if(leaf.startsWith(".env")||["package.json","package-lock.json","tsconfig.json","vercel.json",
+   "next.config.js","next.config.ts","vite.config.js","vite.config.ts",
+   "wrangler.json","wrangler.jsonc"].includes(leaf))return null;
+  const protectedNames=new Set([".git",".github",".husky",".ssh",".aws",".azure",".vscode",
+   "node_modules",".shuvi-release","auth","authentication","authorization","oauth",
+   "security","permission","permissions","policy","policies","billing","payment",
+   "payments","checkout","invoice","invoices","subscription","subscriptions",
+   "transaction","transactions","credentials","credential","secret","secrets",
+   "token","tokens","private","privatekey","privatekeys","keys","certificate",
+   "certificates","admin","administration","middleware","webhooks","webhook",
+   "signature","signatures","apikey","apikeys"]);
+  if(components.some(component=>component.split(/[._\\- ]+/).some(part=>protectedNames.has(part))))return null;
+  return path;
  };
  const activeEdit=(thread:string,proposal:Record<string,unknown>|undefined)=>{
   const scope=editScopes.get(thread),budget=taskBudgets.get(thread);
