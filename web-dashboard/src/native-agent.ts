@@ -459,6 +459,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    // Acknowledgement is an explicit abandonment of the old execution scope.
    // Never reuse old budgets, goal roots, window evidence or worker state.
    taskBudgets.clear();
+   for(const scope of projectScopes.values())
+    void invoke<void>("revoke_task_project_scopes",{taskId:scope.taskId}).catch(()=>{});
+   projectScopes.clear();scopedProjectActionId=null;autoProjectActionId=null;
    for(const scope of inspectScopes.values())
     void invoke<void>("revoke_task_inspection_scopes",{taskId:scope.taskId}).catch(()=>{});
    inspectScopes.clear();autoInspectActionId=null;scopedInspectActionId=null;
@@ -684,6 +687,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){
+  const project=projectScopes.get(id);
+  if(project){
+   projectScopes.delete(id);autoProjectActionId=null;scopedProjectActionId=null;
+   void invoke<void>("revoke_task_project_scopes",{taskId:project.taskId}).catch(()=>{
+    showActionFeedback("Project inventory disabled locally; Rust revocation uncertain. Check Audit.");
+   });
+  }
   const inspection=inspectScopes.get(id);
   if(inspection){
    inspectScopes.delete(id);autoInspectActionId=null;
@@ -1054,6 +1064,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    pending={...task,action:next,proposal:response.tool_proposal,step:task.step+1,seen:new Set([...seen,fp]),
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    if(activeInspect(task.threadId,response.tool_proposal))autoInspectActionId=next.id;
+   if(activeProject(task.threadId,response.tool_proposal))autoProjectActionId=next.id;
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+redactNativeError(next.summary)+"\nRisk: "+redactNativeError(next.risk)+"\n"+redactNativeError(next.detail);
@@ -1131,15 +1142,22 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const current=pending;
   // Tool execution and later Master planning are separate evidence phases.
   let executionVerified=false;
-  if(!current||sending||editScopeIssuing)return;
+  if(!current||sending||editScopeIssuing||projectIssuing||inspectIssuing)return;
   // A scoped owner click can NEVER silently downgrade to ordinary Allow once
   // if another user action revokes that scope during asynchronous persistence.
   const requiresScopedEdit=scopedApprovalId===current.action.id;
   const requiresInspect=scopedInspectActionId===current.action.id;
+  const requiresProject=scopedProjectActionId===current.action.id;
   sending=true;
   approve.disabled=deny.disabled=true;
   try {
    if(!allowed){
+    const project=projectScopes.get(current.threadId);
+    if(project){
+     projectScopes.delete(current.threadId);scopedProjectActionId=null;autoProjectActionId=null;
+     try{await invoke<void>("revoke_task_project_scopes",{taskId:project.taskId});}
+     catch{showActionFeedback("Project scope revoked locally; native revoke uncertain.");}
+    }
     const scope=inspectScopes.get(current.threadId);
     if(scope){
      inspectScopes.delete(current.threadId);autoInspectActionId=null;
@@ -1236,19 +1254,34 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
      const inspection=inspectScopes.get(current.threadId);
      const useInspection=requiresInspect&&inspection&&activeInspect(current.threadId,current.proposal??undefined);
+     const project=projectScopes.get(current.threadId);
+     const useProject=requiresProject&&project&&activeProject(current.threadId,current.proposal??undefined);
+     if(requiresProject&&!useProject){
+      haltTask(current.threadId,"project_scope_invalid");
+      throw Error("Project inventory scope expired or revoked; no action dispatched.");
+     }
      if(requiresInspect&&!useInspection){
       haltTask(current.threadId,"inspection_scope_invalid");
       throw Error("Owner UI inspection scope expired or revoked. No execute IPC sent.");
      }
+     if(useProject)project.remainingActions-=1;
      if(useInspection)inspection.remainingActions-=1; // in-memory cap is spent before native dispatch
      try{
-      result=await invoke<ActionResult>("execute_action",useInspection
+      result=await invoke<ActionResult>("execute_action",useProject
+        ?{actionId:current.action.id,projectScopeId:project.id,taskId:project.taskId}
+        :useInspection
        ?{actionId:current.action.id,inspectionScopeId:inspection.id,taskId:inspection.taskId}
        :useScope
        ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
        :{actionId:current.action.id});
      }finally{
-      if(useInspection&&inspection.remainingActions<=0){
+      if(useProject&&project.remainingActions<=0){
+        projectScopes.delete(current.threadId);
+        void invoke<void>("revoke_task_project_scopes",{taskId:project.taskId}).catch(()=>{
+         showActionFeedback("Project read scope exhausted; native revoke uncertain. Check Audit.");
+        });
+       }
+       if(useInspection&&inspection.remainingActions<=0){
        // Never auto stage a ninth read. Native scope expires too, but the
        // renderer stops using this authority at the exact eighth dispatch.
        inspectScopes.delete(current.threadId);
@@ -1537,6 +1570,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    sending=false;
    if(scopedApprovalId===current.action.id)scopedApprovalId=null;
    if(scopedInspectActionId===current.action.id)scopedInspectActionId=null;
+   if(scopedProjectActionId===current.action.id)scopedProjectActionId=null;
+   const nextProject=autoProjectActionId;
+   if(nextProject&&pending&&pending!==current&&pending.action.id===nextProject&&
+      activeProject(pending.threadId,pending.proposal??undefined)){
+    autoProjectActionId=null;scopedProjectActionId=nextProject;
+    showActionFeedback("Bounded selected-project inventory: independently prepared read under Rust scope.");
+    void decide(true);
+   }else if(nextProject)autoProjectActionId=null;
    const nextAuto=autoInspectActionId;
    if(nextAuto&&pending&&pending!==current&&pending.action.id===nextAuto&&
       activeInspect(pending.threadId,pending.proposal??undefined)){
@@ -1655,7 +1696,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const actionId=activeNativeActionId;
   if(!ready||!actionId||ownerStopRequestedIds.has(actionId))return;
   ownerStopRequestedIds.add(actionId);
-  const inspection=pending?inspectScopes.get(pending.threadId):null;
+  const project=pending?projectScopes.get(pending.threadId):null;
+   if(project){
+    projectScopes.delete(pending!.threadId);scopedProjectActionId=null;autoProjectActionId=null;
+    void invoke<void>("revoke_task_project_scopes",{taskId:project.taskId}).catch(()=>{
+     stopFeedback.hidden=false;stopFeedback.textContent="Rust project scope revoke uncertain; inspect Audit.";
+    });
+   }
+   const inspection=pending?inspectScopes.get(pending.threadId):null;
    if(inspection){
     inspectScopes.delete(pending!.threadId);
     scopedInspectActionId=null;autoInspectActionId=null;
