@@ -20,7 +20,8 @@ test("first paid native chat atomically issues immutable owner request-count cap
 
 test("request limit never escalates or restores from an old checkpoint",()=>{
  assert.ok(quota.includes('const ALLOWED:&[u8]=&[2,4,8,16]'));
- assert.ok(quota.includes('Task AI request quota cannot be enlarged or reissued.'));
+ assert.ok(quota.includes('Task AI request quota was already issued; revocation or expiry cannot reset paid authority.'));
+ assert.ok(quota.includes("self.issued_task_ids.contains(task)"),"Rust denies all same-task paid quota reissues");
  assert.ok(quota.includes('Task AI quota missing after restart or revocation'));
  assert.ok(quota.includes('index>q.max as u32'));
  assert.ok(quota.includes('owner_limit_cannot_be_extended_or_restored_by_a_different_task'));
