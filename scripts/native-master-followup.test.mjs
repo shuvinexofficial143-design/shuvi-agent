@@ -1974,3 +1974,23 @@ test("delegated exact-file scope never automatically executes fifth file mutatio
  assert.equal(s.approval.hidden,false,"fifth mutation requires fresh owner authority");
  assert.ok(s.calls.some(x=>x.name==="revoke_task_edit_scopes"),"native revoke after fourth dispatched edit");
 });
+
+test("sensitive project paths never display delegated edit scope even while Allow once remains available",async()=>{
+ for(const bad of [
+  "C:\\\\Projects\\\\ShuviDemo\\\\src\\\\payments\\\\index.ts",
+  "C:\\\\Projects\\\\ShuviDemo\\\\src\\\\auth.service.ts",
+  "C:\\\\Projects\\\\ShuviDemo\\\\.github\\\\workflows\\\\main.js",
+  "C:\\\\Projects\\\\ShuviDemo\\\\checkout-page.tsx",
+  "C:\\\\Projects\\\\ShuviDemo\\\\package.json"
+ ]){
+  const proposal={content:"sensitive write",provider:"xkiro",model:"model/master",
+   tool_proposal:{tool:"write_file",arguments:{path:bad,content:"do not delegate"}}};
+  const s=setup({first:proposal,simulateRustJournal:true});
+  await until(()=>s.transport.connected(),"native connected");
+  const accepted=await s.transport.send("@master inspect individual owner approval","security-test",0);
+  assert.equal(accepted.ok,true);
+  assert.ok(s.editApprove.hidden,"no broad delegated scope for "+bad);
+  assert.equal(s.approval.hidden,false,"individual Allow once remains visible");
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0,"never execute without owner");
+ }
+});
