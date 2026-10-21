@@ -12,6 +12,23 @@ const MAX_SCOPES:usize=8;
 const MAX_SNAPSHOT_BYTES:u64=2_097_152;
 const ALLOWED:&[&str]=&["write_file","replace_text"];
 const EXTENSIONS:&[&str]=&["txt","md","json","css","html","js","ts","jsx","tsx"];
+const SENSITIVE_SEGMENTS:&[&str]=&[
+    "auth","authentication","authorization","oauth","security","permissions",
+    "permission","policies","policy","billing","payment","payments","checkout",
+    "invoice","invoices","subscription","subscriptions","transaction","transactions",
+    "credentials","credential","secrets","secret","token","tokens","private",
+    "privatekeys","privatekeys","privatekey","keys","certificate","certificates",
+    "admin","administration","middleware","webhooks","webhook","signature",
+    "signatures","api_keys","apikey","apikeys"
+];
+fn sensitive_name(value:&str)->bool{
+    // Treat separators and case as equivalent: auth.service.ts,
+    // stripe-payment.ts, payment_service.ts and oauth/config/index.ts
+    // cannot bypass the owner-sensitive policy by suffixing the filename.
+    value.split(|c:char|matches!(c,'.'|'-'|'_'|' '|'/'))
+        .filter(|part|!part.is_empty())
+        .any(|part|SENSITIVE_SEGMENTS.contains(&part))
+}
 
 #[derive(Clone)]
 struct Scope {
@@ -55,7 +72,7 @@ fn redirected(meta:&fs::Metadata)->bool{
     {meta.file_type().is_symlink()}
 }
 fn checked_file(raw:&str)->Result<PathBuf,String>{
-    if raw.is_empty() || raw.len()>2048 || raw.chars().any(|c|c=='\0'||c=='\r'||c=='\n'){
+    if raw.is_empty() || raw.len()>2048 || raw.chars().any(char::is_control){
         return Err("Scoped edit path is invalid.".into());
     }
     let path=Path::new(raw);
@@ -95,10 +112,7 @@ fn checked_file(raw:&str)->Result<PathBuf,String>{
         "next.config.js","next.config.ts","vite.config.ts","vite.config.js",
         "tsconfig.json","vercel.json","netlify.toml","wrangler.json",
         "wrangler.jsonc"].contains(&leaf.as_str())||
-       ["auth","authentication","authorization","security","permission",
-        "permissions","billing","payment","payments","checkout","secret",
-        "secrets","credential","credentials","private_key","token","tokens",
-        "oauth","middleware","policy","policies"].contains(&stem.as_str()){
+       sensitive_name(&stem){
         return Err("Sensitive project configuration, identity or payment file needs a separate Allow once.".into());
     }
     if !EXTENSIONS.contains(&extension.as_str()){
@@ -108,7 +122,8 @@ fn checked_file(raw:&str)->Result<PathBuf,String>{
         let component=segment.as_os_str().to_string_lossy().to_ascii_lowercase();
         if [".git",".github",".husky",".ssh",".aws",".azure",".vscode",
             "node_modules",".shuvi-release","secrets","credentials",
-            "certificates","private_keys"].contains(&component.as_str()){
+            "certificates","private_keys"].contains(&component.as_str())||
+            sensitive_name(&component){
             return Err("Protected internal directory cannot be task-scoped.".into());
         }
     }
@@ -457,6 +472,31 @@ mod tests{
         // The exhausted scope cannot mint another permission without owner reauthorization.
         s.revoke_task(&task);
         assert!(s.issue(&task,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),103).is_ok());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sensitive_suffixes_and_nested_identity_billing_directories_require_allow_once(){
+        let (dir,_file)=fixture();
+        let task=Uuid::new_v4().to_string();let origin=Uuid::new_v4().to_string();
+        let mut store=TaskEditScopeStore::default();
+        for name in ["auth.service.ts","stripe-payment.ts","billing_config.json",
+          "oauth.client.js","session-token.ts","admin.routes.ts",
+          "checkout-page.tsx","permissions.manager.ts","webhook-handler.ts"]{
+            let path=dir.join(name).to_string_lossy().into_owned();
+            assert!(store.issue(&task,&origin,"write_file",&path,&dir.to_string_lossy(),100).is_err(),
+                "sensitive name must not receive blanket delegated write: {name}");
+        }
+        for folder in ["auth","payments","billing","admin","oauth","webhooks"]{
+            let nest=dir.join(folder);fs::create_dir_all(&nest).unwrap();
+            let path=nest.join("index.ts").to_string_lossy().into_owned();
+            assert!(store.issue(&task,&origin,"write_file",&path,&dir.to_string_lossy(),100).is_err(),
+                "sensitive subtree must require individual Allow once: {folder}");
+        }
+        let benign=dir.join("components").join("button.ts");
+        fs::create_dir_all(benign.parent().unwrap()).unwrap();
+        assert!(store.issue(&task,&origin,"write_file",&benign.to_string_lossy(),
+            &dir.to_string_lossy(),100).is_ok(),"normal UI component remains eligible");
         fs::remove_dir_all(dir).unwrap();
     }
 
