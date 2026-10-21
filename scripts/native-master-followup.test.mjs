@@ -1891,22 +1891,21 @@ test("owner project root inspection auto-reuses only exact inventory, never read
  await until(()=>s.calls.some(c=>c.name==="revoke_task_project_scopes"),"explicit native revoke");
  assert.equal(s.revokeProject.hidden,true);
 });
-test("owner project grant cannot automatically perform a ninth directory inventory read",async()=>{
+test("owner project inventory reuse never bypasses duplicate-action guard or exhausts unearned authority",async()=>{
  const root="C:\\\\Projects\\\\ShuviDemo";
- const proposal=i=>({content:"step "+i,provider:"xkiro",model:"model/master",
-  tool_proposal:{tool:i%2?"workspace_scan":"list_directory",arguments:{path:root}}});
- const s=setup({first:proposal(1),second:proposal(2),
-  following:Array.from({length:7},(_,i)=>proposal(i+3)),
+ const proposal=tool=>({content:tool,provider:"xkiro",model:"model/master",
+  tool_proposal:{tool,arguments:{path:root}}});
+ const s=setup({first:proposal("list_directory"),second:proposal("workspace_scan"),
+  following:[proposal("list_directory")],
   simulateRustJournal:true,paidRequestLimit:16,budgetActions:24});
  await until(()=>s.transport.connected(),"native connected");
- await s.transport.send("@master Inspect project folder inventory","project-eight",0);
+ await s.transport.send("@master Inspect selected project folder inventory","project-repeat-stop",0);
  s.projectApprove.listeners.get("click")();
- await until(()=>s.staged.length===9,"ninth project inventory action staged");
- await until(()=>s.calls.filter(c=>c.name==="execute_action").length===8,"eight project reads executed");
- const actions=s.calls.filter(c=>c.name==="execute_action");
- assert.equal(actions.length,8);
- assert.ok(actions.every(c=>c.params.projectScopeId));
- assert.equal(s.approval.hidden,false,"ninth read remains individually reviewable");
- assert.equal(s.revokeProject.hidden,true);
- assert.ok(s.calls.some(c=>c.name==="revoke_task_project_scopes"));
+ await until(()=>s.calls.filter(c=>c.name==="execute_action").length===2,"two distinct scoped inventory reads");
+ await until(()=>s.calls.some(c=>c.name==="revoke_task_project_scopes"),"duplicate forces scope pause and revoke");
+ assert.equal(s.staged.length,2,"same tool and root is blocked before duplicate staging");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2,"no repeated native execution");
+ assert.ok(s.calls.filter(c=>c.name==="execute_action").every(c=>c.params.projectScopeId));
+ assert.equal(s.revokeProject.hidden,true,"project authority is no longer reusable");
+ assert.equal(s.chatInputs.length,3,"no extra paid request after repeated proposal was detected");
 });
