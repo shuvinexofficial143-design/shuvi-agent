@@ -42,6 +42,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const issuedRustAiQuota=new Map();
  let persistedRust=rustRecord;
+ let inspectionGrant=null;
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
  nodes.set("chatWorkspaceLayout",chat);nodes.set("chatForm",form);
@@ -71,6 +72,17 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    if(simulateRustJournal)persistedRust=null;
    return;
   }
+  if(name==="issue_task_inspection_scope"){
+   if(simulateRustJournal)assert.equal(persistedRust?.phase,"awaiting_approval");
+   const proposed=staged.find(x=>x.id===params.actionId)?.proposal;
+   assert.ok(proposed&&["ui_find","ui_discover"].includes(proposed.tool));
+   assert.equal(params.taskId,persistedRust?.taskId);
+   const window=proposed.arguments.window;
+   inspectionGrant={id:"3a0b4d27-8207-4e38-bc9d-130984010c40",taskId:params.taskId,window,
+    remainingActions:8,authorizedPaidRequests:0,allowedTools:["ui_discover","ui_find"],expiresAtMs:Date.now()+180_000};
+   return inspectionGrant;
+  }
+  if(name==="revoke_task_inspection_scopes"){inspectionGrant=null;return;}
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
   if(name==="chat"){
@@ -120,6 +132,13 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   }
   if(name==="execute_action"){
    const action=staged.find(s=>s.id===params.actionId);
+   if(params.inspectionScopeId){
+    assert.ok(inspectionGrant,"Rust scoped inspection must be live");
+    assert.equal(params.inspectionScopeId,inspectionGrant.id);
+    assert.equal(params.taskId,inspectionGrant.taskId);
+    assert.ok(["ui_discover","ui_find"].includes(action?.proposal.tool));
+    assert.equal(action.proposal.arguments.window,inspectionGrant.window);
+   }
    if(!action)throw Error("unexpected action ID");
    if(failFind&&action.proposal.tool==="ui_find")
     throw Error("UI lookup failed: Requested top-level window was not found.");
@@ -157,6 +176,8 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const paidSelect=created.find(x=>x.attributes["aria-label"]==="Owner-approved paid AI request count for each task");
  if(paidSelect)paidSelect.value=String(paidRequestLimit);
  const allow=created.find(x=>x.textContent==="Allow once");
+ const inspectApprove=created.find(x=>x.textContent==="Allow read-only window scope (8 actions / 3 min)");
+ const revokeInspect=created.find(x=>x.textContent==="Revoke read-only window scope");
  const deny=created.find(x=>x.textContent==="Deny");
  const approval=created.find(x=>x.attributes["aria-label"]==="Windows action needs your approval");
  const recoveryCheck=created.find(x=>x.textContent==="Check interrupted action in Rust Audit");
@@ -165,7 +186,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -1774,4 +1795,32 @@ test("Oversized Hindi objective pauses before a second paid model request withou
  const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
  assert.equal(phases.at(-1),"paused","durable pause recorded");
  assert.doesNotMatch(s.transport.getReplies("long-hindi-context")[0],/OPENING VERIFIED/);
+});
+
+test("owner bounded read-only scope auto-approves same-window inspections but never unrelated tools",async()=>{
+ const prop=(tool,args)=>({content:tool,provider:"xkiro",model:"model/master",
+  tool_proposal:{tool,arguments:args}});
+ const first=prop("ui_find",{window:"Adobe Premiere Pro 2026",name:"New Project"});
+ const second=prop("ui_find",{window:"Adobe Premiere Pro 2026",name:"Save"});
+ const unrelated=prop("premiere_detect",{});
+ const s=setup({first,second,following:[unrelated],simulateRustJournal:true,paidRequestLimit:8});
+ await until(()=>s.transport.connected(),"native connected");
+ const requested=await s.transport.send("Inspect Premiere project windows","scope-readonly",0);
+ assert.equal(requested.ok,true);
+ assert.ok(s.inspectApprove&&!s.inspectApprove.hidden);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0,
+  "scope button is not an invisible unapproved first action");
+ s.inspectApprove.listeners.get("click")();
+ await until(()=>s.staged.length===3,"unrelated native proposal after two scoped reads");
+ await until(()=>s.calls.filter(c=>c.name==="execute_action").length===2,"two scoped native inspections");
+ const calls=s.calls.filter(c=>c.name==="execute_action");
+ assert.ok(calls.every(c=>typeof c.params.inspectionScopeId==="string"));
+ assert.equal(calls[0].params.inspectionScopeId,calls[1].params.inspectionScopeId);
+ assert.equal(s.staged[2].proposal.tool,"premiere_detect");
+ assert.equal(s.approval.hidden,false,"unrelated tool still needs Allow once");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
+ assert.equal(s.revokeInspect.hidden,false);
+ s.revokeInspect.listeners.get("click")();
+ await until(()=>s.calls.some(c=>c.name==="revoke_task_inspection_scopes"),"owner read scope revoke");
+ assert.equal(s.revokeInspect.hidden,true,"revoke hides only after local permissions disappear");
 });
