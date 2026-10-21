@@ -1824,3 +1824,21 @@ test("owner bounded read-only scope auto-approves same-window inspections but ne
  await until(()=>s.calls.some(c=>c.name==="revoke_task_inspection_scopes"),"owner read scope revoke");
  assert.equal(s.revokeInspect.hidden,true,"revoke hides only after local permissions disappear");
 });
+
+test("bounded owner inspection stops at eight reads, ninth is never auto-approved",async()=>{
+ const proposal=(i)=>({content:"Read "+i,provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{window:"Adobe Premiere Pro 2026",name:"Control-"+i}}});
+ const s=setup({first:proposal(1),second:proposal(2),
+  following:Array.from({length:7},(_,i)=>proposal(i+3)),
+  simulateRustJournal:true,paidRequestLimit:16,budgetActions:24});
+ await until(()=>s.transport.connected(),"native connected");
+ await s.transport.send("Inspect Premiere window controls","read-limit-eight",0);
+ s.inspectApprove.listeners.get("click")();
+ await until(()=>s.staged.length===9,"ninth distinct read staged for owner review");
+ await until(()=>s.calls.filter(c=>c.name==="execute_action").length===8,"exactly eight scoped dispatches");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,8);
+ assert.ok(s.calls.filter(c=>c.name==="execute_action").every(c=>c.params.inspectionScopeId));
+ assert.equal(s.approval.hidden,false,"ninth action retains ordinary approval");
+ assert.equal(s.revokeInspect.hidden,true,"expired scoped permission is no longer displayed");
+ assert.ok(s.calls.some(c=>c.name==="revoke_task_inspection_scopes"));
+});
