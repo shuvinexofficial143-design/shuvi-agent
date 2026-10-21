@@ -16,6 +16,7 @@ struct Scope {
     task_id:String,
     tool:String,
     exact_file:PathBuf,
+    workspace:PathBuf,
     expires_at_ms:u64,
     remaining:u8,
     dispatched:HashSet<String>,
@@ -58,6 +59,27 @@ fn checked_file(raw:&str)->Result<PathBuf,String>{
         path.components().any(|c|matches!(c,Component::CurDir|Component::ParentDir)){
         return Err("Scoped edit requires an absolute unambiguous file path.".into());
     }
+    // Windows streams/device aliases are not ordinary files; reject these
+    // spellings before any canonicalization or creation can occur.
+    for part in path.components().filter_map(|c|match c {Component::Normal(n)=>Some(n),_=>None}){
+        let segment=part.to_string_lossy();
+        if segment.ends_with(' ')||segment.ends_with('.')||segment.contains(':'){
+            return Err("Scoped edit forbids Windows stream or ambiguous filename.".into());
+        }
+        let stem=segment.split('.').next().unwrap_or("").to_ascii_lowercase();
+        if matches!(stem.as_str(),"con"|"prn"|"aux"|"nul"|
+            "com1"|"com2"|"com3"|"com4"|"com5"|"com6"|"com7"|"com8"|"com9"|
+            "lpt1"|"lpt2"|"lpt3"|"lpt4"|"lpt5"|"lpt6"|"lpt7"|"lpt8"|"lpt9"){
+            return Err("Scoped edit forbids reserved Windows device filename.".into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        if !matches!(path.components().next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_))){
+            return Err("Scoped edits require a local drive, never UNC or device namespace.".into());
+        }
+    }
     let extension=path.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
     if !EXTENSIONS.contains(&extension.as_str()){
         return Err("This file type requires a separate Allow once approval.".into());
@@ -90,21 +112,54 @@ fn checked_file(raw:&str)->Result<PathBuf,String>{
     }
     Ok(checked)
 }
+fn checked_workspace(raw:&str)->Result<PathBuf,String>{
+    if raw.is_empty()||raw.len()>2048||raw.chars().any(|c|c.is_control()){
+        return Err("Selected workspace path is missing or invalid.".into());
+    }
+    let path=Path::new(raw);
+    if !path.is_absolute()||path.components().any(|c|matches!(c,Component::CurDir|Component::ParentDir)){
+        return Err("Selected workspace must be an unambiguous absolute project directory.".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        if !matches!(path.components().next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_))){
+            return Err("Task scope workspace must use a local drive.".into());
+        }
+    }
+    for ancestor in path.ancestors(){
+        let meta=fs::symlink_metadata(ancestor)
+            .map_err(|_|"Cannot inspect selected workspace ancestor.")?;
+        if !meta.is_dir()||redirected(&meta){
+            return Err("Selected workspace cannot include a symlink or junction.".into());
+        }
+    }
+    let canonical=fs::canonicalize(path).map_err(|_|"Selected workspace unavailable.")?;
+    // Never allow a drive/filesystem root to be a task editing project.
+    if canonical.parent().is_none(){
+        return Err("Filesystem root is too broad for autonomous editing.".into());
+    }
+    Ok(canonical)
+}
 impl TaskEditScopeStore{
     fn prune(&mut self,now:u64){
         self.scopes.retain(|_,s|now<s.expires_at_ms&&s.remaining>0);
     }
     pub(crate) fn issue(&mut self,task_id:&str,action_id:&str,
-        tool:&str,path:&str,now:u64)->Result<EditScopeView,String>{
+        tool:&str,path:&str,workspace:&str,now:u64)->Result<EditScopeView,String>{
         if !valid_uuid(task_id)||!valid_uuid(action_id)||now==0||
             now.checked_add(TTL_MS).is_none()||!ALLOWED.contains(&tool){
             return Err("Task editing scope requires an exact prepared, eligible action.".into());
         }
         let exact_file=checked_file(path)?;
+        let selected_workspace=checked_workspace(workspace)?;
+        if !exact_file.starts_with(&selected_workspace){
+            return Err("Exact edit file is outside the owner-selected project.".into());
+        }
         self.prune(now);
         if self.scopes.len()>=MAX_SCOPES{return Err("Too many unexpired task scopes.".into());}
         let id=Uuid::new_v4().to_string();
-        let project_root=exact_file.parent().ok_or("Scoped edit has no project folder.")?;
+        let project_root=&selected_workspace;
         let view=EditScopeView{
             id:id.clone(),task_id:task_id.to_owned(),app:"filesystem".into(),
             project_root:project_root.to_string_lossy().into_owned(),
@@ -114,14 +169,14 @@ impl TaskEditScopeStore{
             authorized_paid_requests:0,
         };
         self.scopes.insert(id,Scope{task_id:task_id.into(),tool:tool.into(),
-            exact_file,expires_at_ms:now+TTL_MS,
+            exact_file,workspace:selected_workspace,expires_at_ms:now+TTL_MS,
             remaining:MAX_ACTIONS,dispatched:HashSet::new()});
         Ok(view)
     }
     /// Called under the existing native execution/pending locks BEFORE durable
     /// worker start. Grant ID alone has no power to change tool or path.
     pub(crate) fn consume(&mut self,task_id:&str,scope_id:&str,action_id:&str,
-        tool:&str,path:&str,now:u64)->Result<(),String>{
+        tool:&str,path:&str,workspace:&str,now:u64)->Result<(),String>{
         if !valid_uuid(task_id)||!valid_uuid(scope_id)||!valid_uuid(action_id)||now==0||
             !ALLOWED.contains(&tool){
             return Err("Invalid task editing authority.".into());
@@ -134,7 +189,9 @@ impl TaskEditScopeStore{
             return Err("Scoped edit does not match task/tool or repeats a dispatched action.".into());
         }
         let checked=checked_file(path)?;
-        if checked!=s.exact_file{
+        let selected_workspace=checked_workspace(workspace)?;
+        if selected_workspace!=s.workspace||checked!=s.exact_file ||
+            !checked.starts_with(&selected_workspace){
             return Err("Scoped edit target is outside the exact owner-approved file.".into());
         }
         s.dispatched.insert(action_id.to_owned());
@@ -162,21 +219,21 @@ mod tests{
         let (dir,path)=fixture();let task=Uuid::new_v4().to_string();
         let prepared=Uuid::new_v4().to_string();
         let mut store=TaskEditScopeStore::default();
-        let grant=store.issue(&task,&prepared,"write_file",&path,10).unwrap();
+        let grant=store.issue(&task,&prepared,"write_file",&path,&dir.to_string_lossy(),10).unwrap();
         assert_eq!(grant.app,"filesystem");assert_eq!(grant.authorized_paid_requests,0);
         assert_eq!(grant.allowed_tools,vec!["write_file"]);
-        assert!(store.consume(&Uuid::new_v4().to_string(),&grant.id,&prepared,"write_file",&path,11).is_err());
-        assert!(store.consume(&task,&grant.id,&prepared,"replace_text",&path,11).is_err());
+        assert!(store.consume(&Uuid::new_v4().to_string(),&grant.id,&prepared,"write_file",&path,&dir.to_string_lossy(),11).is_err());
+        assert!(store.consume(&task,&grant.id,&prepared,"replace_text",&path,&dir.to_string_lossy(),11).is_err());
         let other=dir.join("other.md").to_string_lossy().into_owned();
-        assert!(store.consume(&task,&grant.id,&prepared,"write_file",&other,11).is_err());
-        store.consume(&task,&grant.id,&prepared,"write_file",&path,11).unwrap();
-        assert!(store.consume(&task,&grant.id,&prepared,"write_file",&path,12).is_err());
+        assert!(store.consume(&task,&grant.id,&prepared,"write_file",&other,&dir.to_string_lossy(),11).is_err());
+        store.consume(&task,&grant.id,&prepared,"write_file",&path,&dir.to_string_lossy(),11).unwrap();
+        assert!(store.consume(&task,&grant.id,&prepared,"write_file",&path,&dir.to_string_lossy(),12).is_err());
         let second=Uuid::new_v4().to_string();
-        store.consume(&task,&grant.id,&second,"write_file",&path,12).unwrap();
+        store.consume(&task,&grant.id,&second,"write_file",&path,&dir.to_string_lossy(),12).unwrap();
         store.revoke_task(&task);
-        assert!(store.consume(&task,&grant.id,&Uuid::new_v4().to_string(),"write_file",&path,13).is_err());
-        let grant=store.issue(&task,&prepared,"write_file",&path,100).unwrap();
-        assert!(store.consume(&task,&grant.id,&prepared,"write_file",&path,100+TTL_MS).is_err());
+        assert!(store.consume(&task,&grant.id,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),13).is_err());
+        let grant=store.issue(&task,&prepared,"write_file",&path,&dir.to_string_lossy(),100).unwrap();
+        assert!(store.consume(&task,&grant.id,&prepared,"write_file",&path,&dir.to_string_lossy(),100+TTL_MS).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -184,15 +241,15 @@ mod tests{
         let (dir,path)=fixture();let t=Uuid::new_v4().to_string();let a=Uuid::new_v4().to_string();
         let mut store=TaskEditScopeStore::default();
         for op in ["powershell","git_push","ui_click","run_project_task","browser_dom_click","apply_patch"] {
-            assert!(store.issue(&t,&a,op,&path,100).is_err());
+            assert!(store.issue(&t,&a,op,&path,&dir.to_string_lossy(),100).is_err());
         }
         let escaped=dir.join("..").join("other.md").to_string_lossy().into_owned();
-        assert!(store.issue(&t,&a,"write_file",&escaped,100).is_err());
-        assert!(store.issue(&t,&a,"write_file",&dir.join(".env").to_string_lossy(),100).is_err());
+        assert!(store.issue(&t,&a,"write_file",&escaped,&dir.to_string_lossy(),100).is_err());
+        assert!(store.issue(&t,&a,"write_file",&dir.join(".env").to_string_lossy(),&dir.to_string_lossy(),100).is_err());
         let hidden=dir.join("linked.md");
         #[cfg(unix)] {
             std::os::unix::fs::symlink(dir.join("project.md"),&hidden).unwrap();
-            assert!(store.issue(&t,&a,"write_file",&hidden.to_string_lossy(),100).is_err());
+            assert!(store.issue(&t,&a,"write_file",&hidden.to_string_lossy(),&dir.to_string_lossy(),100).is_err());
         }
         fs::remove_dir_all(dir).unwrap();
     }
@@ -200,10 +257,32 @@ mod tests{
     fn stop_revokes_entire_scope_without_unknown_worker_replay(){
         let (dir,path)=fixture();let t=Uuid::new_v4().to_string();let a=Uuid::new_v4().to_string();
         let mut store=TaskEditScopeStore::default();
-        let view=store.issue(&t,&a,"write_file",&path,100).unwrap();
-        store.consume(&t,&view.id,&a,"write_file",&path,101).unwrap();
+        let view=store.issue(&t,&a,"write_file",&path,&dir.to_string_lossy(),100).unwrap();
+        store.consume(&t,&view.id,&a,"write_file",&path,&dir.to_string_lossy(),101).unwrap();
         store.revoke_action(&a);
-        assert!(store.consume(&t,&view.id,&Uuid::new_v4().to_string(),"write_file",&path,102).is_err());
+        assert!(store.consume(&t,&view.id,&Uuid::new_v4().to_string(),"write_file",&path,&dir.to_string_lossy(),102).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn task_scope_is_bound_to_selected_workspace_and_unsafe_names_fail_closed(){
+        let (dir,path)=fixture();
+        let nested=dir.join("nested");fs::create_dir_all(&nested).unwrap();
+        let task=Uuid::new_v4().to_string();let action=Uuid::new_v4().to_string();
+        let mut store=TaskEditScopeStore::default();
+        let foreign=std::env::temp_dir();
+        assert!(store.issue(&task,&action,"write_file",&path,&foreign.to_string_lossy(),100).is_ok(),
+            "a broader chosen workspace can include file, but exact file remains pinned");
+        let view=store.issue(&task,&action,"write_file",&path,&dir.to_string_lossy(),100).unwrap();
+        assert!(store.consume(&task,&view.id,&action,"write_file",&path,&foreign.to_string_lossy(),101).is_err(),
+            "switching selected workspace cannot reuse an approved scope");
+        assert!(store.consume(&task,&view.id,&action,"write_file",&path,&dir.to_string_lossy(),101).is_ok());
+        let outside=dir.parent().unwrap().join("foreign.md").to_string_lossy().into_owned();
+        assert!(store.issue(&task,&action,"write_file",&outside,&dir.to_string_lossy(),101).is_err());
+        for bad in ["data.md:stream.js","con.txt","COM1.md","trailing.md."]{
+            let file=dir.join(bad).to_string_lossy().into_owned();
+            assert!(store.issue(&task,&action,"write_file",&file,&dir.to_string_lossy(),101).is_err(),"{bad}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
 }

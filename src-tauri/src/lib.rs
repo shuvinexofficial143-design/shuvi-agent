@@ -21275,7 +21275,7 @@ fn revoke_task_read_grants(
 /// filesystem file/tool. This is NOT a task-level AI/paid request permission.
 #[tauri::command]
 fn issue_task_edit_scope(
-    task_id:String, action_id:String, state:State<'_,ActionState>,
+    task_id:String, action_id:String, state:State<'_,ActionState>, app:AppHandle,
 )->Result<native_task_edit_scope::EditScopeView,String>{
     let pending=state.pending.lock()
         .map_err(|_|"Native prepared-action state unavailable.".to_string())?;
@@ -21290,7 +21290,9 @@ fn issue_task_edit_scope(
     };
     let mut scopes=state.task_edit_scopes.lock()
         .map_err(|_|"Rust task edit scope store unavailable.".to_string())?;
-    scopes.issue(&task_id,&action_id,&action.tool,path,now_ms())
+    let workspace=read_workspace(&app)?
+        .ok_or("Select a Shuvi project workspace before issuing task editing scope.")?;
+    scopes.issue(&task_id,&action_id,&action.tool,path,&workspace,now_ms())
 }
 #[tauri::command]
 fn revoke_task_edit_scopes(task_id:String,state:State<'_,ActionState>)->Result<(),String>{
@@ -21599,9 +21601,11 @@ async fn execute_action(
                     ToolAction::WriteFile{path,..}|ToolAction::ReplaceText{path,..}=>path,
                     _=>return Err("Scoped editing cannot authorize this native tool.".into()),
                 };
+                let workspace=read_workspace(&app)?
+                    .ok_or("Selected project workspace disappeared before scoped execution.")?;
                 state.task_edit_scopes.lock()
                     .map_err(|_|"Rust task edit scope store unavailable.".to_string())?
-                    .consume(task,scope_id,&action_id,&prepared.tool,path,now_ms())?;
+                    .consume(task,scope_id,&action_id,&prepared.tool,path,&workspace,now_ms())?;
             }else if grant_id.is_some()||task_id.is_some() {
                 let id=grant_id.as_deref().ok_or("Missing native read grant ID.")?;
                 let task=task_id.as_deref().ok_or("Missing native grant task ID.")?;

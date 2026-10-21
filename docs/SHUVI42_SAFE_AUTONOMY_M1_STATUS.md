@@ -29,3 +29,8 @@ Branch: feature/shuvi42-combined-runtime
 - Stop requests revoke scopes associated with executing scoped actions, and failed-action recovery refuses staging after owner Stop (including the post-async-prepare race).
 - This scope itself authorizes **0 paid provider calls**. Provider-level monetary reservation/ledger, broader project/app manifests, sensitive-action approvals, app/Windows E2E, and true unattended continuation **remain pending**. There is no assertion of Milestone 1 completion.
 - Acceptance remains GitHub frontend + Rust + unsigned installer CI distinct from real owner-Windows tests. Tests cover exact path/tool/task/quota/expiry/revoke/duplicate constraints.
+
+## Next M1 security increment — workspace-scoped exact-file manifest
+- Exact-file scopes now bind to the **saved owner-selected workspace directory** at grant time and re-check it at native dispatch; switching workspace, editing an outside file, symlink/junction workspace ancestry, or targeting the filesystem root is denied before mutation.
+- Reject Windows alternate data streams, device filenames, trailing-dot/space names and UNC/device namespace paths for scope use. Normal single-action `Allow once` remains available; broader project capabilities are not yet authorized.
+- Regression tests expanded for cross-workspace mismatch, outside target, unsafe names and legacy read grant compatibility.
