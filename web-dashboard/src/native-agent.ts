@@ -314,10 +314,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const args=proposal.arguments;
   if(!args||typeof args!=="object"||Array.isArray(args))return null;
   const path=(args as Record<string,unknown>).path;
-  if(typeof path!=="string"||!path||path.length>2048||/[\\u0000-\\u001f]/.test(path))return null;
+  if(typeof path!=="string"||!path||path.length>2048||/[\u0000-\u001f]/.test(path))return null;
   // Renderer is an OWNER-UX filter only. Rust validates the canonical
   // exact file and workspace again before issuing/executing any grant.
-  const components=path.toLowerCase().split(/[\\\\/]+/).filter(Boolean);
+  const components=path.toLowerCase().replaceAll("\\","/").split("/").filter(Boolean);
   const leaf=components.at(-1)??"";
   const extension=leaf.slice(leaf.lastIndexOf(".")+1);
   if(!["txt","md","json","css","html","js","ts","jsx","tsx"].includes(extension))return null;
@@ -332,7 +332,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "token","tokens","private","privatekey","privatekeys","keys","certificate",
    "certificates","admin","administration","middleware","webhooks","webhook",
    "signature","signatures","apikey","apikeys"]);
-  if(components.some(component=>component.split(/[._\\- ]+/).some(part=>protectedNames.has(part))))return null;
+  if(components.some(component=>protectedNames.has(component)||
+   component.replaceAll("_",".").replaceAll("-",".").replaceAll(" ",".").split(".")
+    .some(part=>protectedNames.has(part))))return null;
   return path;
  };
  const activeEdit=(thread:string,proposal:Record<string,unknown>|undefined)=>{
