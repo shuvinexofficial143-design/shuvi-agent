@@ -14,7 +14,7 @@ import {auditedYouTubeLaunch,youtubeReadbackProposal,verifiedYouTubeHome,youtube
 import {classifyNativeProviderFailure} from "./native-provider-failure.mjs";
 import {newApplicationContinuity,recordAuditedApplication,selectApplicationContinuity,continuityReadback,continuityHint,confirmedContinuityHint,checkConfirmedContinuity} from "./native-application-continuity.mjs";
 import {auditedSystemOpening,systemOpeningReadback,observeSystemOpening} from "./native-system-browser-context.mjs";
-import {recoveryButtonState} from "./native-recovery-controls.mjs";
+import {recoveryButtonState,providerRecoveryStates} from "./native-recovery-controls.mjs";
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 import {actionFingerprint,seenAfterAuditedChange} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
@@ -253,6 +253,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // an exact audited action. It does not store executable grants and is never
  // reconstructed from a persisted journal after restart.
  let pausedPlanning: {task:PendingTask;result:ActionResult;budget:NativeTaskBudget}|null=null;
+ let lastProviderHttpStatus:number|null=null;
  const recoveryTaskId=(budget:NativeTaskBudget):string|null=>{
   const existing=taskRecoveryIds.get(budget);
   if(existing)return existing;
@@ -397,20 +398,20 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    // An audited denial is nonexecution evidence, but still requires owner
    // review before creating a new Windows task. It cannot grant new approval.
    recoveryAcknowledged=false;
+   const verifiedAction=Boolean(actionId&&b.stagedActions>0);
+   const states=providerRecoveryStates(phase,verifiedAction,lastProviderHttpStatus);
    recoveryNotice.textContent=phase==="native_denied"
-    ?"Rust Audit recorded an expired, denied native UIA approval. No execution was requested by that action. Review Activity/Audit and acknowledge this prior task before starting another desktop task."
-    :phase==="planning_response_failed"
-    ?"The AI provider returned a failure response. The previous audited Windows action is STILL VERIFIED; only the next AI planning request failed. Owner may authorize another paid planning request. No Windows action will be replayed."
-    :phase==="planning_outcome_unknown"
-    ?"The next AI planning request may have failed or been billed. The previous audited Windows action is STILL VERIFIED. Owner consent and remaining budget are required before a new AI request; no Windows action will be replayed."
-    : "Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
+    ?"Rust Audit recorded expired/denied native approval. No execution authorized."
+    :phase==="planning_response_failed"||phase==="planning_outcome_unknown"
+    ?"AI planning interrupted. Windows Action: "+states.action+
+     "; Original Goal: "+states.goal+"; Provider: "+states.provider+
+     ". Owner can Retry with consent/budget or explicitly Acknowledge/Abandon before a new command. No replay."
+    :"Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before a new desktop task. No automatic retry.";
    if(phase==="planning_response_failed"||phase==="planning_outcome_unknown"){
-    taskStatus.textContent="Windows Action VERIFIED (Rust Audit) · AI Provider "+
-     (phase==="planning_response_failed"?"FAILED HTTP response":"request uncertain");
-    goalStatus.textContent="Original Goal UNVERIFIED · not the Windows action outcome.";
-    recoveryNotice.textContent+=" Windows Action VERIFIED · Original Goal UNVERIFIED · "+
-     (phase==="planning_response_failed"?"Provider HTTP FAILURE":"Provider REQUEST OUTCOME UNKNOWN")+
-     ". Choose Owner-approved Retry or Acknowledge/Abandon before an independent new task.";
+    taskStatus.textContent="Windows Action "+states.action+" (Rust Audit when present)";
+    goalStatus.textContent="Original Goal "+states.goal;
+    recoveryNotice.textContent+=" Windows Action "+states.action+" · Original Goal "+states.goal+
+     " · Provider "+states.provider+".";
    }
    recoveryNotice.hidden=false;
    recoveryCheck.hidden=!actionId;
@@ -769,6 +770,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      throw Error("Invalid next-step AI response");
    }catch(error){
     const failure=classifyNativeProviderFailure(error);
+    lastProviderHttpStatus=failure.status;
     pausedPlanning={task,result,budget:taskBudget};
     const phase=failure.kind==="http_response"?"planning_response_failed":"planning_outcome_unknown";
     if(!await persistRecovery(taskBudget,phase,task.action.id))pausedPlanning=null;
@@ -1580,6 +1582,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     return {ok:true,reply};
    }catch(error){
     const failure=classifyNativeProviderFailure(error);
+    lastProviderHttpStatus=failure.status;
     if(route.role!=="chat")await persistRecovery(taskBudget,
      failure.kind==="http_response"?"planning_response_failed":"planning_outcome_unknown");
     refreshState("AI provider planning failed. No Windows tool executed; no automatic paid retry.");

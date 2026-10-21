@@ -106,7 +106,10 @@ export function selectApplicationContinuity(registry,request,now=Date.now()){
   systemSites.some(site=>site.site.length>=3&&
    new RegExp("(^|[^a-z0-9])"+site.site+"([^a-z0-9]|$)","iu").test(w.title))&&
   /^(?:msedge|chrome|firefox|msedgewebview2)(?:\.exe)?$/iu.test(w.process)&&
-  typeof w.processStartTicks==="string");
+  typeof w.processStartTicks==="string"&&
+  (!browser||(browser==="edge"&&/^(?:msedge|msedgewebview2)/iu.test(w.process))||
+   (browser==="chrome"&&/^chrome/iu.test(w.process))||
+   (browser==="firefox"&&/^firefox/iu.test(w.process))));
  let candidates=[...browserCandidates,...desktop.map(x=>({kind:"window",...x,
   observedAt:registry.windowObservedAt})),...systemWindows.map(x=>({kind:"window",
   source:"system_browser_or_pwa",...x,observedAt:registry.windowObservedAt}))];
@@ -132,6 +135,7 @@ export function continuityReadback(candidate,proposal){
   return {tool:"browser_page_state",arguments:{pid:candidate.pid}};
  }
  if(candidate.kind==="window"&&[
+  "browser_start","browser_navigate","browser_dom_read","browser_dom_click","browser_dom_set_value",
   "open_url","launch_app","premiere_launch","blender_session_start","photoshop_launch","after_effects_launch",
   "ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse",
   "ui_find","ui_discover","inspect_screen"

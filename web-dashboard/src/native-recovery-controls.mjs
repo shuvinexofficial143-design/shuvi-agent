@@ -6,3 +6,12 @@ export function recoveryButtonState({ready,sending,pending,phase,disabled}){
  return {reason,canClear:reason==="owner_action_available",
   phase:phase??"none",domDisabled:disabled===true};
 }
+
+export function providerRecoveryStates(phase,hasVerifiedAction,httpStatus=null){
+ const action=hasVerifiedAction?"VERIFIED":"NOT EXECUTED";
+ const goal="UNVERIFIED";
+ const provider=phase==="planning_response_failed"
+  ?"HTTP "+(Number.isInteger(httpStatus)?httpStatus:"ERROR")+" FAILED"
+  :phase==="planning_outcome_unknown"?"REQUEST OUTCOME UNKNOWN":"NO FAILURE REPORTED";
+ return {action,goal,provider};
+}

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {newApplicationContinuity,recordAuditedApplication,selectApplicationContinuity,continuityReadback,checkConfirmedContinuity} from "../web-dashboard/src/native-application-continuity.mjs";
 import {simpleSystemWebOpening,auditedSystemOpening,systemOpeningReadback,observeSystemOpening} from "../web-dashboard/src/native-system-browser-context.mjs";
-import {recoveryButtonState} from "../web-dashboard/src/native-recovery-controls.mjs";
+import {recoveryButtonState,providerRecoveryStates} from "../web-dashboard/src/native-recovery-controls.mjs";
 import {newEvidence,recordAuditedEvidence} from "../web-dashboard/src/native-task-evidence.mjs";
 const A="d3de21ae-d1b6-4af9-93ea-d38ac71d91d0",B="d3de21ae-d1b6-4af9-93ea-d38ac71d91d1",now=1800000000000;
 const proposal={tool:"open_url",arguments:{url:"https://www.youtube.com/"}};
@@ -25,6 +25,8 @@ test("system open_url never promotes launcher PID to a managed CDP session",()=>
  assert.equal(candidate.kind,"window");
  assert.equal(candidate.source,"system_browser_or_pwa");
  assert.equal(candidate.pid,977);
+ assert.equal(selectApplicationContinuity(registry,"Open YouTube in Chrome",now+3),null);
+ assert.deepEqual(continuityReadback(candidate,{tool:"browser_start",arguments:{browser:"chrome"}}),{tool:"ui_windows",arguments:{}});
  assert.notEqual(candidate.pid,4620);
  assert.deepEqual(continuityReadback(candidate,{tool:"open_url",arguments:{url:"https://youtube.com/results"}}),{tool:"ui_windows",arguments:{}});
  for(const tool of ["browser_start","browser_navigate","browser_dom_read"]){
@@ -60,7 +62,9 @@ test("diagnostic is based on live runtime guards, not CSS",()=>{
  assert.equal(recoveryButtonState({...state,disabled:true}).reason,"dom_disabled");
  const src=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(src,/recoveryButtonState\(\{ready,sending,pending:!!pending,phase/);
- assert.match(src,/Windows Action VERIFIED · Original Goal UNVERIFIED/);
+ assert.match(src,/providerRecoveryStates\(phase,verifiedAction,lastProviderHttpStatus\)/);
+ assert.deepEqual(providerRecoveryStates("planning_response_failed",true,503),{action:"VERIFIED",goal:"UNVERIFIED",provider:"HTTP 503 FAILED"});
+ assert.deepEqual(providerRecoveryStates("planning_response_failed",false,503),{action:"NOT EXECUTED",goal:"UNVERIFIED",provider:"HTTP 503 FAILED"});
  assert.match(src,/systemOpeningReadback\(systemLaunchProofs\.get\(task\.threadId\)\)/);
  assert.match(src,/if\(systemObservation\)\{/);
  assert.match(src,/recoveryDismiss\.disabled=true/);
