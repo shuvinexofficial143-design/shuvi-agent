@@ -45,6 +45,9 @@ struct Scope {
 #[derive(Default)]
 pub(crate) struct TaskEditScopeStore {
     scopes:HashMap<String,Scope>,
+    // Expired/exhausted authority cannot be silently reset by task UUID.
+    // Explicit owner revocation is needed before a new scope is issued.
+    retired_task_ids:HashSet<String>,
 }
 #[derive(Debug,Clone,Serialize)]
 #[serde(rename_all="camelCase")]
@@ -223,7 +226,12 @@ pub(crate) fn owner_checkpoint_allows(
 }
 impl TaskEditScopeStore{
     fn prune(&mut self,now:u64){
-        self.scopes.retain(|_,s|now<s.expires_at_ms&&s.remaining>0);
+        self.scopes.retain(|_,s|{
+            if now>=s.expires_at_ms||s.remaining==0{
+                self.retired_task_ids.insert(s.task_id.clone());
+                false
+            }else{true}
+        });
     }
     pub(crate) fn issue(&mut self,task_id:&str,action_id:&str,
         tool:&str,path:&str,workspace:&str,now:u64)->Result<EditScopeView,String>{
@@ -238,6 +246,9 @@ impl TaskEditScopeStore{
             return Err("Exact edit file is outside the owner-selected project.".into());
         }
         self.prune(now);
+        if self.retired_task_ids.contains(task_id){
+            return Err("Expired or exhausted task editing authority cannot be reissued without explicit owner revoke.".into());
+        }
         if self.scopes.values().any(|scope|scope.task_id==task_id){
             return Err("This task already owns an immutable editing scope; owner must revoke it before new authorization.".into());
         }
@@ -306,6 +317,8 @@ impl TaskEditScopeStore{
     }
     pub(crate) fn revoke_task(&mut self,task_id:&str){
         self.scopes.retain(|_,s|s.task_id!=task_id);
+        // This IPC is owner-invoked; never treat expiry/pruning as owner revoke.
+        self.retired_task_ids.remove(task_id);
     }
     pub(crate) fn revoke_action(&mut self,action_id:&str){
         self.scopes.retain(|_,s|s.origin_action_id!=action_id&&
@@ -455,6 +468,23 @@ mod tests{
             assert!(scopes.issue(&task,&origin,"write_file",&file,&dir.to_string_lossy(),100).is_err(),
                 "{folder} must need Allow once");
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn expired_or_exhausted_grant_cannot_reissue_without_owner_revoke(){
+        let (dir,path)=fixture();
+        let task=Uuid::new_v4().to_string();let origin=Uuid::new_v4().to_string();
+        let mut s=TaskEditScopeStore::default();
+        let old=s.issue(&task,&origin,"write_file",&path,&dir.to_string_lossy(),100).unwrap();
+        assert!(s.issue(&task,&Uuid::new_v4().to_string(),"write_file",
+            &path,&dir.to_string_lossy(),100+TTL_MS).is_err());
+        assert!(s.consume(&task,&old.id,&Uuid::new_v4().to_string(),
+            "write_file",&path,&dir.to_string_lossy(),100+TTL_MS).is_err());
+        assert!(s.issue(&task,&Uuid::new_v4().to_string(),"write_file",
+            &path,&dir.to_string_lossy(),100+TTL_MS+1).is_err());
+        s.revoke_task(&task);
+        assert!(s.issue(&task,&Uuid::new_v4().to_string(),"write_file",
+            &path,&dir.to_string_lossy(),100+TTL_MS+2).is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
