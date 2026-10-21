@@ -83,3 +83,12 @@ test("owner can explicitly revoke task editing scope without claiming process te
  assert.ok(native.includes('this does not terminate an executing Windows action'));
  assert.ok(native.includes('editScopeApprove.disabled=sending||editScopeIssuing||editScopeRevoking||!ready'));
 });
+
+test("revoking while a scoped action is pending never falls back to unscoped Allow once",()=>{
+ assert.ok(native.includes('const requiresScopedEdit=scopedApprovalId===current.action.id;'));
+ const execute=native.slice(native.indexOf('const scope=editScopes.get(current.threadId);'),native.indexOf('const receipts=await invoke<'));
+ assert.ok(execute.includes('if(requiresScopedEdit&&!useScope)'));
+ assert.ok(execute.indexOf('if(requiresScopedEdit&&!useScope)')<execute.indexOf('invoke<ActionResult>("execute_action"'));
+ assert.ok(native.includes('revokeEditing.disabled=editScopeIssuing||editScopeRevoking||!ready'));
+ assert.ok(native.includes('if(!ready||editScopeIssuing||editScopeRevoking||editScopes.size===0)return;'));
+});
