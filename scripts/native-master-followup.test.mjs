@@ -44,6 +44,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  let persistedRust=rustRecord;
  let inspectionGrant=null;
  let projectGrant=null;
+ let editGrant=null;
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
  nodes.set("chatWorkspaceLayout",chat);nodes.set("chatForm",form);
@@ -73,7 +74,19 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    if(simulateRustJournal)persistedRust=null;
    return;
   }
-  if(name==="issue_task_project_scope"){
+  if(name==="issue_task_edit_scope"){
+    if(simulateRustJournal)assert.equal(persistedRust?.phase,"awaiting_approval");
+    const action=staged.find(x=>x.id===params.actionId)?.proposal;
+    assert.ok(action&&["write_file","replace_text"].includes(action.tool));
+    assert.equal(params.taskId,persistedRust?.taskId);
+    assert.equal(editGrant,null,"owner cannot reissue active Rust editing permission");
+    editGrant={id:"165fdafb-57c6-47ad-8b2f-894f2aef1ed6",taskId:params.taskId,
+     exactPath:action.arguments.path,allowedTools:[action.tool],remainingActions:4,
+     authorizedPaidRequests:0,expiresAtMs:Date.now()+600_000};
+    return editGrant;
+   }
+   if(name==="revoke_task_edit_scopes"){editGrant=null;return;}
+   if(name==="issue_task_project_scope"){
     if(simulateRustJournal)assert.equal(persistedRust?.phase,"awaiting_approval");
     const proposal=staged.find(x=>x.id===params.actionId)?.proposal;
     assert.ok(proposal&&["list_directory","workspace_scan"].includes(proposal.tool));
@@ -145,7 +158,16 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   }
   if(name==="execute_action"){
    const action=staged.find(s=>s.id===params.actionId);
-   if(params.projectScopeId){
+   if(params.editScopeId){
+     assert.ok(editGrant,"Rust exact-file scope must exist at dispatch");
+     assert.equal(params.editScopeId,editGrant.id);
+     assert.equal(params.taskId,editGrant.taskId);
+     assert.equal(action?.proposal.tool,editGrant.allowedTools[0]);
+     assert.equal(action.proposal.arguments.path,editGrant.exactPath);
+     assert.ok(editGrant.remainingActions>0,"Rust cannot execute a fifth delegated edit");
+     editGrant.remainingActions--;
+    }
+    if(params.projectScopeId){
      assert.ok(projectGrant,"exact owner-approved project scope required before dispatch");
      assert.equal(params.projectScopeId,projectGrant.id);
      assert.equal(params.taskId,projectGrant.taskId);
@@ -1908,4 +1930,46 @@ test("owner project inventory reuse never bypasses duplicate-action guard or exh
  assert.ok(s.calls.filter(c=>c.name==="execute_action").every(c=>c.params.projectScopeId));
  assert.equal(s.revokeProject.hidden,true,"project authority is no longer reusable");
  assert.equal(s.chatInputs.length,3,"no extra paid request after repeated proposal was detected");
+});
+
+test("owner four-action exact-file grant automatically continues one safe follow-up without broadening tool or path",async()=>{
+ const path="C:\\\\Projects\\\\ShuviDemo\\\\notes.md";
+ const edit=(tool,args)=>({content:tool+" planned",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool,arguments:args}});
+ const s=setup({first:edit("write_file",{path,content:"version one"}),
+  second:edit("write_file",{path,content:"version two"}),
+  following:[edit("replace_text",{path,old:"version",new_value:"safe"})],
+  simulateRustJournal:true,paidRequestLimit:8});
+ await until(()=>s.transport.connected(),"native connected");
+ await s.transport.send("@master Make two bounded edits to project notes","delegated-editor",0);
+ const btn=s.composerParent.children.find(x=>x.textContent==="Allow exact-file task editing scope (4 actions / 10 min)");
+ assert.ok(btn&&!btn.hidden,"owner must deliberately grant the bounded edit scope");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ btn.listeners.get("click")();
+ await until(()=>s.staged.length===3,"different mutating tool awaits owner");
+ await until(()=>s.calls.filter(x=>x.name==="execute_action").length===2,"two separately staged native edits");
+ const actions=s.calls.filter(x=>x.name==="execute_action");
+ assert.ok(actions.every(x=>x.params.editScopeId&&x.params.taskId));
+ assert.equal(actions[0].params.editScopeId,actions[1].params.editScopeId);
+ assert.equal(s.staged[2].proposal.tool,"replace_text");
+ assert.equal(s.approval.hidden,false,"different editing tool still requires Allow once");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
+});
+test("delegated exact-file scope never automatically executes fifth file mutation",async()=>{
+ const path="C:\\\\Projects\\\\ShuviDemo\\\\readme.md";
+ const p=i=>({content:"edit "+i,provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"write_file",arguments:{path,content:"new text "+i}}});
+ const s=setup({first:p(1),second:p(2),following:[p(3),p(4),p(5)],
+  simulateRustJournal:true,paidRequestLimit:8,budgetActions:24});
+ await until(()=>s.transport.connected(),"native connected");
+ await s.transport.send("@master Edit this one markdown document within owner limits","edit-four",0);
+ const btn=s.composerParent.children.find(x=>x.textContent==="Allow exact-file task editing scope (4 actions / 10 min)");
+ btn.listeners.get("click")();
+ await until(()=>s.staged.length===5,"fifth edit pending review");
+ await until(()=>s.calls.filter(x=>x.name==="execute_action").length===4,"four native scoped writes");
+ const actions=s.calls.filter(x=>x.name==="execute_action");
+ assert.equal(actions.length,4);
+ assert.ok(actions.every(x=>x.params.editScopeId));
+ assert.equal(s.approval.hidden,false,"fifth mutation requires fresh owner authority");
+ assert.ok(s.calls.some(x=>x.name==="revoke_task_edit_scopes"),"native revoke after fourth dispatched edit");
 });
