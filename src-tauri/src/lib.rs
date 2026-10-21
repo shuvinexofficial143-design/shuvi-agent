@@ -26,6 +26,7 @@ mod native_job_history;
 mod native_scheduler;
 mod native_task_grant;
 mod native_task_edit_scope;
+mod native_task_inspection_scope;
 mod native_task_ai_ledger;
 mod native_task_ai_quota;
 mod native_task_delivery;
@@ -1182,6 +1183,7 @@ struct ActionState {
     native_execution_owned: AtomicBool,
     task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
     task_edit_scopes: Mutex<native_task_edit_scope::TaskEditScopeStore>,
+    task_inspection_scopes: Mutex<native_task_inspection_scope::Store>,
     task_ai_quota: Mutex<native_task_ai_quota::Store>,
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
@@ -21333,6 +21335,51 @@ fn revoke_task_read_grants(
     grants.revoke(&task_id);
     Ok(())
 }
+/// Owner-issued bounded read-only UI inspection scope. Existing native action
+/// preparation, OS identity, audit and approval journal checks stay mandatory.
+#[tauri::command]
+fn issue_task_inspection_scope(
+    task_id:String,action_id:String,state:State<'_,ActionState>,app:AppHandle,
+)->Result<native_task_inspection_scope::View,String>{
+    let pending=state.pending.lock()
+        .map_err(|_|"Native prepared-action state unavailable.".to_string())?;
+    let prepared=pending.get(&action_id)
+        .ok_or("UI inspection scope requires a live prepared native action.")?;
+    if now_ms().saturating_sub(prepared.created_at_ms)>PENDING_ACTION_TTL_MS {
+        return Err("Prepared UI inspection expired.".into());
+    }
+    let record=native_recovery::load(&app)?;
+    native_task_edit_scope::owner_checkpoint_allows(record.as_ref(),&task_id,&action_id,
+        "awaiting_approval",now_ms())?;
+    let mut scopes=state.task_inspection_scopes.lock()
+        .map_err(|_|"Native inspection scope store unavailable.".to_string())?;
+    let view=scopes.issue(&task_id,&action_id,&prepared.action,now_ms())?;
+    if let Err(error)=append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"inspection_scope_issued".into(),
+        tool:prepared.tool.clone(),
+        detail:"Owner-approved bounded same-window read-only UI inspection; no paid AI permission.".into(),
+        success:true,action_id:Some(action_id),
+    }){
+        scopes.revoke_task(&task_id);
+        return Err(error);
+    }
+    Ok(view)
+}
+#[tauri::command]
+fn revoke_task_inspection_scopes(
+    task_id:String,state:State<'_,ActionState>,app:AppHandle,
+)->Result<(),String>{
+    Uuid::parse_str(&task_id).map_err(|_|"Invalid task inspection scope UUID.")?;
+    state.task_inspection_scopes.lock()
+        .map_err(|_|"Inspection scope state unavailable.".to_string())?
+        .revoke_task(&task_id);
+    append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"inspection_scope_revoked".into(),
+        tool:"ui_discover".into(),
+        detail:"Task inspection scope revoked; no running action termination claimed.".into(),
+        success:true,action_id:None,
+    })
+}
 /// Rust restricts these owner-authorized task edits to one prepared exact
 /// filesystem file/tool. This is NOT a task-level AI/paid request permission.
 #[tauri::command]
@@ -21384,6 +21431,9 @@ fn deny_action(
         // scope, even if no scoped edit was dispatched yet.
         state.task_edit_scopes.lock()
             .map_err(|_|"Rust task edit scope store unavailable.".to_string())?
+            .revoke_action(&action_id);
+        state.task_inspection_scopes.lock()
+            .map_err(|_|"Inspection scope store unavailable.".to_string())?
             .revoke_action(&action_id);
         let audit_detail = audit_safe_action_detail(&action.tool, &action.detail);
         append_audit(
@@ -21515,6 +21565,9 @@ fn cancel_running_action(
     state.task_edit_scopes.lock()
         .map_err(|_|"Rust task edit scope store unavailable.".to_string())?
         .revoke_action(&action_id);
+    state.task_inspection_scopes.lock()
+        .map_err(|_|"Inspection scope store unavailable.".to_string())?
+        .revoke_action(&action_id);
 
     for _ in 0..50 {
         let active_tool = state
@@ -21628,6 +21681,7 @@ async fn execute_action(
     grant_id: Option<String>,
     task_id: Option<String>,
     edit_scope_id: Option<String>,
+    inspection_scope_id: Option<String>,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
@@ -21664,7 +21718,18 @@ async fn execute_action(
             // a currently valid Rust grant for THIS prepared action's exact
             // typed arguments. No permission extends to a second action or
             // across restart; the grant is consumed before native dispatch.
-            if let Some(scope_id)=edit_scope_id.as_deref(){
+            if let Some(scope_id)=inspection_scope_id.as_deref(){
+                if grant_id.is_some()||edit_scope_id.is_some(){
+                    return Err("Inspection scope cannot combine with other permissions.".into());
+                }
+                let task=task_id.as_deref().ok_or("Scoped inspection needs exact task UUID.")?;
+                let record=native_recovery::load(&app)?;
+                native_task_edit_scope::owner_checkpoint_allows(record.as_ref(),task,
+                    &action_id,"executing",now_ms())?;
+                state.task_inspection_scopes.lock()
+                    .map_err(|_|"Native inspection authorization unavailable.".to_string())?
+                    .consume(task,scope_id,&action_id,&prepared.action,now_ms())?;
+            }else if let Some(scope_id)=edit_scope_id.as_deref(){
                 if grant_id.is_some(){return Err("Cannot combine read grant and edit scope.".into());}
                 let task=task_id.as_deref().ok_or("Scoped editing needs exact task ID.")?;
                 let path=match &prepared.action{
@@ -21945,6 +22010,11 @@ async fn execute_action(
             if scheduled_step.is_some(){
                 native_scheduler::finish(&app,&action_id,&result.tool,Some(result.success))?;
             }
+            if inspection_scope_id.is_some()&&!result.success {
+                state.task_inspection_scopes.lock()
+                    .map_err(|_|"Inspection failure revocation unavailable.".to_string())?
+                    .revoke_action(&action_id);
+            }
             if let (Some(scope_id),Some(task))=(edit_scope_id.as_deref(),task_id.as_deref()){
                 let mut scopes=state.task_edit_scopes.lock()
                     .map_err(|_|"Native edit scope audit reconciliation unavailable.".to_string())?;
@@ -21959,6 +22029,11 @@ async fn execute_action(
             Ok(result)
         }
         Err(error) => {
+            if inspection_scope_id.is_some(){
+                if let Ok(mut scopes)=state.task_inspection_scopes.lock(){
+                    scopes.revoke_action(&action_id);
+                }
+            }
             if edit_scope_id.is_some(){
                 if let Ok(mut scopes)=state.task_edit_scopes.lock(){scopes.revoke_action(&action_id);}
             }
@@ -22445,6 +22520,8 @@ pub fn run() {
             deny_action,
             issue_task_edit_scope,
             revoke_task_edit_scopes,
+            issue_task_inspection_scope,
+            revoke_task_inspection_scopes,
             cancel_running_action,
             cancel_native_approved_parent,
             execute_action,
