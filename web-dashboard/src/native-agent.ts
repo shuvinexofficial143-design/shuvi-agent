@@ -157,6 +157,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  actionFeedback.hidden=true;
  const pendingText=field("p");
  const approve=field("button","Allow once");approve.type="button";
+ const projectApprove=field("button","Allow selected-project inventory (8 reads / 3 min)");
+ projectApprove.type="button";projectApprove.hidden=true;
+ projectApprove.setAttribute("aria-label","Owner approves exact selected workspace root inventory only; no file content or editing");
+ const revokeProject=field("button","Revoke selected-project inventory");
+ revokeProject.type="button";revokeProject.hidden=true;revokeProject.disabled=true;
  const inspectApprove=field("button","Allow read-only window scope (8 actions / 3 min)");
  inspectApprove.type="button";inspectApprove.hidden=true;
  inspectApprove.setAttribute("aria-label","Approve bounded native UI inspection only; no clicks or paid requests");
@@ -174,7 +179,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  revokeEditing.type="button";revokeEditing.hidden=true;revokeEditing.disabled=true;
  revokeEditing.setAttribute("aria-label","Revoke current task edit scopes without assuming running actions terminated");
  const deny=field("button","Deny");deny.type="button";
- approval.append(pendingText,approve,inspectApprove,editScopeApprove,deny);
+ approval.append(pendingText,approve,projectApprove,inspectApprove,editScopeApprove,deny);
  const mobile=field("div");mobile.className="shuvi-native-mobile";
  const mobileTitle=field("strong","Mobile → Windows Agent pairing");
  const mobileCode=field("input");mobileCode.type="password";
@@ -247,11 +252,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   composerParent.insertBefore(stopCurrent,chatForm);
   composerParent.insertBefore(revokeEditing,chatForm);
   composerParent.insertBefore(revokeInspect,chatForm);
+   composerParent.insertBefore(revokeProject,chatForm);
   composerParent.insertBefore(approval,chatForm);
   composerParent.insertBefore(recoveryPanel,chatForm);
  }else{
   // Defensive fallback for an incomplete preview; never lose an approval UI.
-  panel.append(actionFeedback,stopFeedback,stopCurrent,revokeEditing,revokeInspect,approval,recoveryPanel);
+  panel.append(actionFeedback,stopFeedback,stopCurrent,revokeEditing,revokeInspect,revokeProject,approval,recoveryPanel);
  }
  let team:ModelTeamHandle|null=null;
  let ready=false;
@@ -265,6 +271,23 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskAiQuotas=new WeakMap<NativeTaskBudget,number>();
  const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string}>();
  const inspectScopes=new Map<string,{id:string;taskId:string;window:string;expiresAtMs:number;remainingActions:number}>();
+ const projectScopes=new Map<string,{id:string;taskId:string;path:string;expiresAtMs:number;remainingActions:number}>();
+ let projectIssuing=false,projectRevoking=false;
+ let scopedProjectActionId:string|null=null,autoProjectActionId:string|null=null;
+ const readProjectPath=(p:Record<string,unknown>|undefined):string|null=>{
+  if(!p||!["list_directory","workspace_scan"].includes(String(p.tool)))return null;
+  const args=p.arguments;
+  if(!args||typeof args!=="object"||Array.isArray(args))return null;
+  const path=(args as Record<string,unknown>).path;
+  return typeof path==="string"&&path.length>0&&path.length<32768&&
+   path.trim()===path&&!/[\u0000-\u001f]/.test(path)?path:null;
+ };
+ const activeProject=(thread:string,p:Record<string,unknown>|undefined)=>{
+  const scope=projectScopes.get(thread),budget=taskBudgets.get(thread);
+  return Boolean(scope&&budget&&scope.taskId===taskRecoveryIds.get(budget)&&
+    scope.remainingActions>0&&Date.now()<scope.expiresAtMs&&
+    readProjectPath(p)===scope.path);
+ };
  let inspectIssuing=false,inspectRevoking=false;
  let scopedInspectActionId:string|null=null,autoInspectActionId:string|null=null;
  const readWindow=(p:Record<string,unknown>|undefined):string|null=>{
@@ -685,8 +708,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  function refreshState(text?:string){
   if(text)status.textContent=text;
-  approve.disabled=sending||editScopeIssuing||inspectIssuing;
-  deny.disabled=sending||editScopeIssuing||inspectIssuing;
+  approve.disabled=sending||editScopeIssuing||inspectIssuing||projectIssuing;
+  deny.disabled=sending||editScopeIssuing||inspectIssuing||projectIssuing;
+   projectApprove.hidden=!pending||readProjectPath(pending.proposal??undefined)===null;
+   projectApprove.disabled=!ready||sending||projectIssuing||projectRevoking||inspectIssuing||editScopeIssuing;
+   revokeProject.hidden=projectScopes.size===0;
+   revokeProject.disabled=!ready||projectIssuing||projectRevoking||projectScopes.size===0;
   inspectApprove.hidden=!pending||readWindow(pending.proposal??undefined)===null;
    inspectApprove.disabled=!ready||sending||inspectIssuing||inspectRevoking||editScopeIssuing;
    revokeInspect.hidden=inspectScopes.size===0;
