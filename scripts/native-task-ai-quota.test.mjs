@@ -31,3 +31,11 @@ test("owner choice is issued before first paid task call, ordinary Chat unaffect
  assert.ok(first.indexOf('issue_native_task_ai_quota')<first.indexOf('const ticket=route.role==="chat"'));
  assert.ok(ui.includes('This is not a USD spending cap or verified bill.'));
 });
+
+test("frontend refuses extra paid journal reservation after owner request cap",()=>{
+ assert.ok(ui.includes('const taskAiQuotas=new WeakMap<NativeTaskBudget,number>()'));
+ assert.ok(ui.includes('taskAiQuotas.set(taskBudget,selectedLimit)'));
+ assert.ok(ui.includes('ownerBudget.modelRequests>=(taskAiQuotas.get(ownerBudget)??0)'));
+ assert.ok(ui.includes('taskBudget.modelRequests>=(taskAiQuotas.get(taskBudget)??0)'));
+ assert.ok(ui.includes('owner_paid_request_quota_exhausted'));
+});
