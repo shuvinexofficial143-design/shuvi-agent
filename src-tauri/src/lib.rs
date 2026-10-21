@@ -22079,6 +22079,27 @@ async fn execute_action(
         }
         other=>other,
     };
+    // Scope success must not be published in the durable Rust "executed"
+    // audit until the exact owner-approved file has been re-fingerprinted.
+    // If readback is missing, reordered or changed, the action outcome is
+    // uncertain and no successor can use this editing scope.
+    let execution=match execution {
+        Ok(result) if edit_scope_id.is_some()&&result.success=>{
+            match (edit_scope_id.as_deref(),task_id.as_deref(),
+                scoped_file_path.as_deref(),read_workspace(&app)){
+                (Some(scope),Some(task),Some(path),Ok(Some(workspace)))=>{
+                    match state.task_edit_scopes.lock(){
+                        Ok(mut scopes)=>scopes
+                            .record_audited_success(task,scope,&action_id,path,&workspace)
+                            .map(|_|result),
+                        Err(_)=>Err("Exact-file edit verification lock unavailable.".into()),
+                    }
+                }
+                _=>Err("Approved edit file or project unavailable after mutation; outcome needs owner review.".into()),
+            }
+        }
+        other=>other,
+    };
 
     if let Ok(mut running) = state.running_action_tools.lock() {
         if let Ok(mut started)=state.running_action_started_at_ms.lock(){
@@ -22125,16 +22146,10 @@ async fn execute_action(
                     .map_err(|_|"Inspection failure revocation unavailable.".to_string())?
                     .revoke_action(&action_id);
             }
-            if let (Some(scope_id),Some(task))=(edit_scope_id.as_deref(),task_id.as_deref()){
-                let mut scopes=state.task_edit_scopes.lock()
-                    .map_err(|_|"Native edit scope audit reconciliation unavailable.".to_string())?;
-                if result.success{
-                    let path=scoped_file_path.as_deref()
-                        .ok_or("Audited scoped tool no longer matches file operation.")?;
-                    let workspace=read_workspace(&app)?
-                        .ok_or("Selected workspace missing after audited edit; no continuation.")?;
-                    scopes.record_audited_success(task,scope_id,&action_id,path,&workspace)?;
-                }else{scopes.revoke_action(&action_id);}
+            if edit_scope_id.is_some()&&!result.success{
+                state.task_edit_scopes.lock()
+                    .map_err(|_|"Native edit scope failure revocation unavailable.".to_string())?
+                    .revoke_action(&action_id);
             }
             Ok(result)
         }

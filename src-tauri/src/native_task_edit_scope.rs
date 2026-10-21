@@ -270,8 +270,9 @@ impl TaskEditScopeStore{
         s.remaining-=1;
         Ok(())
     }
-    /// Only after the caller recorded the exact successful native audit may
-    /// the file fingerprint advance for a DIFFERENT, newly prepared action.
+    /// Before the caller publishes a successful native execution audit,
+    /// independently verify and advance this exact file fingerprint. A new
+    /// prepared action must recheck the new snapshot under the native lock.
     /// If file readback fails the scope remains bound to its old fingerprint.
     pub(crate) fn record_audited_success(&mut self,task_id:&str,scope_id:&str,
         action_id:&str,path:&str,workspace:&str)->Result<(),String>{
