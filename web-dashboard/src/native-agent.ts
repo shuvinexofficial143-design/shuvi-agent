@@ -922,6 +922,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  async function prepareAuditedUiReadRecovery(current:PendingTask,message:string):Promise<boolean>{
   if(!isRecoverableUiReadFailure(current.action.kind,message))return false;
   const proposal={tool:"ui_windows",arguments:{}};
+  // A stopped action may not stage even a read-only recovery successor.
+  if(ownerStopRequestedIds.has(current.action.id))return false;
   const fp=fingerprint(proposal);
   if(!fp||current.seen.has(fp))return false;
   const taskBudget=taskBudgets.get(current.threadId);
@@ -935,9 +937,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    // contains a conflicting executed/success or different-tool audit.
    const auditTrail=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("audit_log",{limit:200});
    if(!Array.isArray(auditTrail)||contradictsFailureReceipt(current.action,auditTrail))return false;
+   if(ownerStopRequestedIds.has(current.action.id))return false;
    const next=await invoke<Pending>("prepare_tool",{
     proposal,provider:current.route.provider,model:current.route.model,baseUrl:current.route.base_url||null
    });
+   if(ownerStopRequestedIds.has(current.action.id)){
+    if(next?.id)try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* no automatic execution */}
+    return false;
+   }
    if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||next.kind!=="ui_windows"||current.usedIds.has(next.id)||!validPreparedApproval(next))return false;
    if(!markNativeActionStaged(taskBudget)){
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
@@ -1315,6 +1322,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }
     const unknownBudget=taskBudgets.get(current.threadId);
     if(unknownBudget)await persistRecovery(unknownBudget,"outcome_unknown",current.action.id);
+    // Owner Stop wins even when an action failed or its native outcome is unknown.
+    // Never downgrade an in-flight/unknown journal to paused or stage recovery.
+    if(ownerStopRequestedIds.has(current.action.id)){
+     haltTask(current.threadId,"unknown_outcome");
+     appendReply(current.threadId,current.promptIndex,
+      "Stop requested. Current action outcome needs Rust Audit review; no recovery action or paid planning will be staged.");
+     showActionFeedback("Stop requested · native outcome unverified · owner review required.");
+     refreshState("Stop requested: no successor action. Inspect Rust Audit.");
+     return;
+    }
     const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
    if(!recoveryPrepared){
     haltTask(current.threadId,"unknown_outcome");
