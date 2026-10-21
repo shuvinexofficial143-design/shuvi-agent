@@ -209,7 +209,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   aiQuotaSelect.append(choice);
  }
  aiQuotaSelect.value="4";aiQuotaLabel.append(aiQuotaSelect);
- const budgetNote=field("p","Windows actions remain bounded by 8/24/48 and expire after 2 hours. A separate 2/4/8/16 hard PAID REQUEST count limit is owner-selected. This is not a USD spending cap or verified bill. No auto-resume after restart.");
+ const budgetNote=field("p","Windows actions remain bounded by 8/24/48 and expire after 2 hours. A separate 2/4/8/16 hard PAID REQUEST count limit is owner-selected. Native task-owned paid requests also have a 256 KiB input limit each and 512 KiB cumulative input-data budget. These are not token, USD spending or verified billing caps. No auto-resume after restart.");
  const aiLedgerShow=field("button","Show task AI request ledger");aiLedgerShow.type="button";
  const aiLedgerInfo=field("p","Task requests and provider-reported tokens; actual USD billed UNKNOWN.");
  aiLedgerInfo.setAttribute("role","status");
