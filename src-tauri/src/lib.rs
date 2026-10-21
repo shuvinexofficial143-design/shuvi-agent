@@ -12629,6 +12629,10 @@ try {{
                     ],
                     orchestration_context:None,
                     task_ai_ticket:None,
+                    // Non-native motion graphics calls have no native task quota.
+                    // Preserve existing provider default; this field is never
+                    // accepted from renderer JSON.
+                    native_task_output_tokens:None,
                 },
                 key
             ).await?;
@@ -12725,6 +12729,10 @@ try {{
                     ],
                     orchestration_context:None,
                     task_ai_ticket:None,
+                    // Non-native motion graphics calls have no native task quota.
+                    // Preserve existing provider default; this field is never
+                    // accepted from renderer JSON.
+                    native_task_output_tokens:None,
                 },
                 key
             ).await?;

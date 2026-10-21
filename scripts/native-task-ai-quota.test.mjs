@@ -62,3 +62,17 @@ test("native Rust caps output tokens at provider request for only paid owner tas
  const send=lib.indexOf("let answer=send_chat(input,key).await;",reserve);
  assert.ok(reserve>0&&taskCap>reserve&&send>taskCap);
 });
+
+
+test("all internal ChatInput constructors explicitly carry non-native output policy",()=>{
+ const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+ const constructs=[...lib.matchAll(/\bChatInput\s*\{/g)];
+ // Definition + both motion-graphics constructors; future constructors must be
+ // reviewed when the internal max-output field changes.
+ assert.equal(constructs.length,3,"unexpected ChatInput constructor requires audit");
+ const generated=lib.slice(lib.indexOf("ToolAction::MotionGraphicsGeneratePlan {request,provider} =>"));
+ const corrected=lib.slice(lib.indexOf("ToolAction::MotionGraphicsGenerateCorrection {request,provider} =>"));
+ assert.match(generated,/task_ai_ticket:None,\s*(?:\/\/[^\n]*\n\s*)*native_task_output_tokens:None,/);
+ assert.match(corrected,/task_ai_ticket:None,\s*(?:\/\/[^\n]*\n\s*)*native_task_output_tokens:None,/);
+ assert.match(lib,/input\.native_task_output_tokens=Some\(MAX_NATIVE_TASK_OUTPUT_TOKENS\);/);
+});
