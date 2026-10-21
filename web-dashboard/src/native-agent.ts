@@ -264,7 +264,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskBudgets=new Map<string,NativeTaskBudget>();
  const taskAiQuotas=new WeakMap<NativeTaskBudget,number>();
  const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string}>();
- const inspectScopes=new Map<string,{id:string;taskId:string;window:string;expiresAtMs:number}>();
+ const inspectScopes=new Map<string,{id:string;taskId:string;window:string;expiresAtMs:number;remainingActions:number}>();
  let inspectIssuing=false,inspectRevoking=false;
  let scopedInspectActionId:string|null=null,autoInspectActionId:string|null=null;
  const readWindow=(p:Record<string,unknown>|undefined):string|null=>{
@@ -279,7 +279,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  };
  const activeInspect=(id:string,p:Record<string,unknown>|undefined)=>{
   const x=inspectScopes.get(id);
-  return Boolean(x&&x.window===readWindow(p)&&Date.now()<x.expiresAtMs&&
+  return Boolean(x&&x.window===readWindow(p)&&x.remainingActions>0&&Date.now()<x.expiresAtMs&&
    taskBudgets.get(id)&&x.taskId===taskRecoveryIds.get(taskBudgets.get(id)!));
  };
  let editScopeIssuing=false;
@@ -1213,11 +1213,23 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       haltTask(current.threadId,"inspection_scope_invalid");
       throw Error("Owner UI inspection scope expired or revoked. No execute IPC sent.");
      }
-     result=await invoke<ActionResult>("execute_action",useInspection
-      ?{actionId:current.action.id,inspectionScopeId:inspection.id,taskId:inspection.taskId}
-      :useScope
-      ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
-      :{actionId:current.action.id});
+     if(useInspection)inspection.remainingActions-=1; // in-memory cap is spent before native dispatch
+     try{
+      result=await invoke<ActionResult>("execute_action",useInspection
+       ?{actionId:current.action.id,inspectionScopeId:inspection.id,taskId:inspection.taskId}
+       :useScope
+       ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
+       :{actionId:current.action.id});
+     }finally{
+      if(useInspection&&inspection.remainingActions<=0){
+       // Never auto stage a ninth read. Native scope expires too, but the
+       // renderer stops using this authority at the exact eighth dispatch.
+       inspectScopes.delete(current.threadId);
+       void invoke<void>("revoke_task_inspection_scopes",{taskId:inspection.taskId}).catch(()=>{
+        showActionFeedback("Inspection limit reached; Rust revoke outcome needs owner audit review.");
+       });
+      }
+     }
     }finally{
      if(activeNativeActionId===current.action.id)activeNativeActionId=null;
      refreshState();
@@ -1533,7 +1545,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(pending!==current){
     await invoke<void>("revoke_task_inspection_scopes",{taskId});return;
    }
-   inspectScopes.set(current.threadId,{id:view.id,taskId,window,expiresAtMs:view.expiresAtMs});
+   inspectScopes.set(current.threadId,{id:view.id,taskId,window,expiresAtMs:view.expiresAtMs,remainingActions:view.remainingActions});
   }catch{
    inspectScopes.delete(current.threadId);
    showActionFeedback("Native inspection scope not authorized. Allow once remains available.");
