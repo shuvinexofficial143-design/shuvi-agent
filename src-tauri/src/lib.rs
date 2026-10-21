@@ -21974,6 +21974,26 @@ async fn execute_action(
         ).await
     };
     drop(pulse);
+    // The model must never see output from a recycled same-title native
+    // window. Verify the OS-attested root across the WHOLE task-scoped
+    // sequence before publishing a successful Rust action audit or returning
+    // any observed controls to the renderer. Uncertain reads fail closed.
+    let execution=match execution {
+        Ok(result) if inspection_scope_id.is_some()&&result.success=>{
+            match (inspection_scope_id.as_deref(),task_id.as_deref()){
+                (Some(scope),Some(task))=>{
+                    match state.task_inspection_scopes.lock(){
+                        Ok(mut authorized)=>authorized
+                            .record_audited_read(task,scope,&action_id,&result.stdout)
+                            .map(|_|result),
+                        Err(_)=>Err("Scoped inspection identity store unavailable.".to_string()),
+                    }
+                }
+                _=>Err("Missing inspection task identity at readback.".to_string()),
+            }
+        }
+        other=>other,
+    };
 
     if let Ok(mut running) = state.running_action_tools.lock() {
         if let Ok(mut started)=state.running_action_started_at_ms.lock(){

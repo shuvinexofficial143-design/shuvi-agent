@@ -29,3 +29,16 @@ test("legacy manual PowerShell wrapper supplies explicit empty inspection scope"
  assert.ok(lib.includes("execute_action(action_id, None, None, None, None, state, app).await"));
  assert.ok(!lib.includes("execute_action(action_id, None, None, None, state, app).await"));
 });
+
+test("native executor pins HWND, PID and process generation before returning scoped UI read",()=>{
+ assert.ok(scope.includes("ObservedWindowHwnd"));
+ assert.ok(scope.includes("ObservedWindowPid"));
+ assert.ok(scope.includes("ObservedWindowProcessStartTicks"));
+ assert.ok(scope.includes("s.origin!=action_id"));
+ assert.ok(scope.includes("if bound!=&actual"));
+ const verify=lib.indexOf(".record_audited_read(task,scope,&action_id,&result.stdout)");
+ const publish=lib.indexOf("match execution {",verify);
+ const audited=lib.indexOf("event: \"executed\".into()",verify);
+ assert.ok(verify>=0&&audited>verify,"OS root must be verified BEFORE a successful native action audit");
+ assert.ok(scope.includes("if verdict.is_err(){self.scopes.remove(scope);}"));
+});
