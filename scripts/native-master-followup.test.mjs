@@ -43,6 +43,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const issuedRustAiQuota=new Map();
  let persistedRust=rustRecord;
  let inspectionGrant=null;
+ let projectGrant=null;
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
  nodes.set("chatWorkspaceLayout",chat);nodes.set("chatForm",form);
@@ -72,7 +73,19 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    if(simulateRustJournal)persistedRust=null;
    return;
   }
-  if(name==="issue_task_inspection_scope"){
+  if(name==="issue_task_project_scope"){
+    if(simulateRustJournal)assert.equal(persistedRust?.phase,"awaiting_approval");
+    const proposal=staged.find(x=>x.id===params.actionId)?.proposal;
+    assert.ok(proposal&&["list_directory","workspace_scan"].includes(proposal.tool));
+    assert.equal(params.taskId,persistedRust?.taskId);
+    const exactPath=proposal.arguments.path;
+    projectGrant={id:"193805a5-851d-4923-a748-e4158de715f9",taskId:params.taskId,exactPath,
+     allowedTools:["list_directory","workspace_scan"],remainingActions:8,authorizedPaidRequests:0,
+     expiresAtMs:Date.now()+180_000};
+    return projectGrant;
+   }
+   if(name==="revoke_task_project_scopes"){projectGrant=null;return;}
+   if(name==="issue_task_inspection_scope"){
    if(simulateRustJournal)assert.equal(persistedRust?.phase,"awaiting_approval");
    const proposed=staged.find(x=>x.id===params.actionId)?.proposal;
    assert.ok(proposed&&["ui_find","ui_discover"].includes(proposed.tool));
@@ -132,7 +145,14 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   }
   if(name==="execute_action"){
    const action=staged.find(s=>s.id===params.actionId);
-   if(params.inspectionScopeId){
+   if(params.projectScopeId){
+     assert.ok(projectGrant,"exact owner-approved project scope required before dispatch");
+     assert.equal(params.projectScopeId,projectGrant.id);
+     assert.equal(params.taskId,projectGrant.taskId);
+     assert.ok(["list_directory","workspace_scan"].includes(action?.proposal.tool));
+     assert.equal(action.proposal.arguments.path,projectGrant.exactPath);
+    }
+    if(params.inspectionScopeId){
     assert.ok(inspectionGrant,"Rust scoped inspection must be live");
     assert.equal(params.inspectionScopeId,inspectionGrant.id);
     assert.equal(params.taskId,inspectionGrant.taskId);
@@ -176,7 +196,9 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const paidSelect=created.find(x=>x.attributes["aria-label"]==="Owner-approved paid AI request count for each task");
  if(paidSelect)paidSelect.value=String(paidRequestLimit);
  const allow=created.find(x=>x.textContent==="Allow once");
- const inspectApprove=created.find(x=>x.textContent==="Allow read-only window scope (8 actions / 3 min)");
+ const projectApprove=created.find(x=>x.textContent==="Allow selected-project inventory (8 reads / 3 min)");
+  const revokeProject=created.find(x=>x.textContent==="Revoke selected-project inventory");
+  const inspectApprove=created.find(x=>x.textContent==="Allow read-only window scope (8 actions / 3 min)");
  const revokeInspect=created.find(x=>x.textContent==="Revoke read-only window scope");
  const deny=created.find(x=>x.textContent==="Deny");
  const approval=created.find(x=>x.attributes["aria-label"]==="Windows action needs your approval");
@@ -186,7 +208,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -1841,4 +1863,50 @@ test("bounded owner inspection stops at eight reads, ninth is never auto-approve
  assert.equal(s.approval.hidden,false,"ninth action retains ordinary approval");
  assert.equal(s.revokeInspect.hidden,true,"expired scoped permission is no longer displayed");
  assert.ok(s.calls.some(c=>c.name==="revoke_task_inspection_scopes"));
+});
+
+test("owner project root inspection auto-reuses only exact inventory, never reads file contents",async()=>{
+ const projectRoot="C:\\\\Projects\\\\ShuviDemo";
+ const proposal=(tool,path)=>({content:tool,provider:"xkiro",model:"model/master",
+   tool_proposal:{tool,arguments:{path}}});
+ const s=setup({first:proposal("list_directory",projectRoot),
+  second:proposal("workspace_scan",projectRoot),
+  following:[proposal("read_file",projectRoot+"\\\\passwords.txt")],
+  simulateRustJournal:true,paidRequestLimit:8});
+ await until(()=>s.transport.connected(),"native connected");
+ const accepted=await s.transport.send("@master Inspect selected project inventory","project-root",0);
+ assert.equal(accepted.ok,true);
+ assert.ok(s.projectApprove&&!s.projectApprove.hidden,"owner sees the bounded grant option");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0,"no approval means no action");
+ s.projectApprove.listeners.get("click")();
+ await until(()=>s.staged.length===3,"different tool still requires review");
+ const actions=s.calls.filter(c=>c.name==="execute_action");
+ assert.equal(actions.length,2,"exactly two owner-scoped inventory reads executed");
+ assert.ok(actions.every(c=>typeof c.params.projectScopeId==="string"));
+ assert.equal(actions[0].params.projectScopeId,actions[1].params.projectScopeId);
+ assert.equal(s.staged[2].proposal.tool,"read_file");
+ assert.equal(s.approval.hidden,false,"reading file contents still needs owner Allow once");
+ assert.ok(!s.revokeProject.hidden);
+ s.revokeProject.listeners.get("click")();
+ await until(()=>s.calls.some(c=>c.name==="revoke_task_project_scopes"),"explicit native revoke");
+ assert.equal(s.revokeProject.hidden,true);
+});
+test("owner project grant cannot automatically perform a ninth directory inventory read",async()=>{
+ const root="C:\\\\Projects\\\\ShuviDemo";
+ const proposal=i=>({content:"step "+i,provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:i%2?"workspace_scan":"list_directory",arguments:{path:root}}});
+ const s=setup({first:proposal(1),second:proposal(2),
+  following:Array.from({length:7},(_,i)=>proposal(i+3)),
+  simulateRustJournal:true,paidRequestLimit:16,budgetActions:24});
+ await until(()=>s.transport.connected(),"native connected");
+ await s.transport.send("@master Inspect project folder inventory","project-eight",0);
+ s.projectApprove.listeners.get("click")();
+ await until(()=>s.staged.length===9,"ninth project inventory action staged");
+ await until(()=>s.calls.filter(c=>c.name==="execute_action").length===8,"eight project reads executed");
+ const actions=s.calls.filter(c=>c.name==="execute_action");
+ assert.equal(actions.length,8);
+ assert.ok(actions.every(c=>c.params.projectScopeId));
+ assert.equal(s.approval.hidden,false,"ninth read remains individually reviewable");
+ assert.equal(s.revokeProject.hidden,true);
+ assert.ok(s.calls.some(c=>c.name==="revoke_task_project_scopes"));
 });
