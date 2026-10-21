@@ -20727,6 +20727,12 @@ async fn chat(
                 return Err("Task AI quota cannot be changed after the first request.".into());
             }
             quotas.check(&ticket.task_id,ticket.request_index,now_ms())?;
+            // The real request includes tool protocol, workspace, orchestration
+            // and conversation. This is an input-BYTE ceiling, NOT a token
+            // or USD billing calculation; the provider may price differently.
+            let input_bytes=input.messages.iter().fold(0_usize,|total,message|
+                total.saturating_add(message.content.len()));
+            quotas.reserve_context(&ticket.task_id,ticket.request_index,input_bytes,now_ms())?;
         }
         native_task_ai_ledger::reserve(&app,&ticket.task_id,&ticket.request_id,
             ticket.request_index,&input.provider,&input.model)?;
