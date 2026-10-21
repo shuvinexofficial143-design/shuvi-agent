@@ -1,15 +1,21 @@
 //! Owner-selected per-task HARD PAID REQUEST COUNT, not a USD price cap.
 //! In-memory task authority is never resurrected from a recovery checkpoint.
 //! Durable ledger independently prevents duplicate paid request IDs.
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use uuid::Uuid;
 const ALLOWED:&[u8]=&[2,4,8,16];
 const MAX_REQUEST_CONTEXT_BYTES:usize=256*1024;
 const MAX_TASK_CONTEXT_BYTES:usize=512*1024;
+// Never recycle a task's paid authority in one running process, even after
+// its quota has expired or an owner revoked its active grant.
+const MAX_ISSUED_TASK_IDS:usize=8_192;
 #[derive(Clone)]
 struct Quota{max:u8,expires_at:u64,committed_context_bytes:usize,next_request_index:u32}
 #[derive(Default)]
-pub(crate) struct Store{active:HashMap<String,Quota>}
+pub(crate) struct Store{
+ active:HashMap<String,Quota>,
+ issued_task_ids:HashSet<String>,
+}
 fn valid_uuid(s:&str)->bool{Uuid::parse_str(s).map(|u|u.to_string()==s).unwrap_or(false)}
 impl Store {
  pub(crate) fn issue(&mut self,task:&str,max:u8,expiry:u64,now:u64)->Result<(),String>{
@@ -18,10 +24,14 @@ impl Store {
    return Err("Task AI quota must be one finite owner-selected option.".into());
   }
   self.active.retain(|_,q|now<q.expires_at);
-  if self.active.contains_key(task){
-   return Err("Task AI request quota cannot be enlarged or reissued.".into());
+  if self.issued_task_ids.contains(task){
+   return Err("Task AI request quota was already issued; revocation or expiry cannot reset paid authority.".into());
+  }
+  if self.issued_task_ids.len()>=MAX_ISSUED_TASK_IDS{
+   return Err("Task AI quota identity capacity exhausted; no new paid authority.".into());
   }
   if self.active.len()>=4{return Err("Active task AI quota capacity exhausted.".into());}
+  self.issued_task_ids.insert(task.to_owned());
   self.active.insert(task.to_owned(),Quota{max,expires_at:expiry,committed_context_bytes:0,next_request_index:1});
   Ok(())
  }
@@ -68,6 +78,7 @@ mod tests {
   assert!(q.check(&Uuid::new_v4().to_string(),1,1001).is_err());
   assert!(q.check(&t,1,5000).is_err());
   q.revoke(&t);assert!(q.check(&t,1,1001).is_err());
+  assert!(q.issue(&t,4,5000,1002).is_err(),"a revoked task may NEVER silently receive a fresh paid quota");
  }
  #[test]
  fn paid_context_bytes_are_bounded_once_per_task_even_on_failed_attempts(){
@@ -91,5 +102,22 @@ mod tests {
   assert!(q.issue(&t,2,1000,1000).is_err());
   assert!(q.issue(&t,2,7_201_001,1000).is_err());
   q.issue(&t,2,5000,1000).unwrap();
+ }
+ #[test]
+ fn expired_task_never_gets_new_authority_but_distinct_owner_task_can(){
+  let t=Uuid::new_v4().to_string();let mut q=Store::default();
+  q.issue(&t,2,1100,1000).unwrap();
+  // Pruning the active grant cannot reset the original Task UUID.
+  assert!(q.issue(&t,16,6000,2000).is_err());
+  let next=Uuid::new_v4().to_string();
+  q.issue(&next,4,6000,2000).unwrap();
+  q.reserve_context(&next,1,512,2001).unwrap();
+  assert_eq!(q.active[&next].next_request_index,2);
+ }
+ #[test]
+ fn exhausted_identity_capacity_refuses_new_task_without_reusing_a_ticket(){
+  let mut q=Store::default();
+  for _ in 0..MAX_ISSUED_TASK_IDS{q.issued_task_ids.insert(Uuid::new_v4().to_string());}
+  assert!(q.issue(&Uuid::new_v4().to_string(),2,5000,1000).is_err());
  }
 }

@@ -76,3 +76,15 @@ test("all internal ChatInput constructors explicitly carry non-native output pol
  assert.match(corrected,/task_ai_ticket:None,\s*(?:\/\/[^\n]*\n\s*)*native_task_output_tokens:None,/);
  assert.match(lib,/input\.native_task_output_tokens=Some\(MAX_NATIVE_TASK_OUTPUT_TOKENS\);/);
 });
+
+
+test("paid task UUID cannot be recycled after revoke or expiry, including under capacity pressure",()=>{
+ const src=readFileSync(new URL("../src-tauri/src/native_task_ai_quota.rs",import.meta.url),"utf8");
+ assert.ok(src.includes("issued_task_ids:HashSet<String>"));
+ assert.ok(src.includes("self.issued_task_ids.contains(task)"));
+ assert.ok(src.includes("self.issued_task_ids.insert(task.to_owned())"));
+ assert.ok(src.includes("self.issued_task_ids.len()>=MAX_ISSUED_TASK_IDS"));
+ assert.ok(src.includes("expired_task_never_gets_new_authority_but_distinct_owner_task_can"));
+ const revoke=src.slice(src.indexOf("pub(crate) fn revoke("),src.indexOf("\n}",src.indexOf("pub(crate) fn revoke(")));
+ assert.ok(!revoke.includes("issued_task_ids.remove"));
+});
