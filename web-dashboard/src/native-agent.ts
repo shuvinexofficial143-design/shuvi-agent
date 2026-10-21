@@ -269,7 +269,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskGoalRoots=new Map<string,string>();
  const taskBudgets=new Map<string,NativeTaskBudget>();
  const taskAiQuotas=new WeakMap<NativeTaskBudget,number>();
- const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string}>();
+ const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string;expiresAtMs:number;remainingActions:number}>();
+ let autoEditActionId:string|null=null;
  const inspectScopes=new Map<string,{id:string;taskId:string;window:string;expiresAtMs:number;remainingActions:number}>();
  const projectScopes=new Map<string,{id:string;taskId:string;path:string;expiresAtMs:number;remainingActions:number}>();
  let projectIssuing=false,projectRevoking=false;
@@ -314,6 +315,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(!args||typeof args!=="object"||Array.isArray(args))return null;
   const path=(args as Record<string,unknown>).path;
   return typeof path==="string"&&path.length>0?path:null;
+ };
+ const activeEdit=(thread:string,proposal:Record<string,unknown>|undefined)=>{
+  const scope=editScopes.get(thread),budget=taskBudgets.get(thread);
+  return Boolean(scope&&budget&&scope.taskId===taskRecoveryIds.get(budget)&&
+   scope.tool===proposal?.tool&&scope.path===exactEditPath(proposal)&&
+   Number.isSafeInteger(scope.expiresAtMs)&&Date.now()<scope.expiresAtMs&&
+   scope.remainingActions>0);
  };
  // Cross-command hints are independent of the per-goal task/approval maps.
  // They never survive an app restart and never carry owner permission.
@@ -703,7 +711,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
   const active=editScopes.get(id);
   if(active){
-   editScopes.delete(id);
+   editScopes.delete(id);autoEditActionId=null;
    void invoke<void>("revoke_task_edit_scopes",{taskId:active.taskId}).catch(()=>{
     showActionFeedback("Task editing stopped locally; Rust scope revocation needs owner review.");
    });
@@ -1065,6 +1073,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    if(activeInspect(task.threadId,response.tool_proposal))autoInspectActionId=next.id;
    if(activeProject(task.threadId,response.tool_proposal))autoProjectActionId=next.id;
+   if(activeEdit(task.threadId,response.tool_proposal))autoEditActionId=next.id;
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+redactNativeError(next.summary)+"\nRisk: "+redactNativeError(next.risk)+"\n"+redactNativeError(next.detail);
@@ -1726,7 +1735,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const owned=[...new Set([...editScopes.values()].map(s=>s.taskId))];
   // Local execution permissions disappear before any async IPC. Remote
   // revoke failure must not restore them or imply a native process stopped.
-  editScopes.clear();scopedApprovalId=null;refreshState();
+  editScopes.clear();scopedApprovalId=null;autoEditActionId=null;refreshState();
   const failures=[] as string[];
   for(const taskId of owned){
    try{await invoke<void>("revoke_task_edit_scopes",{taskId});}
@@ -1761,7 +1770,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }
    const active=pending?editScopes.get(pending.threadId):null;
   if(active){
-   editScopes.delete(pending!.threadId);
+   editScopes.delete(pending!.threadId);autoEditActionId=null;
    void invoke<void>("revoke_task_edit_scopes",{taskId:active.taskId}).catch(()=>{
     stopFeedback.hidden=false;
     stopFeedback.textContent="Rust editing scope revocation uncertain; inspect Audit before continuing.";
