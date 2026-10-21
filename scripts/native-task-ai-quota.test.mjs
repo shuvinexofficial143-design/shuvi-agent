@@ -36,5 +36,13 @@ test("dashboard includes owner limit in the FIRST chat ticket without separate s
  assert.ok(ui.includes('ownerBudget.modelRequests>=(taskAiQuotas.get(ownerBudget)??0)'));
  assert.ok(ui.includes('taskBudget.modelRequests>=(taskAiQuotas.get(taskBudget)??0)'));
  assert.ok(ui.includes('owner_paid_request_quota_exhausted'));
- assert.ok(ui.includes('This is not a USD spending cap or verified bill.'));
+ assert.ok(ui.includes('These are not token, USD spending or verified billing caps.'));
+ assert.ok(ui.includes('256 KiB input limit each and 512 KiB cumulative'));
+ const preflight=lib.slice(lib.indexOf("async fn chat("),lib.indexOf("fn native_task_ai_usage("));
+ assert.ok(preflight.includes('quotas.reserve_context(&ticket.task_id,ticket.request_index,input_bytes,now_ms())?'));
+ assert.ok(preflight.indexOf('quotas.reserve_context(')<preflight.indexOf('native_task_ai_ledger::reserve('));
+ assert.ok(quota.includes('const MAX_REQUEST_CONTEXT_BYTES:usize=256*1024'));
+ assert.ok(quota.includes('const MAX_TASK_CONTEXT_BYTES:usize=512*1024'));
+ assert.ok(quota.includes('grant.committed_context_bytes=cumulative;'));
+ assert.ok(quota.includes('grant.next_request_index=index+1;'));
 });
