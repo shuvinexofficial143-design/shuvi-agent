@@ -1481,29 +1481,55 @@ test("unreadable WebView recovery blocks new Windows tasks without paid model di
 });
 
 
-test("exact audited Premiere opening closes with no unnecessary third paid model request",async()=>{
- const inventory=[{Name:"Adobe Premiere Pro 2026",ProcessName:"Adobe Premiere Pro",
-  ProcessId:101,NativeWindowHandle:2580}];
- const s=setup({first:launch,uuidPreparedIds:true,stdoutFor:{ui_windows:JSON.stringify(inventory)}});
- await until(()=>s.transport.connected(),"native ready");
+test("Premiere needs fresh audited UI readiness after launch and OS window",async()=>{
+ const tick="638962980000000000";
+ const inventory=[{Name:"Adobe Premiere Pro 2026",ProcessName:"Adobe Premiere Pro",ProcessId:101,
+  NativeWindowHandle:2580,ProcessStartTicks:tick}];
+ const controls=["File","New Project","Open Project"].map((Name,i)=>({
+  Name,AutomationId:"a-"+i,ControlType:i===0?"ControlType.MenuItem":"ControlType.Button",
+  IsEnabled:true,IsOffscreen:false,ControlRuntimeId:[2,1,i],
+  ObservedWindowHwnd:2580,ObservedWindowPid:101,ObservedWindowProcessStartTicks:tick
+ }));
+ const s=setup({first:launch,uuidPreparedIds:true,stdoutFor:{
+  ui_windows:JSON.stringify(inventory),ui_discover:JSON.stringify(controls)}});
+ await until(()=>s.transport.connected(),"ready");
  await s.transport.send("Premiere kholo","simple-open-terminal",0);
- assert.equal(s.staged.length,1);
- assert.equal(s.staged[0].proposal.tool,"premiere_launch");
  s.allow.listeners.get("click")();
- await until(()=>s.staged.length===2,"second separately approved window readback");
- assert.equal(s.staged[1].proposal.tool,"ui_windows");
- assert.equal(s.chatInputs.length,1,"zero model calls spent on deterministic second step");
- assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
- await until(()=>s.allow.disabled===false,"window approval ready");
+ await until(()=>s.staged.length===2,"window proposal");
+ await until(()=>!s.allow.disabled,"window approval");
  s.allow.listeners.get("click")();
- await until(()=>s.transport.getReplies("simple-open-terminal")[0]?.includes("OPENING VERIFIED"),
-  "independently accepted Premiere opening");
- assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
- assert.equal(s.chatInputs.length,1,"never purchases a model call to recheck a verified narrow opening");
- assert.equal(s.staged.length,2,"no third prepared Windows action");
- assert.match(s.transport.getReplies("simple-open-terminal")[0],/Project creation.*remain UNVERIFIED/);
+ await until(()=>s.staged.length===3,"readiness proposal");
+ assert.equal(s.staged[2].proposal.tool,"ui_discover");
+ assert.equal(s.chatInputs.length,1);
+ await until(()=>!s.allow.disabled,"readiness approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("simple-open-terminal")[0]?.includes("Interface तैयार"),
+  "audited Premiere UI acceptance");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,3);
  const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
  assert.deepEqual(phases.slice(-2),["audit_verified","completed_verified"]);
+});
+test("Premiere splash UI never counts as completed",async()=>{
+ const tick="638962980000000000";
+ const win=[{Name:"Adobe Premiere Pro 2026",ProcessName:"Adobe Premiere Pro",ProcessId:101,
+  NativeWindowHandle:2580,ProcessStartTicks:tick}];
+ const splash=[{Name:"Loading",AutomationId:"spinner",ControlType:"ControlType.Button",IsEnabled:false,
+  IsOffscreen:false,ControlRuntimeId:[4,1],ObservedWindowHwnd:2580,ObservedWindowPid:101,
+  ObservedWindowProcessStartTicks:tick}];
+ const s=setup({first:launch,uuidPreparedIds:true,stdoutFor:{
+  ui_windows:JSON.stringify(win),ui_discover:JSON.stringify(splash)}});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("Premiere kholo","premiere-loading",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"window proposal");
+ await until(()=>!s.allow.disabled,"window approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"readiness proposal");
+ await until(()=>!s.allow.disabled,"readiness approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("premiere-loading")[0]?.includes("प्रमाण नहीं मिला"),"readiness rejection");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,3);
+ assert.equal(s.calls.filter(x=>x.name==="save_native_recovery").at(-1).params.record.phase,"paused");
 });
 
 test("completed Notepad goal retires exact Rust/WebView journal and accepts the next independent command",async()=>{

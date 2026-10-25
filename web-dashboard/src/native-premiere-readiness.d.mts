@@ -1,0 +1,2 @@
+export declare function premiereUiReadback(goal:unknown,id:string,result:unknown,evidence:unknown,audited:boolean):{tool:"ui_discover";arguments:{window:string}}|null;
+export declare function auditedPremiereUiReady(goal:unknown,id:string,result:unknown,proposal:unknown,evidence:unknown,windowSession:unknown,audited:boolean):{scope:string;window:{app:string;title:string;pid:number;hwnd:number}}|null;

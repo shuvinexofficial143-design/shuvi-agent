@@ -12,6 +12,8 @@ import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,compl
 import {buildBoundedContinuationContext,isWithinRustLimit} from "./native-continuation-context.mjs";
 import {verifiedSimpleOpening} from "./native-opening-completion.mjs";
 import {auditedYouTubeLaunch,youtubeReadbackProposal,verifiedYouTubeHome,youtubeSearchReadbackProposal,verifiedYouTubeSearch} from "./native-browser-completion.mjs";
+import {premiereUiReadback,auditedPremiereUiReady} from "./native-premiere-readiness.mjs";
+import {verifiedSimpleNotepadOpening,strictlySimplePremiereOpening} from "./native-opening-completion.mjs";
 import {classifyNativeProviderFailure} from "./native-provider-failure.mjs";
 import {newApplicationContinuity,recordAuditedApplication,selectApplicationContinuity,continuityReadback,continuityHint,confirmedContinuityHint,checkConfirmedContinuity} from "./native-application-continuity.mjs";
 import {auditedSystemOpening,systemOpeningReadback,observeSystemOpening} from "./native-system-browser-context.mjs";
@@ -853,7 +855,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   updateReply(threadId,index,(replies.get(threadId)?.[index]||"")+"\n\n"+extra);
  }
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
-  const plannedReadback=nextMasterReadbackProposal(task.objective,result.tool)??
+  const premiereRead=result.tool==="ui_windows"
+   ?premiereUiReadback(task.objective,task.action.id,result,taskEvidence.get(task.threadId)??null,true):null;
+  const plannedReadback=premiereRead??nextMasterReadbackProposal(task.objective,result.tool)??
    (result.tool==="open_url"?systemOpeningReadback(systemLaunchProofs.get(task.threadId)):null)??
    (result.tool==="browser_start"?youtubeReadbackProposal(browserLaunchProofs.get(task.threadId)):null)??
    youtubeSearchReadbackProposal(task.objective,task.action.id,task.proposal,result)?.proposal??null;
@@ -1493,9 +1497,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      // native actions (launcher then OS-window inspection) with two exact
      // Rust executed audits. Do not purchase an unnecessary third AI turn.
      // No project, editing or export task may use window-only acceptance.
-     const simpleOpening=verified?verifiedSimpleOpening(
-       current.objective,current.action.id,result,
-       taskEvidence.get(current.threadId)??null,true):null;
+     const simpleOpening=verified?(result.tool==="ui_discover"
+       ?auditedPremiereUiReady(current.objective,current.action.id,result,current.proposal,
+        taskEvidence.get(current.threadId)??null,observedWindows.get(current.threadId)??null,true)
+       :verifiedSimpleNotepadOpening(current.objective,current.action.id,result,
+        taskEvidence.get(current.threadId)??null,true)):null;
      const youtubeHome=verified?verifiedYouTubeHome(
        current.objective,current.action.id,current.proposal,result,
        taskEvidence.get(current.threadId)??null,
@@ -1508,6 +1514,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       taskEvidence.get(current.threadId)??null,
       pendingSearchProofs.get(current.threadId)??null,true):null;
      clearPending();
+     if(verified&&result.tool==="ui_discover"&&strictlySimplePremiereOpening(current.objective)&&
+        !simpleOpening&&(taskEvidence.get(current.threadId)?.observations??[]).some(x=>x.tool==="premiere_launch")){
+      const budget=taskBudgets.get(current.threadId);
+      const saved=budget?await persistRecovery(budget,"paused",current.action.id):false;
+      haltTask(current.threadId,saved?"no_next_tool":"recovery_journal_failed");
+      appendReply(current.threadId,current.promptIndex,
+       "Premiere की Window मिल गई, लेकिन Interface पूरी तरह तैयार होने का प्रमाण नहीं मिला। Task सुरक्षित रूप से रोक दिया है।");
+      showActionFeedback("Premiere UI readiness unverified after separate native UIA read.");
+      return;
+     }
      if(simpleOpening||youtubeHome||youtubeSearch){
       const appName=youtubeHome||youtubeSearch?"YouTube":simpleOpening?.scope==="premiere_window"?"Premiere":"Notepad";
       const finalBudget=taskBudgets.get(current.threadId);
@@ -1524,6 +1540,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        ?completeAuditedYouTubePage(getTask(current.threadId))
        :completeAuditedOpening(getTask(current.threadId),appName));
       const completedMessage=youtubeSearch
+       ?"YouTube पर Search पूरी हुई और Result Verify हो गया है।"
+       :youtubeHome?"YouTube खुल गया और उसका Page Verify हो गया है।"
+       :appName==="Premiere"?"Premiere Pro खुल गया और उसका Interface तैयार पाया है।"
+       :"Notepad खुल गया और उसकी Window Verify हो गई है।";
+      const diagnosticMessage=youtubeSearch
        ?"Requested YouTube SEARCH VERIFIED for "+youtubeSearch.query+
         " with "+youtubeSearch.resultCount+" loaded result(s), managed PID "+
         youtubeSearch.pid+", separately approved page readback and matching Rust audit."
@@ -1537,7 +1558,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
         "had different approved action IDs. No extra AI model request. "+
         (appName==="Premiere"?"Project creation, file import, editing, save and export remain UNVERIFIED.":"File creation, editing, and save remain UNVERIFIED.");
       appendReply(current.threadId,current.promptIndex,completedMessage);
-      showActionFeedback(completedMessage);
+      showActionFeedback(diagnosticMessage);
       goalStatus.textContent=completedMessage;
       refreshState(appName+" window opening verified; no additional paid model call.");
       return;

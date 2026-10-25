@@ -20,8 +20,11 @@ export function verifyTask(s,id,tool,audited){
 }
 // A completed opening is narrower than a completed arbitrary Windows task.
 export function completeAuditedOpening(s,appName="Premiere"){
- if(!s||s.phase!=="planning"||s.pending||s.verified<2||
-    s.tools.at(-1)!=="ui_windows"||(!s.tools.includes("premiere_launch")&&!s.tools.includes("launch_app")))return s;
+ if(!s||s.phase!=="planning"||s.pending||s.verified<2)return s;
+ const ready=appName==="Premiere"
+  ?s.verified>=3&&s.tools.includes("premiere_launch")&&s.tools.includes("ui_windows")&&s.tools.at(-1)==="ui_discover"
+  :s.tools.includes("launch_app")&&s.tools.at(-1)==="ui_windows";
+ if(!ready)return s;
  if(!["Premiere","Notepad"].includes(appName))return s;
  return {...s,phase:"window_verified",windowApp:appName,reason:null};
 }
