@@ -43,6 +43,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const issuedRustAiQuota=new Map();
  let persistedRust=rustRecord;
  let inspectionGrant=null;
+  let premiereReadGrant=null;
  let projectGrant=null;
  let editGrant=null;
  const domParent=el(),composerParent=el(),form=el(),chat=el();
@@ -74,7 +75,20 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    if(simulateRustJournal)persistedRust=null;
    return;
   }
-  if(name==="issue_task_edit_scope"){
+  if(name==="issue_premiere_read_scope"){
+     const proposed=staged.find(x=>x.id===params.actionId)?.proposal;
+     assert.equal(proposed?.tool,"premiere_launch");
+     assert.deepEqual(proposed?.arguments,{});
+     assert.equal(persistedRust?.phase,"awaiting_approval");
+     assert.equal(params.taskId,persistedRust?.taskId);
+     assert.equal(premiereReadGrant,null,"Cannot enlarge active owner permission");
+     premiereReadGrant={id:"9bce0dc1-a43d-4667-a990-9650bb565531",taskId:params.taskId,
+       remainingActions:2,expiresAtMs:Date.now()+180_000,
+       allowedTools:["ui_windows","ui_discover"],authorizedPaidRequests:0};
+     return premiereReadGrant;
+    }
+    if(name==="revoke_premiere_read_scope"){premiereReadGrant=null;return;}
+    if(name==="issue_task_edit_scope"){
     if(simulateRustJournal)assert.equal(persistedRust?.phase,"awaiting_approval");
     const action=staged.find(x=>x.id===params.actionId)?.proposal;
     assert.ok(action&&["write_file","replace_text"].includes(action.tool));
@@ -158,7 +172,16 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   }
   if(name==="execute_action"){
    const action=staged.find(s=>s.id===params.actionId);
-   if(params.editScopeId){
+   if(params.premiereReadScopeId){
+     assert.ok(premiereReadGrant,"Premiere scope required at exact Rust execution");
+     assert.equal(params.premiereReadScopeId,premiereReadGrant.id);
+     assert.equal(params.taskId,premiereReadGrant.taskId);
+     const expected=premiereReadGrant.remainingActions===2?"ui_windows":"ui_discover";
+     assert.equal(action?.proposal.tool,expected,"only ordered read-only steps allowed");
+     assert.ok(premiereReadGrant.remainingActions>0);
+     premiereReadGrant.remainingActions--;
+    }
+    if(params.editScopeId){
      assert.ok(editGrant,"Rust exact-file scope must exist at dispatch");
      assert.equal(params.editScopeId,editGrant.id);
      assert.equal(params.taskId,editGrant.taskId);
@@ -218,6 +241,8 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const paidSelect=created.find(x=>x.attributes["aria-label"]==="Owner-approved paid AI request count for each task");
  if(paidSelect)paidSelect.value=String(paidRequestLimit);
  const allow=created.find(x=>x.textContent==="Allow once");
+  const premiereApprove=created.find(x=>x.textContent==="Allow Premiere + 2 Safe Read Checks");
+  const premiereRevoke=created.find(x=>x.textContent==="Revoke Premiere Check Permission");
  const editApprove=created.find(x=>x.textContent==="Allow exact-file task editing scope (4 actions / 10 min)");
  const projectApprove=created.find(x=>x.textContent==="Allow selected-project inventory (8 reads / 3 min)");
   const revokeProject=created.find(x=>x.textContent==="Revoke selected-project inventory");
@@ -231,7 +256,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,editApprove,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,premiereApprove,premiereRevoke,editApprove,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -2018,5 +2043,44 @@ test("sensitive project paths never display delegated edit scope even while Allo
   assert.ok(s.editApprove.hidden,"no broad delegated scope for "+bad);
   assert.equal(s.approval.hidden,false,"individual Allow once remains visible");
   assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0,"never execute without owner");
+ }
+});
+
+test("Owner Premiere launch consent authorizes exactly two follow-up read-only audited checks",async()=>{
+ const tick="638962980000000000";
+ const inventory=[{Name:"Adobe Premiere Pro 2026",ProcessName:"Adobe Premiere Pro",
+  ProcessId:101,NativeWindowHandle:2580,ProcessStartTicks:tick}];
+ const controls=["File","New Project","Open Project"].map((Name,i)=>({
+  Name,AutomationId:"a-"+i,ControlType:i===0?"ControlType.MenuItem":"ControlType.Button",
+  IsEnabled:true,IsOffscreen:false,ControlRuntimeId:[2,1,i],
+  ObservedWindowHwnd:2580,ObservedWindowPid:101,ObservedWindowProcessStartTicks:tick
+ }));
+ const s=setup({first:launch,uuidPreparedIds:true,simulateRustJournal:true,
+  stdoutFor:{ui_windows:JSON.stringify(inventory),ui_discover:JSON.stringify(controls)}});
+ await until(()=>s.transport.connected(),"native IPC ready");
+ await s.transport.send("Premiere kholo","premiere-one-consent",0);
+ assert.equal(s.premiereApprove.hidden,false,"owner sees narrow task permission");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0,"no launch before owner click");
+ s.premiereApprove.listeners.get("click")();
+ await until(()=>s.transport.getReplies("premiere-one-consent")[0]?.includes("Interface तैयार"),
+  "one-consent Premiere readiness");
+ assert.deepEqual(s.staged.map(x=>x.proposal.tool),["premiere_launch","ui_windows","ui_discover"]);
+ const executed=s.calls.filter(x=>x.name==="execute_action");
+ assert.equal(executed.length,3);
+ assert.equal(executed[0].params.premiereReadScopeId,undefined,"launch was owner-clicked");
+ assert.ok(executed[1].params.premiereReadScopeId,"first read has Rust scope");
+ assert.equal(executed[2].params.premiereReadScopeId,executed[1].params.premiereReadScopeId);
+ assert.equal(s.chatInputs.length,1,"no extra paid AI permission");
+ assert.equal(s.calls.filter(x=>x.name==="issue_premiere_read_scope").length,1);
+ assert.ok(s.calls.some(x=>x.name==="revoke_premiere_read_scope"),"scope automatically exhausted");
+ assert.equal(s.rustState().phase,"completed_verified");
+});
+test("Premiere scope is never offered for editing, project opening or unrelated app",async()=>{
+ for(const goal of ["Premiere kholo aur project banao","Open Notepad","Premiere create project"]){
+  const s=setup({first:launch});
+  await until(()=>s.transport.connected(),"native IPC");
+  await s.transport.send(goal,"scope-refuse",0);
+  assert.equal(s.premiereApprove.hidden,true,goal);
+  assert.equal(s.calls.filter(x=>x.name==="issue_premiere_read_scope").length,0);
  }
 });
