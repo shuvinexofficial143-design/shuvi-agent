@@ -1,7 +1,7 @@
 //! Shuvi42 owner-granted, immutable selected-project root inventory scope.
 //! No content reads, mutations, shell, arbitrary child roots, or AI billings.
 use serde::Serialize;
-use std::{collections::{HashMap,HashSet},fs,path::{Path,PathBuf}};
+use std::{collections::{HashMap,HashSet},fs,path::{Component,Path,PathBuf}};
 use uuid::Uuid;
 const TTL_MS:u64=180_000;
 const MAX_READS:u8=8;
@@ -10,7 +10,12 @@ struct Grant{
  task:String,origin:String,root:PathBuf,expires:u64,remaining:u8,used:HashSet<String>,
 }
 #[derive(Default)]
-pub(crate) struct Store{active:HashMap<String,Grant>}
+pub(crate) struct Store{
+ active:HashMap<String,Grant>,
+ // Expired and spent task grants require a fresh explicit owner revoke
+ // instead of a silent new grant while continuing an old task.
+ retired_tasks:HashSet<String>,
+}
 #[derive(Debug,Clone,Serialize)]
 #[serde(rename_all="camelCase")]
 pub(crate) struct View{
@@ -34,6 +39,10 @@ fn selected_root(path:&str,workspace:&str)->Result<PathBuf,String>{
   return Err("Invalid project inventory root.".into());
  }
  let requested=Path::new(path);let selected=Path::new(workspace);
+ if requested.components().any(|c|matches!(c,Component::ParentDir|Component::CurDir))||
+    selected.components().any(|c|matches!(c,Component::ParentDir|Component::CurDir)){
+  return Err("Project root cannot use relative traversal components.".into());
+ }
  if !requested.is_absolute()||!selected.is_absolute(){
   return Err("Project root must be absolute.".into());
  }
@@ -42,6 +51,23 @@ fn selected_root(path:&str,workspace:&str)->Result<PathBuf,String>{
  if metadata.file_type().is_symlink()||owner_metadata.file_type().is_symlink()||
     !metadata.is_dir()||!owner_metadata.is_dir(){
   return Err("Project scope refuses symlink root or non-directory.".into());
+ }
+ // Symlinked ancestor directories on Unix and Windows reparse points on
+ // Windows can redirect the owner-selected root even when its last component
+ // is an ordinary directory. Check every ancestor before accepting a grant.
+ for ancestor in requested.ancestors().chain(selected.ancestors()){
+  let meta=fs::symlink_metadata(ancestor)
+   .map_err(|_|"Project root ancestor cannot be inspected.")?;
+  if meta.file_type().is_symlink()||!meta.is_dir(){
+   return Err("Project inventory refuses redirected or missing root ancestors.".into());
+  }
+  #[cfg(windows)]
+  {
+   use std::os::windows::fs::MetadataExt;
+   if meta.file_attributes()&0x400!=0{
+    return Err("Project inventory refuses Windows junction/reparse ancestors.".into());
+   }
+  }
  }
  let actual=requested.canonicalize().map_err(|_|"Inventory target cannot be canonicalized.")?;
  let bound=selected.canonicalize().map_err(|_|"Owner workspace cannot be canonicalized.")?;
@@ -58,7 +84,14 @@ impl Store{
   }
   let path=action_root(action)?;
   let root=selected_root(path,workspace)?;
+  let retired:Vec<String>=self.active.values()
+   .filter(|x|x.expires<=now||x.remaining==0)
+   .map(|x|x.task.clone()).collect();
+  self.retired_tasks.extend(retired);
   self.active.retain(|_,x|x.expires>now&&x.remaining>0);
+  if self.retired_tasks.contains(task){
+   return Err("Expired project grant needs an explicit owner revoke before reauthorization.".into());
+  }
   if self.active.values().any(|x|x.task==task){
    return Err("A task cannot enlarge or reissue an existing project grant.".into());
   }
@@ -102,6 +135,7 @@ impl Store{
  }
  pub(crate) fn revoke_task(&mut self,task:&str){
   self.active.retain(|_,x|x.task!=task);
+  self.retired_tasks.remove(task);
  }
  pub(crate) fn revoke_action(&mut self,action:&str){
   self.active.retain(|_,x|x.origin!=action&&!x.used.contains(action));
@@ -149,4 +183,37 @@ mod tests{
   assert!(s.consume(&task,&v.id,&id(),&listing(a),a,1002).is_err());
   fs::remove_dir_all(p).unwrap();fs::remove_dir_all(q).unwrap();
  }
+ #[test]
+ fn expired_or_spent_grant_needs_explicit_owner_revoke_before_reissue(){
+  let root=std::env::temp_dir().join(format!("shuvi-project-{}",id()));
+  fs::create_dir_all(&root).unwrap();let path=root.to_str().unwrap();
+  let mut s=Store::default();let task=id();let origin=id();
+  let grant=s.issue(&task,&origin,&listing(path),path,1000).unwrap();
+  assert!(s.issue(&task,&id(),&listing(path),path,1000+TTL_MS).is_err());
+  assert!(s.issue(&task,&id(),&listing(path),path,1000+TTL_MS+1).is_err());
+  s.revoke_task(&task);
+  let second=s.issue(&task,&id(),&scan(path),path,1000+TTL_MS+2).unwrap();
+  for _ in 0..8{
+   s.consume(&task,&second.id,&id(),&scan(path),path,1000+TTL_MS+3).unwrap();
+  }
+  assert!(s.issue(&task,&id(),&scan(path),path,1000+TTL_MS+4).is_err());
+  s.revoke_task(&task);
+  assert!(s.issue(&task,&id(),&scan(path),path,1000+TTL_MS+5).is_ok());
+  assert_ne!(grant.id,second.id);
+  fs::remove_dir_all(root).unwrap();
+ }
+ #[cfg(unix)]
+ #[test]
+ fn selected_project_refuses_symlinked_ancestor_even_if_root_is_real_directory(){
+  use std::os::unix::fs::symlink;
+  let parent=std::env::temp_dir().join(format!("shuvi-project-{}",id()));
+  let real=parent.join("real");let alias=parent.join("redirect");
+  fs::create_dir_all(real.join("project")).unwrap();
+  symlink(&real,&alias).unwrap();
+  let redirected=alias.join("project").to_string_lossy().into_owned();
+  let mut s=Store::default();let task=id();let origin=id();
+  assert!(s.issue(&task,&origin,&listing(&redirected),&redirected,1000).is_err());
+  fs::remove_dir_all(parent).unwrap();
+ }
+
 }
