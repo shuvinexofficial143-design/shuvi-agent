@@ -52,6 +52,37 @@ public static class ShuviUiaNativeIdentity {
 // Read the window and one exact selected control in ONE native prepare probe.
 // Ambiguous/hidden/disabled controls never become a Rust approval capability.
 // Window identity and RuntimeId are gathered together from one UIA snapshot.
+// Preparation-only bounded read. A partial tree is never uniqueness evidence.
+const BOUNDED_PREPARED_CONTROL_LOOKUP: &str = r#"
+function Resolve-ShuviPreparedMatches {
+ param($root,$condition)
+ $timer=[System.Diagnostics.Stopwatch]::StartNew()
+ $walker=[System.Windows.Automation.TreeWalker]::ControlViewWalker
+ $queue=[System.Collections.Queue]::new()
+ $queue.Enqueue([PSCustomObject]@{Element=$root;Depth=0})
+ $matches=[System.Collections.ArrayList]::new()
+ $visited=0
+ while($queue.Count -gt 0) {
+  $node=$queue.Dequeue()
+  $child=$walker.GetFirstChild($node.Element)
+  while($null -ne $child) {
+   $visited++
+   if($visited -gt 1200 -or $node.Depth -ge 14) {
+    throw 'SHUVI_UIA_PREPARE_BOUNDED: tree budget exceeded; no action prepared.'
+   }
+   if($null -ne $child.FindFirst([System.Windows.Automation.TreeScope]::Element,$condition)) {
+    [void]$matches.Add($child)
+    if($matches.Count -gt 1) {throw 'SHUVI_UIA_PREPARE_AMBIGUOUS: no action prepared.'}
+   }
+   $queue.Enqueue([PSCustomObject]@{Element=$child;Depth=($node.Depth+1)})
+   $child=$walker.GetNextSibling($child)
+  }
+ }
+ [Console]::Error.WriteLine(('SHUVI_UIA_PREPARE_LOOKUP nodes={0} elapsed_ms={1}' -f $visited,$timer.ElapsedMilliseconds))
+ return ,$matches
+}
+"#;
+
 const PREPARED_CONTROL_PROBE: &str = r#"$shuviBoundHwnd = [IntPtr]([int64]$root.Current.NativeWindowHandle)
 $shuviBoundPid = [int]$root.Current.ProcessId
 if ($shuviBoundHwnd -eq [IntPtr]::Zero -or $shuviBoundPid -le 0 -or
@@ -87,9 +118,9 @@ if ($shuviBoundRecheckPid -ne [uint32]$shuviBoundPid) {
 }
 $title = [string]$root.Current.Name
 if ([string]::IsNullOrWhiteSpace($title)) { throw 'Cannot bind unnamed target window.' }
-$matches = Resolve-ShuviUiMatches -root $root -condition $condition
+$matches = Resolve-ShuviPreparedMatches -root $root -condition $condition
 if ($matches.Count -ne 1) { throw 'Cannot bind UI action: selector did not resolve exactly one control.' }
-$control = $matches.Item(0)
+$control = $matches[0]
 if ([int]$control.Current.ProcessId -ne $shuviBoundPid -or
     -not [bool]$control.Current.IsEnabled -or
     [bool]$control.Current.IsOffscreen) {
@@ -238,7 +269,7 @@ pub(super) fn prepared_control_probe(
     let native = PREPARED_CONTROL_PROBE.replace("__CAPABILITY_PREFLIGHT__", check);
     // The observed selector/window scripts are appended by one-pass
     // formatting and cannot recursively expand the replacement sentinel.
-    Ok(format!("Add-Type -AssemblyName UIAutomationClient\n{selector_script}\n{root_script}\n{WIN32_MUTATION_GUARD}\n{native}"))
+    Ok(format!("Add-Type -AssemblyName UIAutomationClient\n{selector_script}\n{root_script}\n{WIN32_MUTATION_GUARD}\n{BOUNDED_PREPARED_CONTROL_LOOKUP}\n{native}"))
 }
 
 // A read-only UIA query is observation evidence, not merely a successful
