@@ -573,7 +573,9 @@ mod tests {
         let script = prepared_control_probe("$root=$nativeWindow", "$condition=$selector", "ui_click").unwrap();
         for token in ["$nativeWindow","$selector", "GetWindowThreadProcessId",
             "Get-Process -Id", "StartTime.ToUniversalTime().Ticks",
-            "IsWindowVisible", "Resolve-ShuviUiMatches", "$matches.Count -ne 1",
+            "IsWindowVisible", "Resolve-ShuviPreparedMatches",
+            "SHUVI_UIA_PREPARE_BOUNDED", "SHUVI_UIA_PREPARE_AMBIGUOUS",
+            "visited -gt 1200", "Depth -ge 14", "$matches.Count -ne 1",
             "GetRuntimeId()", "ConvertTo-Json"] {
             assert!(script.contains(token), "missing {token}");
         }
