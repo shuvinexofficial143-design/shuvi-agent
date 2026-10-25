@@ -5,6 +5,7 @@
  */
 import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
 import {admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from "../../src/master-autonomy-contract.mjs";
+import {checkOpeningToolSelection,preparationFailureMessage} from "./native-preparation-policy.mjs";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,completeAuditedYouTubePage,completeAuditedYouTubeSearch,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
@@ -1009,6 +1010,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     "Master did not propose another action; task paused.");
    return;
   }
+  const intentGate=checkOpeningToolSelection(task.objective,response.tool_proposal);
+  if(!intentGate.allowed){
+   const saved=await persistRecovery(taskBudget,"paused",task.action.id);
+   haltTask(task.threadId,saved?"prepare_failed":"recovery_journal_failed");
+   appendReply(task.threadId,task.promptIndex,
+    "मैंने गलत UI text action रोक दिया है। वेबसाइट या App खोलने के लिए सुरक्षित Navigation और नई जाँच जरूरी है।");
+   showActionFeedback("Opening intent blocked wrong UIA text mutation; no action staged.");
+   return;
+  }
   const scope=admitDashboardMasterProposal(task.objective,response.tool_proposal);
   if(!scope.ok){
    haltTask(task.threadId,"prepare_failed");
@@ -1103,10 +1113,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    showActionFeedback("Master has prepared the next Windows action. Review and select Allow once or Deny. Nothing executed automatically.");
    refreshState("Master waiting for approval of next task step.");
   }catch(error){
-   haltTask(task.threadId,"prepare_failed");
-   appendReply(task.threadId,task.promptIndex,
-    "Next Windows tool preparation failed: "+redactNativeError(error)+". Nothing executed. Task paused.");
-   showActionFeedback("Next action could not be prepared. No automatic retry.");
+   // The old action is still audit-verified; no successor was executed.
+   const saved=await persistRecovery(taskBudget,"paused",task.action.id);
+   haltTask(task.threadId,saved?"prepare_failed":"recovery_journal_failed");
+   try{await invoke<void>("record_agent_event",{
+    event:"orchestration_stopped",tool:response.tool_proposal.tool,
+    detail:("Native preparation failed without execution: "+redactNativeError(error)).slice(0,1100)
+   });}catch{/* a missing audit never authorizes retry */}
+   appendReply(task.threadId,task.promptIndex,preparationFailureMessage(saved));
+   showActionFeedback("Native preparation failed. Details: Activity/Audit. No automatic replay.");
   }
  }
  // A failed read-only lookup may be followed by a DIFFERENT read-only
@@ -1468,9 +1483,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      const label=verified
        ? "Native action completed with matching audit. Continuing original task…"
        : "Action outcome not independently verified. Stopped; inspect native audit before retrying.";
-     const output=redactNativeOutput([result.stdout,result.stderr].filter(Boolean).join("\n"));
-     appendReply(current.threadId,current.promptIndex,label+(output?"\n"+output:""));
-     showActionFeedback(label+(output?" "+output:""));
+     // Technical stdout/JSON is not normal Chat content.
+     appendReply(current.threadId,current.promptIndex,verified
+      ?"पिछला Windows Action जाँच लिया है। अब आपके काम का अगला हिस्सा देख रही हूँ।"
+      :"इस Action का Result Verify नहीं हुआ। मैंने आगे का काम रोक दिया है।");
+     showActionFeedback(label);
      refreshState(label);
      // An EXACT "Open Premiere" or "Open Notepad" task can close after two separately approved
      // native actions (launcher then OS-window inspection) with two exact
@@ -1981,7 +1998,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const firstStepGuidance=route.role==="chat"?null:
      masterAutonomyGuidance(effectiveObjective)+" "+
      continuityHint(continuity)+" "+
-     "Continue the user\u0027s actual desktop request, not a preliminary inspection. "+
+     "Continue the user\u0027s actual desktop request, not a preliminary inspection. For opening a site or app, inspect/reuse the existing session first. Do not use ui_set_value for URL navigation; use typed browser/navigation tools or stop safely. "+
      (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
      (waitingForChoice?"Keep the original request as the task goal after this clarification: "+effectiveObjective.slice(0,440)+". ":"")+
      "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. For inspect_screen always supply window with the exact real app title observed via ui_windows, even if the user returns to Shuvi to approve; use desktop only for an explicitly requested whole-screen inspection. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit. "+
@@ -2038,6 +2055,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      actionFeedback.hidden=true;
      try{
       // Validate provider output before contacting the native staging queue.
+      if(!checkOpeningToolSelection(effectiveObjective,response.tool_proposal).allowed)
+       throw Error("Opening goal requires observation/navigation, not UIA value mutation.");
       const scope=admitDashboardMasterProposal(effectiveObjective,response.tool_proposal);
       if(!scope.ok)throw Error(scope.reason);
       const appGate=checkRequestedAppTarget(effectiveObjective,response.tool_proposal);
@@ -2078,8 +2097,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
       approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
      }catch(error){
-      await persistRecovery(taskBudget,"outcome_unknown");
-      updateTask(threadId,pauseTask(createTask(),"prepare_failed"));
+      // prepare_tool is staging only; no execute_action was issued for the
+      // rejected proposal, so do not mislabel a prepare failure as a
+      // possibly-executed Windows mutation.
+      const saved=await persistRecovery(taskBudget,"paused");
+      updateTask(threadId,pauseTask(createTask(),saved?"prepare_failed":"recovery_journal_failed"));
       showActionFeedback("AI replied but Windows could not prepare its action: "+redactNativeError(error)+
        ". Nothing executed. Check the action details; do not resend this paid request blindly.");
       // The paid model response already arrived. A separate Windows prepare failure
