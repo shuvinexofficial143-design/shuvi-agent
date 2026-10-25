@@ -4,6 +4,7 @@ mod web_bridge;
 mod target_window_capture;
 mod vision_screenshot_guard;
 mod native_uia_window_guard;
+mod native_uia_preparation_diagnostics;
 mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
@@ -3489,9 +3490,17 @@ fn prepare_native_uia_binding(
         let root = ui_root_script(Some(window));
         let condition = ui_condition_script(name, automation_id)?;
         let probe = native_uia_window_guard::prepared_control_probe(&root, &condition, native_tool)?;
-        let output = run_hidden_powershell(&probe)?;
+        let preparation_started=std::time::Instant::now();
+        let output=run_hidden_powershell(&probe)
+            .map_err(|error|native_uia_preparation_diagnostics::classify_failure(&error))?;
+        if let Some(note)=native_uia_preparation_diagnostics::numeric_timing_note(&output.stderr){
+            // This is a bounded, private-data-free numeric event, not a
+            // successful operation or permission grant.
+            eprintln!("{note}");
+        }
+        eprintln!("SHUVI_UIA_PREPARE_TOTAL elapsed_ms={}",preparation_started.elapsed().as_millis());
         if !output.status.success() {
-            return Err("Native HWND/PID/UIA control identity could not be bound at preparation. Inspect ui_windows and ui_discover before retrying.".into());
+            return Err(native_uia_preparation_diagnostics::classify_rejection(&output.stderr).into());
         }
         let text = std::str::from_utf8(&output.stdout)
             .map_err(|_| "Prepared native UIA control evidence was not UTF-8.".to_string())?;
