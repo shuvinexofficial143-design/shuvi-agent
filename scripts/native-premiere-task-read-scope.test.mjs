@@ -28,3 +28,13 @@ test("UI requires explicit owner click and original Rust audit, never a browser-
  assert.match(ui,/activePremiere\(pending.threadId,pending.proposal\?\?undefined\)/);
  assert.match(ui,/revoke_premiere_read_scope/);
 });
+
+test("owner Deny and Stop both revoke native Premiere read delegation without replay",()=>{
+ const denied=rust.slice(rust.indexOf("fn deny_action("),rust.indexOf("/// Domain-separated native child identity."));
+ const stopped=rust.slice(rust.indexOf("fn cancel_running_action("),rust.indexOf("async fn execute_action(",rust.indexOf("fn cancel_running_action(")));
+ for(const source of [denied,stopped]){
+  assert.match(source,/premiere_read_scopes\.lock\(\)/);
+  assert.match(source,/\.revoke_action\(&action_id\)/);
+ }
+ assert.match(ui,/revoke_premiere_read_scope/);
+});

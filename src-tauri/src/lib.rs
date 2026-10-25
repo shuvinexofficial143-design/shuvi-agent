@@ -21572,6 +21572,9 @@ fn deny_action(
         state.task_inspection_scopes.lock()
             .map_err(|_|"Inspection scope store unavailable.".to_string())?
             .revoke_action(&action_id);
+        state.premiere_read_scopes.lock()
+            .map_err(|_|"Premiere read permission store unavailable.".to_string())?
+            .revoke_action(&action_id);
         state.task_project_scopes.lock()
             .map_err(|_|"Project scope store unavailable.".to_string())?
             .revoke_action(&action_id);
@@ -21707,6 +21710,9 @@ fn cancel_running_action(
         .revoke_action(&action_id);
     state.task_inspection_scopes.lock()
         .map_err(|_|"Inspection scope store unavailable.".to_string())?
+        .revoke_action(&action_id);
+    state.premiere_read_scopes.lock()
+        .map_err(|_|"Premiere read permission store unavailable.".to_string())?
         .revoke_action(&action_id);
     state.task_project_scopes.lock()
         .map_err(|_|"Project scope store unavailable.".to_string())?
