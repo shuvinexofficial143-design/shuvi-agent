@@ -1525,7 +1525,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       return;
      }
      if(simpleOpening||youtubeHome||youtubeSearch){
-      const appName=youtubeHome||youtubeSearch?"YouTube":simpleOpening?.scope==="premiere_window"?"Premiere":"Notepad";
+      const appName=youtubeHome||youtubeSearch?"YouTube":["premiere_window","premiere_ui_ready"].includes(simpleOpening?.scope??"")?"Premiere":"Notepad";
       const finalBudget=taskBudgets.get(current.threadId);
       if(!finalBudget||!await persistRecovery(finalBudget,"completed_verified",current.action.id)){
        haltTask(current.threadId,"recovery_journal_failed");

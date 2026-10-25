@@ -386,7 +386,7 @@ test("YouTube search receives a distinct approved CDP search-result readback and
  assert.equal(s.chatInputs.length,2,"readback uses no third paid model call");
  s.allow.listeners.get("click")();
  await until(()=>s.rustState()?.phase==="completed_verified","verified original search goal");
- assert.match(s.transport.getReplies("search-goal")[0],/YouTube SEARCH VERIFIED/);
+ assert.match(s.transport.getReplies("search-goal")[0],/YouTube पर Search पूरी हुई और Result Verify हो गया है/);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,3);
 });
 test("missing audit stops after first action and never calls model again",async()=>{
@@ -1616,7 +1616,7 @@ test("YouTube home launches, separately approved CDP readback verifies page, nex
  await until(()=>!s.allow.disabled,"readback pending");
  s.allow.listeners.get("click")();
  await until(()=>s.rustState()?.phase==="completed_verified","browser readback final");
- assert.match(s.transport.getReplies("browser-sequence")[0],/YouTube HOME PAGE VERIFIED/);
+ assert.match(s.transport.getReplies("browser-sequence")[0],/YouTube खुल गया और उसका Page Verify हो गया है/);
  assert.equal(s.recoveryDismiss.hidden,true);
  const accepted=await s.transport.send("Search Arijit Singh on YouTube","browser-sequence",1);
  assert.equal(accepted.ok,true,accepted.error);
@@ -1650,7 +1650,7 @@ test("ambiguous Premiere window does not bypass Master outcome verification",asy
  await until(()=>s.allow.disabled===false,"window approval ready");
  s.allow.listeners.get("click")();
  await until(()=>s.chatInputs.length===2,"unverified window invokes Master replan");
- assert.doesNotMatch(s.transport.getReplies("invalid-window-terminal")[0]??"",/OPENING VERIFIED/);
+ assert.doesNotMatch(s.transport.getReplies("invalid-window-terminal")[0]??"",/Interface तैयार|Window Verify हो गई है/);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
 });
 
@@ -1669,7 +1669,7 @@ test("Premiere project creation cannot terminate merely because its window was a
  await until(()=>s.allow.disabled===false,"project inspection approval");
  s.allow.listeners.get("click")();
  await until(()=>s.chatInputs.length===3,"project requires further Master model continuation");
- assert.doesNotMatch(s.transport.getReplies("project-not-terminal")[0]??"",/OPENING VERIFIED/);
+ assert.doesNotMatch(s.transport.getReplies("project-not-terminal")[0]??"",/Interface तैयार|Window Verify हो गई है/);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
 });
 
@@ -1777,12 +1777,12 @@ test("Notepad: verified launch_app triggers deterministic ui_windows readback",a
   assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
   await until(()=>s.allow.disabled===false,"window approval ready");
   s.allow.listeners.get("click")();
-  await until(()=>s.transport.getReplies("notepad-simple-open")[0]?.includes("OPENING VERIFIED"),
+  await until(()=>s.transport.getReplies("notepad-simple-open")[0]?.includes("Window Verify हो गई है"),
     "independently accepted Notepad opening");
   assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
   assert.equal(s.chatInputs.length,1,"never purchases a model call to recheck a verified narrow opening");
   assert.equal(s.staged.length,2,"no third prepared Windows action");
-  assert.match(s.transport.getReplies("notepad-simple-open")[0],/Notepad window OPENING VERIFIED/);
+  assert.match(s.transport.getReplies("notepad-simple-open")[0],/Notepad खुल गया और उसकी Window Verify हो गई है/);
   assert.match(s.transport.getReplies("notepad-simple-open")[0],/PID 1234/);
   assert.match(s.transport.getReplies("notepad-simple-open")[0],/HWND 5678/);
   const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
@@ -1803,7 +1803,7 @@ test("Notepad: Hindi simple launch triggers deterministic readback",async()=>{
   assert.equal(s.staged[1].proposal.tool,"ui_windows");
   assert.equal(s.chatInputs.length,1,"zero model calls for Hindi Notepad");
   s.allow.listeners.get("click")();
-  await until(()=>s.transport.getReplies("notepad-hindi-open")[0]?.includes("OPENING VERIFIED"),
+  await until(()=>s.transport.getReplies("notepad-hindi-open")[0]?.includes("Window Verify हो गई है"),
     "Hindi Notepad opening verified");
   assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
   assert.equal(s.chatInputs.length,1);
@@ -1823,7 +1823,7 @@ test("Notepad: actual Windows Hinglish 'notepad open karo' gets a separate readb
   assert.equal(s.chatInputs.length,1,"the second native approval must not spend another xKiro request");
   await until(()=>s.allow.disabled===false,"readback approval ready");
   s.allow.listeners.get("click")();
-  await until(()=>s.transport.getReplies("notepad-hinglish-open")[0]?.includes("OPENING VERIFIED"),
+  await until(()=>s.transport.getReplies("notepad-hinglish-open")[0]?.includes("Window Verify हो गई है"),
     "strict Notepad evidence acceptance");
   assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
   assert.equal(s.chatInputs.length,1);
@@ -1845,7 +1845,7 @@ test("Notepad: ambiguous window does not trigger completion",async()=>{
   await until(()=>s.allow.disabled===false,"window approval ready");
   s.allow.listeners.get("click")();
   await until(()=>s.chatInputs.length===2,"unverified window invokes Master replan");
-  assert.doesNotMatch(s.transport.getReplies("notepad-ambiguous-window")[0]??"",/OPENING VERIFIED/);
+  assert.doesNotMatch(s.transport.getReplies("notepad-ambiguous-window")[0]??"",/Interface तैयार|Window Verify हो गई है/);
   assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
 });
 
@@ -1865,7 +1865,7 @@ test("Oversized Hindi objective pauses before a second paid model request withou
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
  assert.equal(phases.at(-1),"paused","durable pause recorded");
- assert.doesNotMatch(s.transport.getReplies("long-hindi-context")[0],/OPENING VERIFIED/);
+ assert.doesNotMatch(s.transport.getReplies("long-hindi-context")[0],/Interface तैयार|Window Verify हो गई है/);
 });
 
 test("owner bounded read-only scope auto-approves same-window inspections but never unrelated tools",async()=>{

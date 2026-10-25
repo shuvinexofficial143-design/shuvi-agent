@@ -122,7 +122,8 @@ test('Successful audited launch selects only a new, separately approved observat
 });
 test('Native continuation stages observed-window proposal without a second model request',()=>{
   const ui=readFileSync(new URL('../web-dashboard/src/native-agent.ts',import.meta.url),'utf8');
-  assert.match(ui,/const plannedReadback=nextMasterReadbackProposal\(task\.objective,result\.tool\)/);
+  assert.match(ui,/const plannedReadback=premiereRead\?\?nextMasterReadbackProposal\(task\.objective,result\.tool\)/);
+ assert.match(ui,/const premiereRead=result\.tool==="ui_windows"/);
   assert.match(ui,/persistRecovery\(taskBudget,"readback_reserved",task.action.id\)/);
   assert.match(ui,/else if\(!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)/);
   assert.match(ui,/if\(plannedReadback\)\{\s*response=\{content:/);

@@ -87,7 +87,7 @@ test("two separate Windows goals reuse audited Edge via a NEW Allow once CDP pro
  approve.click();
  await tick();
  assert.equal(modelCalls,1,"opening completion needs no extra AI charge");
- assert.match(transport.getReplies("same-thread")[0],/YouTube HOME PAGE VERIFIED/);
+ assert.match(transport.getReplies("same-thread")[0],/YouTube खुल गया और उसका Page Verify हो गया है/);
  assert.equal((await transport.send("YouTube par Arijit Singh ke gane search karo","same-thread",1)).ok,true);
  assert.equal(modelCalls,2);
  assert.deepEqual(staged.get(uuid(3)),page,"new command stages read-only original Edge PID, not Chrome launch");

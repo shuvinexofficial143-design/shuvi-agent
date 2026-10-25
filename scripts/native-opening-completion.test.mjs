@@ -80,6 +80,11 @@ test("Native UI progress records narrow window-only completion, not project/edit
  s=stageTask(s,B,"ui_windows",2);
  s=executeTask(s,B);
  s=verifyTask(s,B,"ui_windows",true);
+ assert.equal(completeAuditedOpening(s).phase,"planning","Premiere window alone never proves UI ready");
+ const readinessId="c6a6aa11-1234-4123-8123-123456789012";
+ s=stageTask(s,readinessId,"ui_discover",3);
+ s=executeTask(s,readinessId);
+ s=verifyTask(s,readinessId,"ui_discover",true);
  const complete=completeAuditedOpening(s);
  assert.equal(complete.phase,"window_verified");
  assert.match(taskSummary(complete),/window opening VERIFIED.*project\/edit\/export NOT verified/);
@@ -87,7 +92,9 @@ test("Native UI progress records narrow window-only completion, not project/edit
 });
 test("Native dashboard accepts only exact Rust audit and durably finalizes BEFORE terminal message",()=>{
  const ui=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
- assert.match(ui,/const simpleOpening=verified\?verifiedSimpleOpening\(/);
+ assert.match(ui,/const simpleOpening=verified\?\(result\.tool==="ui_discover"/);
+ assert.match(ui,/auditedPremiereUiReady\(/);
+ assert.match(ui,/verifiedSimpleNotepadOpening\(/);
  assert.match(ui,/taskEvidence\.get\(current\.threadId\)\?\?null,true/);
  const capture=ui.indexOf("const simpleOpening=verified?");
  const checkpoint=ui.indexOf('await persistRecovery(finalBudget,"completed_verified",current.action.id)',capture);
