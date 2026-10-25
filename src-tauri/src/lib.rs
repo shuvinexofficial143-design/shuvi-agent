@@ -28,6 +28,7 @@ mod native_scheduler;
 mod native_task_grant;
 mod native_task_edit_scope;
 mod native_task_inspection_scope;
+mod native_premiere_read_scope;
 mod native_task_project_scope;
 mod native_task_ai_ledger;
 mod native_task_ai_quota;
@@ -1191,6 +1192,7 @@ struct ActionState {
     task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
     task_edit_scopes: Mutex<native_task_edit_scope::TaskEditScopeStore>,
     task_inspection_scopes: Mutex<native_task_inspection_scope::Store>,
+    premiere_read_scopes: Mutex<native_premiere_read_scope::Store>,
     task_project_scopes: Mutex<native_task_project_scope::Store>,
     task_ai_quota: Mutex<native_task_ai_quota::Store>,
     pending: Mutex<HashMap<String, PendingAction>>,
@@ -21412,6 +21414,40 @@ fn revoke_task_project_scopes(task_id:String,state:State<'_,ActionState>,
         success:true,action_id:None,
     })
 }
+/// Owner explicitly delegates TWO independently audited read-only
+/// verification steps after a project-free Premiere launch. No UI mutation.
+#[tauri::command]
+fn issue_premiere_read_scope(task_id:String,action_id:String,
+ state:State<'_,ActionState>,app:AppHandle)->Result<native_premiere_read_scope::View,String>{
+ let pending=state.pending.lock().map_err(|_|"Pending action unavailable.")?;
+ let prepared=pending.get(&action_id).ok_or("Original Premiere launch must be prepared.")?;
+ if now_ms().saturating_sub(prepared.created_at_ms)>PENDING_ACTION_TTL_MS{
+  return Err("Premiere launch approval expired.".into());
+ }
+ let journal=native_recovery::load(&app)?;
+ native_task_edit_scope::owner_checkpoint_allows(journal.as_ref(),
+  &task_id,&action_id,"awaiting_approval",now_ms())?;
+ let mut scopes=state.premiere_read_scopes.lock().map_err(|_|"Read scope unavailable.")?;
+ let view=scopes.issue(&task_id,&action_id,&prepared.action,now_ms())?;
+ if let Err(error)=append_audit(&app,&AuditEntry{
+  timestamp_ms:now_ms(),event:"premiere_read_scope_issued".into(),tool:"premiere_launch".into(),
+  detail:"Owner approved two READ-ONLY Premiere opening inspections; no UI mutations, files or paid AI authority.".into(),
+  success:true,action_id:Some(action_id),
+ }){
+  scopes.revoke_task(&task_id);return Err(error);
+ }
+ Ok(view)
+}
+#[tauri::command]
+fn revoke_premiere_read_scope(task_id:String,state:State<'_,ActionState>,app:AppHandle)->Result<(),String>{
+ Uuid::parse_str(&task_id).map_err(|_|"Invalid Premiere task UUID.")?;
+ state.premiere_read_scopes.lock().map_err(|_|"Read scope unavailable.")?.revoke_task(&task_id);
+ append_audit(&app,&AuditEntry{
+  timestamp_ms:now_ms(),event:"premiere_read_scope_revoked".into(),tool:"ui_windows".into(),
+  detail:"Bounded Premiere read-only delegation revoked. No old action replay.".into(),
+  success:true,action_id:None
+ })
+}
 /// Owner-issued bounded read-only UI inspection scope. Existing native action
 /// preparation, OS identity, audit and approval journal checks stay mandatory.
 #[tauri::command]
@@ -21766,6 +21802,7 @@ async fn execute_action(
     edit_scope_id: Option<String>,
     inspection_scope_id: Option<String>,
     project_scope_id: Option<String>,
+    premiere_read_scope_id: Option<String>,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
@@ -21802,7 +21839,25 @@ async fn execute_action(
             // a currently valid Rust grant for THIS prepared action's exact
             // typed arguments. No permission extends to a second action or
             // across restart; the grant is consumed before native dispatch.
-            if let Some(scope_id)=project_scope_id.as_deref(){
+            if premiere_read_scope_id.is_some()&&
+                (grant_id.is_some()||edit_scope_id.is_some()||inspection_scope_id.is_some()||project_scope_id.is_some()){
+                return Err("Premiere read delegation cannot combine with another grant.".into());
+            }
+            if let Some(scope_id)=premiere_read_scope_id.as_deref(){
+                let task=task_id.as_deref().ok_or("Scoped Premiere read requires exact task UUID.")?;
+                let record=native_recovery::load(&app)?;
+                native_task_edit_scope::owner_checkpoint_allows(record.as_ref(),task,
+                    &action_id,"executing",now_ms())?;
+                let mut scopes=state.premiere_read_scopes.lock()
+                    .map_err(|_|"Premiere scoped verification unavailable.")?;
+                let origin=scopes.origin(task,scope_id,now_ms())?;
+                let audit=read_action_audit_receipt(&app,&origin)?
+                    .ok_or("Original Premiere launch has no native audit receipt.")?;
+                if audit.event!="executed"||!audit.success||audit.tool!="premiere_launch"{
+                    return Err("Scoped Premiere verification requires verified original launch.".into());
+                }
+                scopes.consume(task,scope_id,&action_id,&prepared.action,now_ms())?;
+            }else if let Some(scope_id)=project_scope_id.as_deref(){
                 if grant_id.is_some()||edit_scope_id.is_some()||inspection_scope_id.is_some(){
                     return Err("Project grant cannot combine with another authorization.".into());
                 }
@@ -22105,6 +22160,19 @@ async fn execute_action(
         }
         other=>other,
     };
+    // Never publish successful scoped readback before verifying the exact
+    // Premiere HWND/PID/process-birth identity in Rust.
+    let execution=match execution {
+        Ok(result) if premiere_read_scope_id.is_some()&&result.success=>{
+            match (premiere_read_scope_id.as_deref(),task_id.as_deref()){
+                (Some(scope),Some(task))=>state.premiere_read_scopes.lock()
+                    .map_err(|_|"Premiere scope state poisoned.".to_string())?
+                    .confirm(task,scope,&action_id,&result.stdout).map(|_|result),
+                _=>Err("Scoped Premiere read lost task identity.".into()),
+            }
+        }
+        other=>other,
+    };
     // Scope success must not be published in the durable Rust "executed"
     // audit until the exact owner-approved file has been re-fingerprinted.
     // If readback is missing, reordered or changed, the action outcome is
@@ -22162,6 +22230,11 @@ async fn execute_action(
             if scheduled_step.is_some(){
                 native_scheduler::finish(&app,&action_id,&result.tool,Some(result.success))?;
             }
+            if premiere_read_scope_id.is_some()&&!result.success{
+                state.premiere_read_scopes.lock()
+                    .map_err(|_|"Premiere scope failure revocation unavailable.".to_string())?
+                    .revoke_action(&action_id);
+            }
             if project_scope_id.is_some()&&!result.success {
                 state.task_project_scopes.lock()
                     .map_err(|_|"Project scope failure revocation unavailable.".to_string())?
@@ -22180,6 +22253,11 @@ async fn execute_action(
             Ok(result)
         }
         Err(error) => {
+            if premiere_read_scope_id.is_some(){
+                if let Ok(mut scopes)=state.premiere_read_scopes.lock(){
+                    scopes.revoke_action(&action_id);
+                }
+            }
             if project_scope_id.is_some(){
                 if let Ok(mut grants)=state.task_project_scopes.lock(){
                     grants.revoke_action(&action_id);
@@ -22222,7 +22300,7 @@ async fn execute_powershell(
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, None, None, None, None, None, state, app).await
+    execute_action(action_id, None, None, None, None, None, None, state, app).await
 }
 
 #[tauri::command]
@@ -22678,6 +22756,8 @@ pub fn run() {
             revoke_task_edit_scopes,
             issue_task_inspection_scope,
             revoke_task_inspection_scopes,
+            issue_premiere_read_scope,
+            revoke_premiere_read_scope,
             issue_task_project_scope,
             revoke_task_project_scopes,
             cancel_running_action,
