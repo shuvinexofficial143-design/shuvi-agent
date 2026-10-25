@@ -46,7 +46,7 @@ test("a paused or uncertain task remains an inspection-only journal record",()=>
   assert.equal(readNativeRecovery(store,1001).phase,phase);
  }
  const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
- assert.match(native,/persistRecovery\(taskBudget,"outcome_unknown"\)/);
+ assert.match(native,/persistRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
  assert.match(native,/persistRecovery\(taskBudget,"paused"\)/);
  assert.match(native,/route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)/);
 });

@@ -397,7 +397,7 @@ test("missing audit stops after first action and never calls model again",async(
  await until(()=>s.approval.hidden===true,"approval cleanup");
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.staged.length,1);
- assert.match(s.transport.getReplies("c2")[0],/not independently verified/);
+ assert.match(s.transport.getReplies("c2")[0],/Result Verify नहीं हुआ/);
 });
 test("user denial stops; no follow-up AI or Windows action",async()=>{
  const s=setup();
@@ -826,7 +826,7 @@ test("Batch 07 continuation rejects mismatched prepared kind after audited first
  await until(()=>s.transport.connected(),"ready");
  await s.transport.send("Open Premiere and edit project footage","wrong-followup-kind",0);
  s.allow.listeners.get("click")();
- await until(()=>s.transport.getReplies("wrong-followup-kind")[0]?.includes("Next Windows tool preparation failed"),
+ await until(()=>s.transport.getReplies("wrong-followup-kind")[0]?.includes("कोई नया Action नहीं चला") || s.transport.getReplies("wrong-followup-kind")[0]?.includes("Recovery रिकॉर्ड"),
   "mismatch fail closed");
  assert.equal(s.staged.length,2,"Rust mocked staging was reached but mismatched tool was never approved");
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
@@ -1054,7 +1054,7 @@ test("Batch 52 Rust returning same prepared action ID cannot stage next approval
  await until(()=>s.transport.connected(),"native");
  await s.transport.send("Premiere kholo","id-reuse",0);
  s.allow.listeners.get("click")();
- await until(()=>s.transport.getReplies("id-reuse")[0]?.includes("Native action ID reused"),
+ await until(()=>s.transport.getReplies("id-reuse")[0]?.includes("कोई नया Action नहीं चला") || s.transport.getReplies("id-reuse")[0]?.includes("Recovery रिकॉर्ड"),
   "reused action ID blocked");
  assert.equal(s.staged.length,2,"staging was attempted but second approval denied");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
