@@ -1783,8 +1783,8 @@ test("Notepad: verified launch_app triggers deterministic ui_windows readback",a
   assert.equal(s.chatInputs.length,1,"never purchases a model call to recheck a verified narrow opening");
   assert.equal(s.staged.length,2,"no third prepared Windows action");
   assert.match(s.transport.getReplies("notepad-simple-open")[0],/Notepad खुल गया और उसकी Window Verify हो गई है/);
-  assert.match(s.transport.getReplies("notepad-simple-open")[0],/PID 1234/);
-  assert.match(s.transport.getReplies("notepad-simple-open")[0],/HWND 5678/);
+  assert.doesNotMatch(s.transport.getReplies("notepad-simple-open")[0],/\bPID\s+1234\b/,"PID belongs only in Diagnostics, never normal Chat");
+  assert.doesNotMatch(s.transport.getReplies("notepad-simple-open")[0],/\bHWND\s+5678\b/,"HWND must remain in native diagnostic evidence");
   const phases=s.calls.filter(x=>x.name==="save_native_recovery").map(x=>x.params.record.phase);
   assert.deepEqual(phases.slice(-2),["audit_verified","completed_verified"]);
 });
@@ -1827,7 +1827,7 @@ test("Notepad: actual Windows Hinglish 'notepad open karo' gets a separate readb
     "strict Notepad evidence acceptance");
   assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2);
   assert.equal(s.chatInputs.length,1);
-  assert.match(s.transport.getReplies("notepad-hinglish-open")[0],/PID 4952/);
+  assert.doesNotMatch(s.transport.getReplies("notepad-hinglish-open")[0],/\bPID\s+4952\b/,"normal Hindi Chat must not expose native PID");
 });
 
 test("Notepad: ambiguous window does not trigger completion",async()=>{
