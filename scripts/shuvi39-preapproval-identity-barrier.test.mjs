@@ -15,8 +15,8 @@ test("seven typed native UIA preparation paths have a two-phase process/control 
  }
  assert.match(stage,/native_uia_window_guard::prepared_control_probe/);
  assert.match(native,/__CAPABILITY_PREFLIGHT__/);
- assert.ok(ix("$matches = Resolve-ShuviUiMatches")>ix("$shuviBoundProcessStartTicks ="));
- assert.ok(ix("[int[]]$runtimeId = $control.GetRuntimeId()")>ix("$matches = Resolve-ShuviUiMatches"));
+ assert.ok(ix("$matches = Resolve-ShuviPreparedMatches")>ix("$shuviBoundProcessStartTicks ="));
+ assert.ok(ix("[int[]]$runtimeId = $control.GetRuntimeId()")>ix("$matches = Resolve-ShuviPreparedMatches"));
  assert.ok(ix("$shuviBoundControlName =")>ix("[int[]]$runtimeId ="));
  const a=ix("__CAPABILITY_PREFLIGHT__"),b=ix("$shuviPostPreflightPid ="),c=ix("$shuviPostPreflightRuntimeId ="),d=ix("$shuviFinalNativePid ="),e=ix("} | ConvertTo-Json -Compress");
  assert.ok(a>0&&b>a&&c>b&&d>c&&e>d,"two native post-preflight OS/control checks precede approval receipt");

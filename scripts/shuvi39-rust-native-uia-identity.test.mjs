@@ -85,7 +85,9 @@ test("the native prepared action binds one exact UIA RuntimeId before owner appr
  assert.match(prepare,/let condition = ui_condition_script\(name, automation_id\)\?/);
  assert.match(prepare,/native_uia_window_guard::prepared_control_probe\(&root, &condition, native_tool\)\?/);
  assert.match(prepare,/native_uia_window_guard::parse_prepared_control\(text\)/);
- assert.match(guard,/Resolve-ShuviUiMatches -root \$root -condition \$condition/);
+ assert.match(guard,/Resolve-ShuviPreparedMatches -root \$root -condition \$condition/);
+ assert.match(guard,/visited -gt 1200/);
+ assert.match(guard,/SHUVI_UIA_PREPARE_BOUNDED/);
  assert.match(guard,/\$matches.Count -ne 1/);
  assert.match(guard,/\$control.GetRuntimeId\(\)/);
  assert.match(guard,/runtime_id = \[int\[\]\]\$runtimeId/);
