@@ -108,7 +108,7 @@ test("both UIA read-only actions Win32-check the same root before and after coll
  assert.ok(a>=0&&b>a&&c>b);
  for(const text of [lib.slice(a,b),lib.slice(b,c)]){
   const before=text.indexOf("{attestation}");
-  const enumerate=Math.max(text.indexOf("$all = $root.FindAll("),text.indexOf("$matches = Resolve-ShuviUiMatches"));
+  const enumerate=Math.max(text.indexOf("$shuviDiscoveryQueue.Enqueue("),text.indexOf("$matches = Resolve-ShuviUiMatches"));
   const after=Math.max(text.lastIndexOf("Assert-ShuviObservedWindow\nConvertTo-Json"),
    text.lastIndexOf("{finish_attestation}\n$items | ConvertTo-Json"));
   const output=text.lastIndexOf("ConvertTo-Json");

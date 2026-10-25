@@ -30,7 +30,10 @@ test("both native UIA read paths reattest selected control and window before JSO
 });
 test("discovery protects ephemeral UIA object and removes it before serializing",()=>{
  const d=arms[0];
- assert.match(d,/Math\]::Min\(\$all.Count, 1200\)/);
+ assert.match(d,/TreeWalker\]::ControlViewWalker/);
+ assert.match(d,/shuviDiscoveryNodes -gt 1200/);
+ assert.match(d,/shuviParent.Depth -ge 14/);
+ assert.doesNotMatch(d,/\$root\.FindAll\(/);
  assert.match(d,/Select-Object -First 110/);
  assert.match(d,/Select-Object -First 40/);
  assert.match(d,/__ShuviOriginalElement=\$e/);

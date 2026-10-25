@@ -80,7 +80,10 @@ test("ui_find absence is a real failure, so audit-gated recovery runs instead of
 test("universal UI discovery scans past early text-only nodes and prioritizes actionable roles",()=>{
   const discovery=src.slice(src.indexOf("ToolAction::UiDiscover { window } => {"),
     src.indexOf("ToolAction::UiFind { name, automation_id, window } => {"));
-  assert.match(discovery,/Math\]::Min\(\$all\.Count, 1200\)/);
+  assert.match(discovery,/TreeWalker\]::ControlViewWalker/);
+  assert.match(discovery,/shuviDiscoveryNodes -gt 1200/);
+  assert.match(discovery,/shuviParent.Depth -ge 14/);
+  assert.doesNotMatch(discovery,/\$root\.FindAll\(/);
   assert.match(discovery,/Button\|MenuItem\|TabItem\|Hyperlink\|Edit\|ComboBox/);
   assert.match(discovery,/\$interactive\.Add\(\$item\)/);
   assert.match(discovery,/Select-Object -First 110/);
