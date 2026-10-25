@@ -11814,10 +11814,34 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#;
 {root_script}
 {attestation}
 {control_attestation}
-$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+# Provider-safe discovery: never ask the native UIA provider to materialize
+# the unbounded Descendants tree before applying a loop limit.
+$shuviDiscoveryClock=[System.Diagnostics.Stopwatch]::StartNew()
+$shuviDiscoveryWalker=[System.Windows.Automation.TreeWalker]::ControlViewWalker
+$shuviDiscoveryQueue=[System.Collections.Queue]::new()
+$shuviDiscoveryQueue.Enqueue([PSCustomObject]@{{Element=$root;Depth=0}})
+$all=[System.Collections.Generic.List[object]]::new()
+$shuviDiscoveryNodes=0
+while ($shuviDiscoveryQueue.Count -gt 0) {{
+    $shuviParent=$shuviDiscoveryQueue.Dequeue()
+    $shuviChild=$shuviDiscoveryWalker.GetFirstChild($shuviParent.Element)
+    while ($null -ne $shuviChild) {{
+        $shuviDiscoveryNodes++
+        if ($shuviDiscoveryNodes -gt 1200 -or $shuviParent.Depth -ge 14) {{
+            throw 'SHUVI_UIA_DISCOVERY_BOUNDED: provider tree exceeds safe discovery limit; no result accepted.'
+        }}
+        [void]$all.Add($shuviChild)
+        $shuviDiscoveryQueue.Enqueue([PSCustomObject]@{{
+            Element=$shuviChild;Depth=($shuviParent.Depth+1)
+        }})
+        $shuviChild=$shuviDiscoveryWalker.GetNextSibling($shuviChild)
+    }}
+}}
+# Only bounded timing numbers, never private window, control or text contents.
+[Console]::Error.WriteLine(('SHUVI_UIA_DISCOVERY_SCAN nodes={0} elapsed_ms={1}' -f $shuviDiscoveryNodes,$shuviDiscoveryClock.ElapsedMilliseconds))
 $interactive = [System.Collections.Generic.List[object]]::new()
 $context = [System.Collections.Generic.List[object]]::new()
-for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
+for ($i=0; $i -lt $all.Count; $i++) {{
     try {{
         $e = $all.Item($i)
         $n = [string]$e.Current.Name

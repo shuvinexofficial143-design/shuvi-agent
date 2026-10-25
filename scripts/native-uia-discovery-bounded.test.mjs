@@ -1,0 +1,20 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+const start=rust.indexOf("ToolAction::UiDiscover { window } => {");
+const end=rust.indexOf("ToolAction::UiFind ",start);
+const source=rust.slice(start,end);
+test("UIA discovery cannot eagerly materialize an unbounded descendant tree",()=>{
+ assert.ok(start>0&&end>start);
+ assert.doesNotMatch(source,/FindAll\([^\n]*TreeScope\]::Descendants/);
+ assert.match(source,/TreeWalker\]::ControlViewWalker/);
+ assert.match(source,/GetFirstChild/);
+ assert.match(source,/GetNextSibling/);
+ assert.match(source,/shuviDiscoveryNodes -gt 1200/);
+ assert.match(source,/shuviParent.Depth -ge 14/);
+ assert.match(source,/SHUVI_UIA_DISCOVERY_BOUNDED/);
+ assert.match(source,/SHUVI_UIA_DISCOVERY_SCAN nodes=/);
+ assert.match(source,/Assert-ShuviObservedControl/);
+ assert.match(source,/Assert-ShuviObservedWindow/);
+});
