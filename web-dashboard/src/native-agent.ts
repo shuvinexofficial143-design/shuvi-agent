@@ -165,6 +165,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  projectApprove.setAttribute("aria-label","Owner approves exact selected workspace root inventory only; no file content or editing");
  const revokeProject=field("button","Revoke selected-project inventory");
  revokeProject.type="button";revokeProject.hidden=true;revokeProject.disabled=true;
+ const premiereScopeApprove=field("button","Allow Premiere + 2 Safe Read Checks");
+ premiereScopeApprove.type="button";premiereScopeApprove.hidden=true;
+ premiereScopeApprove.setAttribute("aria-label","Owner authorizes Premiere launch and at most two independently audited read-only checks; no edits");
+ const premiereScopeRevoke=field("button","Revoke Premiere Check Permission");
+ premiereScopeRevoke.type="button";premiereScopeRevoke.hidden=true;
  const inspectApprove=field("button","Allow read-only window scope (8 actions / 3 min)");
  inspectApprove.type="button";inspectApprove.hidden=true;
  inspectApprove.setAttribute("aria-label","Approve bounded native UI inspection only; no clicks or paid requests");
@@ -182,7 +187,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  revokeEditing.type="button";revokeEditing.hidden=true;revokeEditing.disabled=true;
  revokeEditing.setAttribute("aria-label","Revoke current task edit scopes without assuming running actions terminated");
  const deny=field("button","Deny");deny.type="button";
- approval.append(pendingText,approve,projectApprove,inspectApprove,editScopeApprove,deny);
+ approval.append(pendingText,approve,premiereScopeApprove,premiereScopeRevoke,projectApprove,inspectApprove,editScopeApprove,deny);
  const mobile=field("div");mobile.className="shuvi-native-mobile";
  const mobileTitle=field("strong","Mobile → Windows Agent pairing");
  const mobileCode=field("input");mobileCode.type="password";
@@ -274,6 +279,21 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskAiQuotas=new WeakMap<NativeTaskBudget,number>();
  const editScopes=new Map<string,{id:string;taskId:string;tool:string;path:string;expiresAtMs:number;remainingActions:number}>();
  let autoEditActionId:string|null=null;
+ const premiereScopes=new Map<string,{id:string;taskId:string;expiresAtMs:number;remainingActions:number}>();
+ let premiereIssuing=false,premiereRevoking=false;
+ let scopedPremiereId:string|null=null,autoPremiereId:string|null=null;
+ const activePremiere=(thread:string,proposal:Record<string,unknown>|undefined):boolean=>{
+  const scope=premiereScopes.get(thread),budget=taskBudgets.get(thread);
+  if(!scope||!budget||scope.taskId!==taskRecoveryIds.get(budget)||
+    scope.remainingActions<1||Date.now()>=scope.expiresAtMs||!proposal)return false;
+  const args=proposal.arguments;
+  if(!args||typeof args!=="object"||Array.isArray(args))return false;
+  const keys=Object.keys(args);
+  if(scope.remainingActions===2)return proposal.tool==="ui_windows"&&keys.length===0;
+  return scope.remainingActions===1&&proposal.tool==="ui_discover"&&keys.length===1&&
+    typeof (args as Record<string,unknown>).window==="string"&&
+    (args as Record<string,unknown>).window!=="";
+ };
  const inspectScopes=new Map<string,{id:string;taskId:string;window:string;expiresAtMs:number;remainingActions:number}>();
  const projectScopes=new Map<string,{id:string;taskId:string;path:string;expiresAtMs:number;remainingActions:number}>();
  let projectIssuing=false,projectRevoking=false;
@@ -494,7 +514,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    for(const scope of projectScopes.values())
     void invoke<void>("revoke_task_project_scopes",{taskId:scope.taskId}).catch(()=>{});
    projectScopes.clear();scopedProjectActionId=null;autoProjectActionId=null;
-   for(const scope of inspectScopes.values())
+   for(const scope of premiereScopes.values())
+     void invoke<void>("revoke_premiere_read_scope",{taskId:scope.taskId}).catch(()=>{});
+    premiereScopes.clear();autoPremiereId=null;scopedPremiereId=null;
+    for(const scope of inspectScopes.values())
     void invoke<void>("revoke_task_inspection_scopes",{taskId:scope.taskId}).catch(()=>{});
    inspectScopes.clear();autoInspectActionId=null;scopedInspectActionId=null;
    taskGoalRoots.clear();
@@ -726,6 +749,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Project inventory disabled locally; Rust revocation uncertain. Check Audit.");
    });
   }
+  const opening=premiereScopes.get(id);
+  if(opening){
+   premiereScopes.delete(id);autoPremiereId=null;scopedPremiereId=null;
+   void invoke<void>("revoke_premiere_read_scope",{taskId:opening.taskId}).catch(()=>{
+    showActionFeedback("Premiere read permission stopped locally; check Rust Audit for revocation.");
+   });
+  }
   const inspection=inspectScopes.get(id);
   if(inspection){
    inspectScopes.delete(id);autoInspectActionId=null;
@@ -750,12 +780,18 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  function refreshState(text?:string){
   if(text)status.textContent=text;
-  approve.disabled=sending||editScopeIssuing||inspectIssuing||projectIssuing;
-  deny.disabled=sending||editScopeIssuing||inspectIssuing||projectIssuing;
+  approve.disabled=sending||editScopeIssuing||inspectIssuing||projectIssuing||premiereIssuing;
+  deny.disabled=sending||editScopeIssuing||inspectIssuing||projectIssuing||premiereIssuing;
    projectApprove.hidden=!pending||readProjectPath(pending.proposal??undefined)===null;
    projectApprove.disabled=!ready||sending||projectIssuing||projectRevoking||inspectIssuing||editScopeIssuing;
    revokeProject.hidden=projectScopes.size===0;
    revokeProject.disabled=!ready||projectIssuing||projectRevoking||projectScopes.size===0;
+  premiereScopeApprove.hidden=!pending||pending.action.kind!=="premiere_launch"||
+   !strictlySimplePremiereOpening(pending.objective)||
+   Boolean((pending.proposal?.arguments as Record<string,unknown>|undefined)?.project);
+  premiereScopeApprove.disabled=!ready||sending||premiereIssuing||premiereRevoking;
+  premiereScopeRevoke.hidden=premiereScopes.size===0;
+  premiereScopeRevoke.disabled=!ready||premiereIssuing||premiereRevoking;
   inspectApprove.hidden=!pending||readWindow(pending.proposal??undefined)===null;
    inspectApprove.disabled=!ready||sending||inspectIssuing||inspectRevoking||editScopeIssuing;
    revokeInspect.hidden=inspectScopes.size===0;
@@ -785,6 +821,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   pendingText.textContent="";
   approve.disabled=deny.disabled=false;
   editScopeApprove.hidden=true;
+  premiereScopeApprove.hidden=true;
  }
  async function load(){
   try{
@@ -1106,7 +1143,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }
    pending={...task,action:next,proposal:response.tool_proposal,step:task.step+1,seen:new Set([...seen,fp]),
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
-   if(activeInspect(task.threadId,response.tool_proposal))autoInspectActionId=next.id;
+   if(activePremiere(task.threadId,response.tool_proposal))autoPremiereId=next.id;
+    if(activeInspect(task.threadId,response.tool_proposal))autoInspectActionId=next.id;
    if(activeProject(task.threadId,response.tool_proposal))autoProjectActionId=next.id;
    if(activeEdit(task.threadId,response.tool_proposal))autoEditActionId=next.id;
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
@@ -1191,9 +1229,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const current=pending;
   // Tool execution and later Master planning are separate evidence phases.
   let executionVerified=false;
-  if(!current||sending||editScopeIssuing||projectIssuing||inspectIssuing)return;
+  if(!current||sending||editScopeIssuing||projectIssuing||inspectIssuing||premiereIssuing)return;
   // A scoped owner click can NEVER silently downgrade to ordinary Allow once
   // if another user action revokes that scope during asynchronous persistence.
+  const requiresPremiere=scopedPremiereId===current.action.id;
   const requiresScopedEdit=scopedApprovalId===current.action.id;
   const requiresInspect=scopedInspectActionId===current.action.id;
   const requiresProject=scopedProjectActionId===current.action.id;
@@ -1206,6 +1245,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      projectScopes.delete(current.threadId);scopedProjectActionId=null;autoProjectActionId=null;
      try{await invoke<void>("revoke_task_project_scopes",{taskId:project.taskId});}
      catch{showActionFeedback("Project scope revoked locally; native revoke uncertain.");}
+    }
+    const opening=premiereScopes.get(current.threadId);
+    if(opening){
+     premiereScopes.delete(current.threadId);autoPremiereId=null;scopedPremiereId=null;
+     try{await invoke<void>("revoke_premiere_read_scope",{taskId:opening.taskId});}
+     catch{showActionFeedback("Premiere scope revoke uncertain; check Rust Audit.");}
     }
     const scope=inspectScopes.get(current.threadId);
     if(scope){
@@ -1300,6 +1345,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       haltTask(current.threadId,"edit_scope_revoked");
       throw Error("Owner scoped edit revoked before dispatch. No Windows action sent.");
      }
+     const premiere=premiereScopes.get(current.threadId);
+     const usePremiere=requiresPremiere&&premiere&&activePremiere(current.threadId,current.proposal??undefined);
+     if(requiresPremiere&&!usePremiere){
+      haltTask(current.threadId,"premiere_scope_invalid");
+      throw Error("Premiere safe-read scope is no longer authorized; no successor dispatched.");
+     }
      const inspection=inspectScopes.get(current.threadId);
      const useInspection=requiresInspect&&inspection&&activeInspect(current.threadId,current.proposal??undefined);
      const project=projectScopes.get(current.threadId);
@@ -1312,11 +1363,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       haltTask(current.threadId,"inspection_scope_invalid");
       throw Error("Owner UI inspection scope expired or revoked. No execute IPC sent.");
      }
+     if(usePremiere)premiere.remainingActions-=1;
      if(useScope)scope.remainingActions-=1;
      if(useProject)project.remainingActions-=1;
      if(useInspection)inspection.remainingActions-=1; // in-memory cap is spent before native dispatch
      try{
-      result=await invoke<ActionResult>("execute_action",useProject
+      result=await invoke<ActionResult>("execute_action",usePremiere
+        ?{actionId:current.action.id,premiereReadScopeId:premiere.id,taskId:premiere.taskId}
+        :useProject
         ?{actionId:current.action.id,projectScopeId:project.id,taskId:project.taskId}
         :useInspection
        ?{actionId:current.action.id,inspectionScopeId:inspection.id,taskId:inspection.taskId}
@@ -1324,6 +1378,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        ?{actionId:current.action.id,editScopeId:scope.id,taskId:scope.taskId}
        :{actionId:current.action.id});
      }finally{
+      if(usePremiere&&premiere.remainingActions<=0){
+       premiereScopes.delete(current.threadId);autoPremiereId=null;
+       void invoke<void>("revoke_premiere_read_scope",{taskId:premiere.taskId}).catch(()=>{
+        showActionFeedback("Premiere scope exhausted; review Rust Audit if revoke confirmation is needed.");
+       });
+      }
       if(useScope&&scope.remainingActions<=0){
        editScopes.delete(current.threadId);autoEditActionId=null;
        void invoke<void>("revoke_task_edit_scopes",{taskId:scope.taskId}).catch(()=>{
@@ -1650,6 +1710,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Owner-delegated same-file edit: new prepared Rust action is separately audited.");
     void decide(true);
    }else if(nextEdit)autoEditActionId=null;
+   if(scopedPremiereId===current.action.id)scopedPremiereId=null;
+   const nextPremiere=autoPremiereId;
+   if(nextPremiere&&pending&&pending!==current&&pending.action.id===nextPremiere&&
+      activePremiere(pending.threadId,pending.proposal??undefined)){
+    autoPremiereId=null;scopedPremiereId=nextPremiere;
+    showActionFeedback("Owner-approved Premiere opening: checking the next read-only stage with a new Rust action.");
+    void decide(true);
+   }else if(nextPremiere)autoPremiereId=null;
    if(scopedInspectActionId===current.action.id)scopedInspectActionId=null;
    if(scopedProjectActionId===current.action.id)scopedProjectActionId=null;
    const nextProject=autoProjectActionId;
@@ -1673,6 +1741,49 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    refreshState();
   }
  }
+ premiereScopeApprove.addEventListener("click",async()=>{
+  const current=pending;
+  if(!ready||!current||sending||premiereIssuing||premiereRevoking||
+    current.action.kind!=="premiere_launch"||
+    !strictlySimplePremiereOpening(current.objective)||
+    Boolean((current.proposal?.arguments as Record<string,unknown>|undefined)?.project))return;
+  const budget=taskBudgets.get(current.threadId),taskId=budget?recoveryTaskId(budget):null;
+  if(!taskId)return;
+  premiereIssuing=true;refreshState();
+  try{
+   if(premiereScopes.has(current.threadId))throw Error("Existing scope cannot be expanded.");
+   const view=await invoke<{id:string;taskId:string;allowedTools:string[];
+    expiresAtMs:number;remainingActions:number;authorizedPaidRequests:number}>(
+    "issue_premiere_read_scope",{taskId,actionId:current.action.id});
+   if(!view||typeof view.id!=="string"||view.taskId!==taskId||
+    view.remainingActions!==2||view.authorizedPaidRequests!==0||
+    view.allowedTools?.join(",")!=="ui_windows,ui_discover"||
+    !Number.isSafeInteger(view.expiresAtMs)||view.expiresAtMs<=Date.now()||
+    view.expiresAtMs>Date.now()+180_000)throw Error("Invalid owner-scoped Rust permission receipt.");
+   if(pending!==current){
+    await invoke<void>("revoke_premiere_read_scope",{taskId});return;
+   }
+   premiereScopes.set(current.threadId,{id:view.id,taskId,expiresAtMs:view.expiresAtMs,
+    remainingActions:view.remainingActions});
+  }catch{
+   premiereScopes.delete(current.threadId);
+   showActionFeedback("Premiere scoped permission not granted. Use ordinary Allow once.");
+   return;
+  }finally{premiereIssuing=false;refreshState();}
+  if(pending===current)await decide(true);
+ });
+ premiereScopeRevoke.addEventListener("click",async()=>{
+  if(!ready||premiereIssuing||premiereRevoking)return;
+  premiereRevoking=true;
+  const scopes=[...premiereScopes.values()];
+  premiereScopes.clear();autoPremiereId=null;scopedPremiereId=null;
+  refreshState();
+  for(const scope of scopes){
+   try{await invoke<void>("revoke_premiere_read_scope",{taskId:scope.taskId});}
+   catch{showActionFeedback("Premiere locally revoked; Rust revocation needs owner Audit review.");}
+  }
+  premiereRevoking=false;refreshState();
+ });
  projectApprove.addEventListener("click",async()=>{
   const current=pending;
   const path=readProjectPath(current?.proposal??undefined);
@@ -1834,6 +1945,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     projectScopes.delete(pending!.threadId);scopedProjectActionId=null;autoProjectActionId=null;
     void invoke<void>("revoke_task_project_scopes",{taskId:project.taskId}).catch(()=>{
      stopFeedback.hidden=false;stopFeedback.textContent="Rust project scope revoke uncertain; inspect Audit.";
+    });
+   }
+   const premiere=pending?premiereScopes.get(pending.threadId):null;
+   if(premiere){
+    premiereScopes.delete(pending!.threadId);autoPremiereId=null;scopedPremiereId=null;
+    void invoke<void>("revoke_premiere_read_scope",{taskId:premiere.taskId}).catch(()=>{
+     stopFeedback.hidden=false;stopFeedback.textContent="Premiere read grant revoke uncertain; inspect Audit.";
     });
    }
    const inspection=pending?inspectScopes.get(pending.threadId):null;
