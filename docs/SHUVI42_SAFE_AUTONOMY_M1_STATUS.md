@@ -106,3 +106,8 @@ Branch: feature/shuvi42-combined-runtime
 ## Native owner paid AI response-token cap (current M1 increment)
 - Rust sets a **2048 max output tokens per paid native-owner-task request**, alongside the existing immutable request count (2/4/8/16), 256 KiB per-request input budget, 512 KiB per-task input budget and durable request identity ledger. This output cap is passed to the OpenAI-compatible, Gemini and Anthropic request adapters; ordinary chat keeps its previous provider limits.
 - Output-token ceilings are requested from upstream providers; a provider may return uncertain usage and actual billed USD remains UNKNOWN. No verified dollar cap, no price assurance, no free implicit paid retry and no hard currency budget are claimed. The task-only cap cannot be provided or raised by the WebView; Rust sets it after the quota/ledger admission checks.
+
+## Project-root grant reauthorization and redirected ancestor defense
+- The exact selected-project inventory grant now keeps **task tombstones** after its eight actions are exhausted or its three-minute permission expires; expiration itself can never mint a fresh implicit grant. Explicit owner revocation followed by a new separately reviewed prepared action remains necessary.
+- Rust rejects traversal components and any symlinked project-root ancestor. On Windows, junction/reparse-point ancestors also fail closed using filesystem metadata. The selected root remains checked before dispatch and after successful readback.
+- This increment does not permit additional file contents or mutating operations. A real USD spend ceiling and Windows owner-host E2E are still pending. Verify new CI against its exact HEAD.

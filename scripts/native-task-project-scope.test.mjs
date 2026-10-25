@@ -28,3 +28,14 @@ test("post-execution project root check precedes native audit and old shell stay
  assert.ok(check>=0&&audit>check);
  assert.ok(lib.includes("execute_action(action_id, None, None, None, None, None, state, app).await"));
 });
+
+test("project grant cannot silently renew after 8 uses or expiry; redirected ancestor blocked",()=>{
+ assert.ok(policy.includes("retired_tasks:HashSet<String>"));
+ assert.ok(policy.includes("self.retired_tasks.contains(task)"));
+ assert.ok(policy.includes("self.retired_tasks.remove(task)"));
+ assert.ok(policy.includes("meta.file_type().is_symlink()||!meta.is_dir()"));
+ assert.ok(policy.includes("meta.file_attributes()&0x400!=0"));
+ assert.ok(policy.includes("Component::ParentDir|Component::CurDir"));
+ assert.ok(policy.includes("fn expired_or_spent_grant_needs_explicit_owner_revoke_before_reissue()"));
+ assert.ok(policy.includes("fn selected_project_refuses_symlinked_ancestor_even_if_root_is_real_directory()"));
+});
