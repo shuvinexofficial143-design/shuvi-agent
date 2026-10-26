@@ -21481,6 +21481,95 @@ fn issue_native_read_task_scope(
     }
     Ok(grant)
 }
+/// M1.5: separate, explicit native owner consent for ONE exact UIA
+/// ValuePattern AutomationId in ONE named Windows application. This permits
+/// no clicks, send-keys, shell, save/publish, new files or paid AI calls.
+#[cfg(windows)]
+fn confirm_native_value_task(scope:&native_task_grant::task_authorization::OwnerScope,
+    objective:&str,window:&str,control:&str)->Result<(),String>{
+    #[link(name="user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(hwnd:isize,text:*const u16,caption:*const u16,flags:u32)->i32;
+    }
+    let message=format!(
+        "AUTHORIZE BOUNDED UI TEXT EDITS?\n\nTask: {}\n\nApplication window: {}\nONLY AutomationId: {}\nTools: UIA SetValue + exact UIA Find\nMaximum 10 minutes; {} total read/edit actions.\n\nValuePattern text can change application data. This consent does NOT allow clicks, sending messages, saving/publishing, PowerShell, file editing, provider spending or a different field. Every SetValue has Rust immediate value verification; a separate read of the SAME control is required before another edit.\n\nChoose Yes to authorize; default No rejects.",
+        objective,window,control,scope.max_actions);
+    let text:Vec<u16>=message.encode_utf16().chain(std::iter::once(0)).collect();
+    let caption:Vec<u16>="SHUVI — Scoped Text Editing (Sensitive)"
+        .encode_utf16().chain(std::iter::once(0)).collect();
+    if unsafe{MessageBoxW(0,text.as_ptr(),caption.as_ptr(),0x0000_0134)}==6{
+        Ok(())
+    }else{Err("Owner declined bounded native ValuePattern editing.".into())}
+}
+#[cfg(not(windows))]
+fn confirm_native_value_task(_: &native_task_grant::task_authorization::OwnerScope,
+    _: &str,_:&str,_:&str)->Result<(),String>{
+    Err("Native edit consent requires a local Windows owner.".into())
+}
+#[tauri::command]
+fn issue_native_value_task_scope(
+    scope:native_task_grant::task_authorization::OwnerScope,
+    objective:String,
+    origin_action_id:String,
+    state:State<'_,ActionState>,app:AppHandle,
+)->Result<String,String>{
+    use sha2::Digest;
+    scope.validate()?;
+    if objective.is_empty()||objective.len()>2400||
+       uuid::Uuid::parse_str(&origin_action_id)
+         .map(|id|id.to_string()!=origin_action_id).unwrap_or(true)||
+       scope.owner_consent_id!=origin_action_id||
+       scope.applications.len()!=1||
+       scope.exact_controls.len()!=1||
+       !scope.exact_files.is_empty()||
+       scope.valid_for_ms>600_000||scope.max_actions>12||
+       scope.max_ai_requests!=1||
+       scope.max_estimated_ai_micro_usd.is_some()||
+       scope.risks!=vec![native_task_grant::task_authorization::Risk::ReadOnly,
+                         native_task_grant::task_authorization::Risk::UiMutation]||
+       scope.tools!=vec!["ui_find".to_string(),"ui_set_value".to_string()]{
+        return Err("Native UIA editing scope exceeds finite exact-control allowance.".into());
+    }
+    let digest=format!("{:x}",sha2::Sha256::digest(objective.as_bytes()));
+    if digest!=scope.objective_digest{
+        return Err("Task objective differs from native owner-reviewed digest.".into());
+    }
+    let pending=state.pending.lock()
+        .map_err(|_|"Prepared edit authorization ledger unavailable.")?;
+    let origin=pending.get(&origin_action_id)
+        .ok_or("A real prepared UIA SetValue action must exist before consent.")?;
+    if now_ms().saturating_sub(origin.created_at_ms)>PENDING_ACTION_TTL_MS{
+        return Err("Original prepared edit expired.".into());
+    }
+    let bound=origin.native_uia_target.as_ref()
+        .ok_or("Native OS window and exact control identity absent at edit preparation.")?;
+    let prepared=native_task_grant::task_authorization::native_value_prepared(
+        &scope.task_id,&origin_action_id,&origin.tool,&origin.action,bound)?;
+    if prepared.application!=scope.applications[0]||
+       prepared.control_id.as_deref()!=Some(scope.exact_controls[0].as_str()){
+        return Err("Prepared UIA edit differs from the proposed native owner scope.".into());
+    }
+    native_task_edit_scope::owner_checkpoint_allows(
+        native_recovery::load(&app)?.as_ref(),&scope.task_id,&origin_action_id,
+        "awaiting_approval",now_ms())?;
+    confirm_native_value_task(&scope,&objective,
+        &scope.applications[0],&scope.exact_controls[0])?;
+    native_task_edit_scope::owner_checkpoint_allows(
+        native_recovery::load(&app)?.as_ref(),&scope.task_id,&origin_action_id,
+        "awaiting_approval",now_ms())?;
+    let mut store=state.task_authorizations.lock()
+        .map_err(|_|"Native task-edit grant state unavailable.")?;
+    let task=scope.task_id.clone();
+    let permit=store.issue(scope,now_ms())?;
+    if let Err(err)=append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"native_value_task_scope_issued".into(),
+        tool:"ui_set_value".into(),detail:
+        "Windows owner approved bounded one-control ValuePattern edits; no AI spending, click, shell, file edit or other control.".into(),
+        success:true,action_id:Some(origin_action_id)
+    }){store.revoke(&task);return Err(err);}
+    Ok(permit)
+}
+
 #[tauri::command]
 fn revoke_native_read_task_scope(
     task_id:String,state:State<'_,ActionState>,app:AppHandle
@@ -21994,13 +22083,17 @@ async fn execute_action(
                 return Err("Task-wide native read authorization cannot combine with another grant.".into());
             }
             if let Some(scope_id)=task_scope_id.as_deref(){
-                let task=task_id.as_deref().ok_or("Scoped read requires exact task UUID.")?;
-                // Unlike mutating UIA, safe read-only ui_find/ui_discover
-                // establish native window generation in independently audited
-                // stdout; prepare_native_uia_binding intentionally returns
-                // None for these non-mutating variants.
-                let action=native_task_grant::task_authorization::native_read_prepared(
-                    task,&action_id,&prepared.tool,&prepared.action)?;
+                let task=task_id.as_deref().ok_or("Scoped task requires exact task UUID.")?;
+                let action=match &prepared.action{
+                    ToolAction::UiSetValue{..}=>{
+                        let bound=prepared.native_uia_target.as_ref()
+                            .ok_or("Native UIA text edit has no OS-bound target.")?;
+                        native_task_grant::task_authorization::native_value_prepared(
+                            task,&action_id,&prepared.tool,&prepared.action,bound)?
+                    },
+                    _=>native_task_grant::task_authorization::native_read_prepared(
+                        task,&action_id,&prepared.tool,&prepared.action)?
+                };
                 let recovery=native_recovery::load(&app)?;
                 native_task_edit_scope::owner_checkpoint_allows(
                     recovery.as_ref(),task,&action_id,"executing",now_ms())?;
@@ -22943,6 +23036,7 @@ pub fn run() {
             issue_task_read_grant,
             revoke_task_read_grants,
             issue_native_read_task_scope,
+            issue_native_value_task_scope,
             revoke_native_read_task_scope,
             deny_action,
             issue_task_edit_scope,
