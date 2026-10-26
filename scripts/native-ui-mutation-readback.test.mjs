@@ -19,6 +19,8 @@ test("audited UI mutation stages a DIFFERENT, separately approved ui_windows rea
  assert.deepEqual(nextAuditedUiMutationReadback("mutate-1","ui_set_value",before,null,1100),
   {proposal:{tool:"ui_windows",arguments:{}}});
  assert.equal(nextAuditedUiMutationReadback("other","ui_set_value",null,null,1100),null);
+ assert.equal(nextAuditedUiMutationReadback("mutate-1","ui_click",{...before,mutationTool:"ui_click"},null,1100),null,
+  "legacy click path stays separately approved and unchanged");
 });
 test("fresh exact HWND/PID/start-ticks matches and stages one exact read-only control lookup",()=>{
  assert.deepEqual(nextAuditedUiMutationReadback("windows-2","ui_windows",before,fresh,1300),{

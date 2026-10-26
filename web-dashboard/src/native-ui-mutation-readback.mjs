@@ -6,8 +6,11 @@ import {normalizedProcessStartTicks} from "./native-window-target-guard.mjs";
 // original UIA control after an audited mutation. These are proposals only:
 // native preparation, task budget, owner approval and Rust audit still apply.
 // Never replay the mutation or infer that the user's goal was completed.
+// Preserve the existing audited Click/SendKeys planning and safety
+// acceptance path. Start deterministic verification with bounded stateful
+// actions whose postconditions Rust already inspects without replay.
 const UI_MUTATIONS=new Set([
- "ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"
+ "ui_set_value","ui_toggle","ui_expand_collapse","ui_focus","ui_scroll"
 ]);
 const blocked=reason=>({blocked:reason});
 const validId=id=>typeof id==="string"&&id.length>0&&id.length<=128;
@@ -17,7 +20,7 @@ const validId=id=>typeof id==="string"&&id.length>0&&id.length<=128;
  * null means no outstanding UIA readback, not verified completion.
  */
 export function nextAuditedUiMutationReadback(actionId,tool,pending,windows,nowMs=Date.now()){
- if(!pending)return null;
+ if(!pending||!UI_MUTATIONS.has(pending.mutationTool))return null;
  if(pending.readbackRequired!==true||!validId(actionId)||
     !validId(pending.sourceActionId)||!validId(pending.windowSourceActionId)||
     !UI_MUTATIONS.has(pending.mutationTool)||
