@@ -153,6 +153,23 @@ function renderPremiereProjectProofProgress():void{
 // Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
+// This renderer entry is only a hint; Rust owner-consent is always authoritative.
+let nativeUiTaskRead:{taskId:string;scopeId:string;window:string;expires:number}|null=null;
+function nativeUiTaskWindow(p:ToolProposal):string|null{
+ if(!["ui_find","ui_discover"].includes(p.tool))return null;
+ const w=p.arguments?.window;
+ if(typeof w!=="string"||!w||w.trim()!==w||w.length>100||
+    w.toLowerCase()==="desktop"||/[\\u0000-\\u001f*?]/.test(w))return null;
+ if(p.tool==="ui_find"&&![p.arguments?.name,p.arguments?.automation_id]
+    .some(v=>typeof v==="string"&&v.trim()))return null;
+ return w;
+}
+async function revokeNativeUiTaskRead(taskId:string):Promise<boolean>{
+ if(nativeUiTaskRead?.taskId===taskId)nativeUiTaskRead=null;
+ try{await invoke("revoke_native_read_task_scope",{taskId});return true;}
+ catch{return false;}
+}
+
 async function revokeNativeTaskReads(taskId:string):Promise<boolean>{
  try{await invoke("revoke_task_read_grants",{taskId});return true;}
  catch{return false; /* Local reuse disabled; Rust grant expires in <=5 minutes. */}
@@ -169,6 +186,7 @@ function rotatePermissionScope():void{
  const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
  if(revokeButton){revokeButton.disabled=true;revokeButton.textContent="Revoke read consent";}
  void revokeNativeTaskReads(oldId);
+ void revokeNativeUiTaskRead(oldId);
  activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
 }
 function activeReadGrant(proposal:ToolProposal,risk:string){
@@ -1304,6 +1322,7 @@ async function clearActiveCheckpoint(verifyReadback=false): Promise<boolean> {
   revokeTaskScope(clearingScope);
   nativeReadGrantIds.clear();
   await revokeNativeTaskReads(finishedTaskId);
+  await revokeNativeUiTaskRead(finishedTaskId);
   // The previous task's Rust grant revoke can finish after task rotation.
   // Never intentionally delete a NEW task's durable recovery checkpoint.
   if(activePermissionScope!==clearingScope||
@@ -1705,6 +1724,7 @@ async function stopAgentForSafety(reason: string): Promise<void> {
   projectReopenEvidence=null;
   renderPremiereProjectProofProgress();
   await revokeNativeTaskReads(stoppedTaskId);
+  await revokeNativeUiTaskRead(stoppedTaskId);
   // A Rust grant-revocation IPC reply can arrive after a new owner task.
   // Never stop/modify that newer task using the old task's failure result.
   if(activePermissionScope!==stoppedScope)return;
@@ -2167,6 +2187,14 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       return;
     }
 
+    // Same-window, low-risk read continuation only after owner native dialog.
+    const readScope=nativeUiTaskRead;
+    if(!remoteTask&&!cancelRequested&&pendingAction.risk==="low"&&
+       readScope&&readScope.taskId===activePermissionScope.taskId&&
+       readScope.expires>Date.now()&&readScope.window===nativeUiTaskWindow(proposal)){
+      await executePendingProposal(proposal,null,readScope.scopeId);
+      return;
+    }
     if (
       !remoteTask &&
       pendingAction.risk === "low" &&
@@ -2297,7 +2325,7 @@ function clearExecutingAction(actionId: string): void {
 }
 
 const masterNativeSingleFlight=createMasterNativeSingleFlight();
-async function executePendingProposal(proposal: ToolProposal, rustGrantId:string|null=null): Promise<void> {
+async function executePendingProposal(proposal:ToolProposal,rustGrantId:string|null=null,taskScopeId:string|null=null):Promise<void>{
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
@@ -2367,7 +2395,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
 
   try {
     const result = await invoke<ActionResult>("execute_action",
-      rustGrantId?{actionId,grantId:rustGrantId,taskId:permissionTaskId}:{actionId});
+      taskScopeId?{actionId,taskId:permissionTaskId,taskScopeId}:rustGrantId?{actionId,grantId:rustGrantId,taskId:permissionTaskId}:{actionId});
     const receipt = await readActionAuditReceipt(actionId);
     const receiptMatches = verifiedNativeActionResult(proposal.tool, actionId, result, receipt);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
@@ -2617,6 +2645,10 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   if(!uiCurrent()){clearChatPermission();return;}
 
   chatPermission.classList.remove("hidden");
+  const offerUiTaskRead=!uiRemote&&pendingAction.risk==="low"&&
+    typeof proposal.task_step_id==="string"&&Boolean(uiGraph)&&
+    typeof uiOwner==="string"&&uiOwner.length>0&&uiOwner.length<=2400&&
+    Boolean(nativeUiTaskWindow(proposal));
   const allowReadGrant = pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
     ["read_file","list_directory","ui_find","list_processes","browser_dom_read",
      "workspace_scan","search_text","git_status","git_diff","premiere_bridge_status",
@@ -2629,6 +2661,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     '<p class="permission-reason"></p><pre class="permission-detail"></pre>',
     '<div class="button-row"><button id="chatApprove" class="primary">Allow once</button>',
     ...(allowReadGrant ? ['<button id="chatAllowSession"></button>'] : []),
+    ...(offerUiTaskRead?['<button id="chatAllowNativeUiTask">Approve Task UI Reads</button>']:[]),
     '<button id="chatDeny">Deny</button></div>'
   ].join("");
   const chatRisk = chatPermission.querySelector<HTMLElement>(".risk");
@@ -2708,6 +2741,46 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     };
   }
 
+  const nativeTaskButton=chatPermission.querySelector<HTMLButtonElement>("#chatAllowNativeUiTask");
+  if(nativeTaskButton){
+    nativeTaskButton.onclick=async()=>{
+      if(!uiCurrent()||!pendingAction||!offerUiTaskRead)return;
+      const ownerTask=uiScope.taskId,firstAction=uiPending.id;
+      const windowTitle=nativeUiTaskWindow(proposal);
+      if(!windowTitle||typeof uiOwner!=="string")return;
+      nativeTaskButton.disabled=true;
+      let scopeId:string;
+      try{
+        const hash=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(uiOwner));
+        const digest=Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,"0")).join("");
+        if(!uiCurrent()||pendingAction?.id!==firstAction)return;
+        scopeId=await invoke<string>("issue_native_read_task_scope",{
+          scope:{taskId:ownerTask,ownerConsentId:firstAction,objectiveDigest:digest,
+            applications:[windowTitle],exactFiles:[],
+            tools:["ui_find","ui_discover"],risks:["read_only"],
+            validForMs:1_200_000,maxActions:24,maxAiRequests:1,
+            maxEstimatedAiMicroUsd:null},
+          objective:uiOwner,originActionId:firstAction
+        });
+      }catch{
+        // Native No or invalid scope = no permission. Legacy Allow once remains.
+        if(uiCurrent()){
+          nativeTaskButton.disabled=false;
+          const reason=chatPermission.querySelector<HTMLElement>(".permission-reason");
+          if(reason)reason.textContent="Rust ने Task Read Permission नहीं दी। Allow once या Deny चुनें।";
+        }
+        return;
+      }
+      if(!uiCurrent()||pendingAction?.id!==firstAction||
+          activePermissionScope.taskId!==ownerTask||cancelRequested){
+        await revokeNativeUiTaskRead(ownerTask);return;
+      }
+      nativeUiTaskRead={taskId:ownerTask,scopeId,window:windowTitle,expires:Date.now()+1_200_000};
+      el<HTMLButtonElement>("#revokeTaskReadGrants").disabled=false;
+      await executePendingProposal(proposal,null,scopeId);
+    };
+  }
+
   const deny = chatPermission.querySelector<HTMLButtonElement>("#chatDeny");
   if (deny) {
     deny.onclick = async () => {
@@ -2731,6 +2804,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       projectReopenEvidence=null;
       renderPremiereProjectProofProgress();
       await revokeNativeTaskReads(deniedTaskId);
+  await revokeNativeUiTaskRead(deniedTaskId);
       if(!stillDenied())return;
       if(uiRemote){
         try {await invoke("deny_action",{actionId});}catch{/* fail closed */}
@@ -3732,7 +3806,8 @@ el<HTMLButtonElement>("#revokeTaskReadGrants").addEventListener("click",async()=
   const button=el<HTMLButtonElement>("#revokeTaskReadGrants");
   button.disabled=true;
   const confirmed=await revokeNativeTaskReads(taskId);
-  button.textContent=confirmed?"Read grants revoked":"Read reuse disabled; Rust revoke unconfirmed";
+  const nativeScopeRevoked=await revokeNativeUiTaskRead(taskId);
+  button.textContent=confirmed&&nativeScopeRevoked?"Read grants revoked":"Read reuse disabled; Rust revoke unconfirmed";
 });
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
