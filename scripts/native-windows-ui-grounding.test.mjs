@@ -23,10 +23,12 @@ test("window matching prefers exact then one unambiguous equivalent",()=>{
 });
 test("UI mutations cannot blindly use loose synonyms or multiple matches",()=>{
   const matching=src.slice(src.indexOf("const UI_ELEMENT_RESOLVE_SCRIPT:"),src.indexOf("fn ui_root_script("));
-  assert.match(matching,/\$wanted.Length -lt 3/);
-  assert.match(matching,/\$distinct.Count -ne 1/);
+  assert.match(matching,/\$wantNormalized.Length -lt 3/);
+  assert.match(matching,/\$normalizedNames.Count -eq 1/);
+  assert.match(matching,/SHUVI_UIA_RESOLVE_BUDGET_EXCEEDED/);
+  assert.doesNotMatch(matching,/\.FindAll\(/);
   assert.match(matching,/\$uiRequestedAutomationId/);
-  assert.match(matching,/\(& \$normalize \$label\) -eq \$wanted/);
+  assert.match(matching,/\(& \$normalize \$name\) -eq \$wantNormalized/);
   assert.equal((src.match(/\$matches = Resolve-ShuviUiMatches -root \$root -condition \$condition/g)||[]).length,8);
 });
 test("Master discovers observed UI and does not silently switch providers",()=>{

@@ -15,7 +15,7 @@ test("BUG-002: shared native UIA resolver cannot materialize full descendants",(
   assert.match(resolver,/SHUVI_UIA_RESOLVE_BUDGET_EXCEEDED/);
   assert.match(resolver,/refused incomplete selector proof/);
   for(const tool of ["UiFind","UiClick","UiSetValue","UiFocus","UiScroll","UiToggle","UiExpandCollapse","UiSendKeys"]){
-    assert.match(rust,new RegExp("ToolAction::"+tool+" \\\\{"));
+    assert.ok(rust.includes("ToolAction::"+tool+" {"),"Missing native UIA action: "+tool);
   }
   assert.doesNotMatch(rust,/\$matches\.Item\(/);
   assert.match(rust,/\$matches\[\$i\]/);
