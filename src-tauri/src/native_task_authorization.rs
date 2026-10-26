@@ -1,4 +1,4 @@
-//! SHUVI 60 M1.1: Rust-only owner task authorization kernel.
+//! SHUVI 60 M1.2: Rust-only owner task authorization + durable audit adapter.
 //!
 //! This module is deliberately NOT an execution bypass or public IPC route.
 //! Only a trusted native owner-consent handler may issue a scope. A future
@@ -140,6 +140,9 @@ struct Grant {
 pub(crate) struct Store {
     active:HashMap<String,Grant>,
     issued:HashSet<String>,
+    // A native owner consent event cannot be recycled to authorize a second
+    // unrelated task even if its first task was revoked or expired.
+    issued_owner_consents:HashSet<String>,
 }
 impl Store {
     /// Call ONLY after explicit owner review in the native authorization
@@ -149,11 +152,13 @@ impl Store {
         let expiry=now.checked_add(scope.valid_for_ms)
             .ok_or("Task authorization deadline overflow.")?;
         if now==0||self.issued.contains(&scope.task_id)||
+            self.issued_owner_consents.contains(&scope.owner_consent_id)||
             self.active.len()>=MAX_ACTIVE||self.issued.len()>=MAX_ISSUED{
             return Err("Owner approval identity already used or task capacity exhausted.".into());
         }
         let id=Uuid::new_v4().to_string();
         self.issued.insert(scope.task_id.clone());
+        self.issued_owner_consents.insert(scope.owner_consent_id.clone());
         self.active.insert(scope.task_id.clone(),Grant{
             scope,scope_id:id.clone(),deadline_ms:expiry,last_observed_ms:now,
             actions:0,requests:0,estimated_ai_micro_usd:0,
@@ -175,7 +180,7 @@ impl Store {
     }
     /// This is only an admission decision and a single-use reservation:
     /// it neither calls a native tool nor claims that the tool ran.
-    pub(crate) fn reserve_prepared(&mut self,scope_id:&str,action:&PreparedAction,
+    fn reserve_prepared(&mut self,scope_id:&str,action:&PreparedAction,
         now:u64)->Result<(),String>{
         if !valid_uuid(&action.action_id){return Err("Action lacks Rust-prepared UUID.".into());}
         let g=self.grant(&action.task_id,scope_id,now)?;
@@ -207,9 +212,22 @@ impl Store {
         g.pending=Some(Pending{id:action.action_id.clone(),tool:action.tool.clone()});
         Ok(())
     }
-    /// Requires an independently verified native Rust audit result. Unknown
-    /// or failed actions PAUSE; they cannot be blindly retried under this grant.
-    pub(crate) fn record_audit(&mut self,task:&str,scope_id:&str,
+    /// A Tauri executor adapter calls this only after the existing Rust
+    /// per-action prepared-lock has authenticated the consented task AND the
+    /// durable native job/owned process lane has been checked. This does not
+    /// start an action or bypass existing per-action owner consent today.
+    pub(crate) fn reserve_after_native_preflight(&mut self,
+        app:&tauri::AppHandle,scope_id:&str,action:&PreparedAction,
+        now:u64)->Result<(),String>{
+        crate::native_worker_job::require_resolved(app)?;
+        // The caller must hold the existing native prepared-action lock across
+        // this admission and dispatch. The disk job BEGIN itself also enforces
+        // inter-process UUID exclusion and cannot be replaced by this check.
+        self.reserve_prepared(scope_id,action,now)
+    }
+    /// The transition is private: an external WebView, scheduler or AI plan
+    /// cannot supply a claimed "success" to the M1 task scope.
+    fn record_audit(&mut self,task:&str,scope_id:&str,
         action_id:&str,tool:&str,outcome:Outcome,now:u64)->Result<(),String>{
         let g=self.grant(task,scope_id,now)?;
         let pending=g.pending.as_ref().ok_or("No scoped action awaiting Rust audit.")?;
@@ -220,6 +238,37 @@ impl Store {
         if outcome!=Outcome::AuditedSuccess {g.paused=true;}
         Ok(())
     }
+    // This private parser is used ONLY with a native-worker journal fetched
+    // through Rust's exclusive, validated filesystem reader. Never expose a
+    // public argument accepting a WebView-constructed audit record.
+    fn reconcile_native_receipt(&mut self,task:&str,scope_id:&str,
+        receipt:&crate::native_worker_job::NativeJob,now:u64)->Result<(),String>{
+        if receipt.version!=1||!valid_uuid(&receipt.action_id)||
+            receipt.started_at_ms==0||
+            receipt.updated_at_ms<receipt.started_at_ms||
+            now<receipt.updated_at_ms{
+            return Err("Native worker audit identity or clock is invalid.".into());
+        }
+        let outcome=match (receipt.phase.as_str(),receipt.audit_success){
+            ("audit_verified",Some(true))=>Outcome::AuditedSuccess,
+            ("audit_verified",Some(false))=>Outcome::AuditedFailure,
+            ("owner_reviewed_unknown",None)=>Outcome::Unknown,
+            _=>return Err("Native worker has no terminal Rust audit; task remains blocked.".into())
+        };
+        self.record_audit(task,scope_id,&receipt.action_id,&receipt.tool,outcome,now)
+    }
+    /// Production audit reconciliation MUST fetch the exact native Rust
+    /// journal. An action reported successful by the model is not evidence.
+    /// Audit success is not independent verification of the intended effect;
+    /// UIA/readback and output artifact checks remain separate mandatory gates.
+    pub(crate) fn reconcile_from_rust_journal(&mut self,
+        app:&tauri::AppHandle,task:&str,scope_id:&str,now:u64)
+        ->Result<(),String>{
+        let receipt=crate::native_worker_job::read(app)?
+            .ok_or("Native worker journal missing; action remains unverified.")?;
+        self.reconcile_native_receipt(task,scope_id,&receipt,now)
+    }
+
     /// Per-request reservation is NEVER silently refunded, including HTTP
     /// 429/503 and timeouts. No provider failover without a new unique index.
     /// Actual provider billing is unknown; estimated cap is enforced only
@@ -340,6 +389,83 @@ mod tests {
         s.reserve_ai(&task,&grant,&id(),Some(40_000),104).unwrap();
         assert!(s.reserve_ai(&task,&grant,&id(),Some(1),105).is_err());
     }
+    fn journal(action:&PreparedAction,phase:&str,success:Option<bool>,now:u64)
+        ->crate::native_worker_job::NativeJob{
+        crate::native_worker_job::NativeJob{
+            version:1,action_id:action.action_id.clone(),tool:action.tool.clone(),
+            phase:phase.into(),started_at_ms:now,updated_at_ms:now,
+            heartbeat_seq:0,audit_success:success,prior_action_ids:vec![]
+        }
+    }
+    #[test]
+    fn owner_consent_replay_cannot_create_second_task_or_authority(){
+        let mut s=Store::default();
+        let first=scope();
+        let shared_consent=first.owner_consent_id.clone();
+        let first_task=first.task_id.clone();
+        let token=s.issue(first,100).unwrap();
+        s.revoke(&first_task);
+        let mut second=scope();second.owner_consent_id=shared_consent;
+        assert!(s.issue(second,101).is_err());
+        assert!(s.grant(&first_task,&token,101).is_err());
+        assert!(s.issue(scope(),102).is_ok());
+    }
+    #[test]
+    fn native_journal_success_requires_exact_action_tool_and_terminal_rust_receipt(){
+        let mut s=Store::default();let o=scope();let task=o.task_id.clone();
+        let grant=s.issue(o,1000).unwrap();
+        let action=action(&task,"ui_click","Notepad",None);
+        s.reserve_prepared(&grant,&action,1001).unwrap();
+        let running=journal(&action,"running",None,1002);
+        assert!(s.reconcile_native_receipt(&task,&grant,&running,1003).is_err());
+        let mut forged=journal(&action,"audit_verified",Some(true),1002);
+        forged.action_id=id();
+        assert!(s.reconcile_native_receipt(&task,&grant,&forged,1003).is_err());
+        forged.action_id=action.action_id.clone();forged.tool="ui_focus".into();
+        assert!(s.reconcile_native_receipt(&task,&grant,&forged,1003).is_err());
+        forged.tool=action.tool.clone();forged.updated_at_ms=1004;
+        assert!(s.reconcile_native_receipt(&task,&grant,&forged,1003).is_err());
+        let good=journal(&action,"audit_verified",Some(true),1005);
+        assert!(s.reconcile_native_receipt(&task,&grant,&good,1005).is_ok());
+        assert!(s.reconcile_native_receipt(&task,&grant,&good,1006).is_err());
+        assert!(s.reserve_prepared(&grant,&action,1007).is_err());
+        // An authenticated terminal journal alone never marks user objective
+        // complete, nor does it authorize another tool outside the scope.
+        assert!(s.reserve_prepared(&grant,
+            &action(&task,"delete_file","Notepad",None),1008).is_err());
+    }
+    #[test]
+    fn failed_unknown_and_malformed_native_receipts_cannot_unlock_replay(){
+        for (phase,success) in [
+            ("audit_verified",Some(false)),
+            ("owner_reviewed_unknown",None)
+        ] {
+            let mut s=Store::default();let o=scope();let task=o.task_id.clone();
+            let grant=s.issue(o,100).unwrap();
+            let action=action(&task,"ui_set_value","Notepad",None);
+            s.reserve_prepared(&grant,&action,101).unwrap();
+            let receipt=journal(&action,phase,success,102);
+            s.reconcile_native_receipt(&task,&grant,&receipt,103).unwrap();
+            assert!(s.reserve_prepared(&grant,&action,104).is_err());
+            assert!(s.reserve_prepared(&grant,
+                &action(&task,"ui_windows","Notepad",None),104).is_err());
+        }
+        for (phase,success) in [
+            ("running",Some(true)),
+            ("audit_verified",None),
+            ("owner_reviewed_unknown",Some(true))
+        ] {
+            let mut s=Store::default();let o=scope();let task=o.task_id.clone();
+            let grant=s.issue(o,100).unwrap();
+            let action=action(&task,"ui_click","Notepad",None);
+            s.reserve_prepared(&grant,&action,101).unwrap();
+            assert!(s.reconcile_native_receipt(&task,&grant,
+                &journal(&action,phase,success,102),103).is_err());
+            assert!(s.reserve_prepared(&grant,
+                &action(&task,"ui_click","Notepad",None),104).is_err());
+        }
+    }
+
     #[test]
     fn one_live_action_clock_reversal_and_bounded_count_fail_closed(){
         let mut s=Store::default();let o=scope();let task=o.task_id.clone();
