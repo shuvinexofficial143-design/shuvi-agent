@@ -2,6 +2,10 @@
 //! A grant is NOT a native approval for mutations, does not survive restart,
 //! never schedules or replays a native action, and is consumed under the same
 //! Rust pending-action lock as the existing single-worker lease.
+// M1.1 is compiled and Rust-tested through this already wired native module.
+// It is not yet an execution grant; no legacy Allow once is bypassed.
+#[path = "native_task_authorization.rs"]
+pub(crate) mod task_authorization;
 use serde_json::Value;
 use sha2::{Digest,Sha256};
 use std::collections::HashMap;
