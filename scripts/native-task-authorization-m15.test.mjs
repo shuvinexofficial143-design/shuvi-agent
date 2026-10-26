@@ -33,5 +33,6 @@ test("M1.5 no second edit until separately audited same-control readback",()=>{
  assert.match(kernel,/g\.awaiting_readback=g\.scope\.exact_controls\.first\(\)\.cloned\(\)/);
  assert.match(kernel,/fn bounded_native_value_edits_require_exact_control_and_new_inspection/);
  assert.match(ui,/readScope\.window===nativeUiTaskWindow\(proposal\)/);
- assert.match(ui,/readScope\.control!==null/);
+ assert.match(ui,/readScope\.control===null/);
+ assert.match(ui,/proposal\.arguments\?\.automation_id===readScope\.control/);
 });
