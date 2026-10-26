@@ -464,7 +464,7 @@ mod tests {
             let a=action(&task,"ui_click","Notepad",None);
             s.reserve_prepared(&token,&a,101).unwrap();
             s.record_audit(&task,&token,&a.action_id,&a.tool,outcome,102).unwrap();
-            assert!(s.reserve_prepared(&token,&action(&task,"ui_click","Notepad",None),103).is_err());
+            assert!(s.reserve_prepared(&token,&self::action(&task,"ui_click","Notepad",None),103).is_err());
             assert!(s.issue(OwnerScope{task_id:task,..scope()},104).is_err());
         }
     }
@@ -523,7 +523,7 @@ mod tests {
         // An authenticated terminal journal alone never marks user objective
         // complete, nor does it authorize another tool outside the scope.
         assert!(s.reserve_prepared(&grant,
-            &action(&task,"delete_file","Notepad",None),1008).is_err());
+            &self::action(&task,"delete_file","Notepad",None),1008).is_err());
     }
     #[test]
     fn failed_unknown_and_malformed_native_receipts_cannot_unlock_replay(){
@@ -539,7 +539,7 @@ mod tests {
             s.reconcile_native_receipt(&task,&grant,&receipt,103).unwrap();
             assert!(s.reserve_prepared(&grant,&action,104).is_err());
             assert!(s.reserve_prepared(&grant,
-                &action(&task,"ui_windows","Notepad",None),104).is_err());
+                &self::action(&task,"ui_windows","Notepad",None),104).is_err());
         }
         for (phase,success) in [
             ("running",Some(true)),
@@ -553,7 +553,7 @@ mod tests {
             assert!(s.reconcile_native_receipt(&task,&grant,
                 &journal(&action,phase,success,102),103).is_err());
             assert!(s.reserve_prepared(&grant,
-                &action(&task,"ui_click","Notepad",None),104).is_err());
+                &self::action(&task,"ui_click","Notepad",None),104).is_err());
         }
     }
 
@@ -605,7 +605,7 @@ mod tests {
         let changed=good.replace("123456789012","123456789013");
         assert!(store.verify_native_read_output(&task,&id,&b.action_id,
             "ui_find",&changed,105).is_err());
-        assert!(store.reserve_prepared(&id,&action(&task,"ui_find","Notepad",None),106).is_err());
+        assert!(store.reserve_prepared(&id,&self::action(&task,"ui_find","Notepad",None),106).is_err());
     }
 
     #[test]
@@ -614,7 +614,7 @@ mod tests {
         let token=s.issue(o,100).unwrap();
         let first=action(&task,"ui_find","Notepad",None);
         s.reserve_prepared(&token,&first,101).unwrap();
-        assert!(s.reserve_prepared(&token,&action(&task,"ui_find","Notepad",None),102).is_err());
+        assert!(s.reserve_prepared(&token,&self::action(&task,"ui_find","Notepad",None),102).is_err());
         assert!(s.record_audit(&task,&token,&first.action_id,"ui_windows",Outcome::AuditedSuccess,103).is_err());
         s.record_audit(&task,&token,&first.action_id,&first.tool,Outcome::AuditedSuccess,103).unwrap();
         for i in 1..3{
@@ -622,7 +622,7 @@ mod tests {
             s.reserve_prepared(&token,&a,103+i).unwrap();
             s.record_audit(&task,&token,&a.action_id,&a.tool,Outcome::AuditedSuccess,103+i).unwrap();
         }
-        assert!(s.reserve_prepared(&token,&action(&task,"ui_find","Notepad",None),110).is_err());
+        assert!(s.reserve_prepared(&token,&self::action(&task,"ui_find","Notepad",None),110).is_err());
         assert!(s.grant(&task,&token,99).is_err());
     }
 }
