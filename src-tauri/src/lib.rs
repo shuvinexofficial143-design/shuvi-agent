@@ -1190,6 +1190,8 @@ struct BrowserSession {
 struct ActionState {
     native_execution_owned: AtomicBool,
     task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
+    // Shuvi60 M1.3: opt-in Rust-only owner task read authority; restart loses it.
+    task_authorizations: Mutex<native_task_grant::task_authorization::Store>,
     task_edit_scopes: Mutex<native_task_edit_scope::TaskEditScopeStore>,
     task_inspection_scopes: Mutex<native_task_inspection_scope::Store>,
     premiere_read_scopes: Mutex<native_premiere_read_scope::Store>,
@@ -21389,6 +21391,113 @@ fn issue_task_read_grant(
         .map_err(|_|"Rust read grant state is unavailable.".to_string())?;
     grants.issue(&task_id,sig,now_ms())
 }
+// Owner must approve the reviewed scope in an actual native Windows dialog.
+// This cannot be satisfied by rendering a fake dashboard button or having a
+// model set "approved":true in JSON. Default button is NO, including closure.
+#[cfg(windows)]
+fn confirm_native_read_task(scope:&native_task_grant::task_authorization::OwnerScope,
+    objective:&str)->Result<(),String>{
+    #[link(name="user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(hwnd:isize,text:*const u16,caption:*const u16,flags:u32)->i32;
+    }
+    let message=format!(
+        "AUTHORIZE READ-ONLY SHUVI TASK?\n\nTask: {}\n\nWindows:\n{}\n\nTools: {}\nDuration: {} minutes (MAX 10 days)\nRead actions: {}\nAI requests: NOT authorized by this grant\n\nNo UI clicks, typing, file edits, model spending or crash resume.\nAll steps retain Rust audit. STOP/REVOKE remains available.\n\nChoose Yes to explicitly authorize; No to cancel.",
+        objective,scope.applications.join("\n"),scope.tools.join(", "),
+        scope.valid_for_ms/60_000,scope.max_actions
+    );
+    let text:Vec<u16>=message.encode_utf16().chain(std::iter::once(0)).collect();
+    let title:Vec<u16>="SHUVI — Native Task Consent".encode_utf16()
+        .chain(std::iter::once(0)).collect();
+    // MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2: No is the default.
+    let response=unsafe{MessageBoxW(0,text.as_ptr(),title.as_ptr(),0x0000_0134)};
+    if response==6{Ok(())}
+    else{Err("Owner declined native task authorization; no grant created.".into())}
+}
+#[cfg(not(windows))]
+fn confirm_native_read_task(_: &native_task_grant::task_authorization::OwnerScope,
+    _: &str)->Result<(),String>{
+    Err("Native desktop owner confirmation requires Windows.".into())
+}
+
+#[tauri::command]
+fn issue_native_read_task_scope(
+    scope:native_task_grant::task_authorization::OwnerScope,
+    objective:String,
+    origin_action_id:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<String,String>{
+    use sha2::Digest;
+    scope.validate()?;
+    if objective.is_empty()||objective.len()>2400||
+       !uuid::Uuid::parse_str(&origin_action_id)
+        .map(|v|v.to_string()==origin_action_id).unwrap_or(false)||
+       scope.owner_consent_id!=origin_action_id{
+        return Err("Owner task objective or original native approval UUID invalid.".into());
+    }
+    let digest=format!("{:x}",sha2::Sha256::digest(objective.as_bytes()));
+    if digest!=scope.objective_digest{
+        return Err("Owner-reviewed objective SHA-256 differs from requested task scope.".into());
+    }
+    if !scope.exact_files.is_empty()||
+       scope.risks!=vec![native_task_grant::task_authorization::Risk::ReadOnly]||
+       scope.tools.iter().any(|t|!matches!(t.as_str(),"ui_find"|"ui_discover")){
+        return Err("M1.3 only delegates named read-only UIA inspections; mutations require legacy approval.".into());
+    }
+    let pending=state.pending.lock()
+        .map_err(|_|"Prepared owner task action state unavailable.")?;
+    let original=pending.get(&origin_action_id)
+        .ok_or("Owner must review a currently prepared read-only UIA action.")?;
+    if now_ms().saturating_sub(original.created_at_ms)>PENDING_ACTION_TTL_MS||
+       original.native_uia_target.is_none(){
+        return Err("Original UIA read preparation expired or lacks an OS-bound target.".into());
+    }
+    let selected=native_task_grant::task_authorization::native_read_target(&original.action)
+        .ok_or("Original action is not a bound named native read.")?;
+    if !scope.applications.iter().any(|name|name==selected)||
+       !scope.tools.iter().any(|t|t==&original.tool){
+        return Err("The owner-reviewed read action is not contained in the requested scope.".into());
+    }
+    let recovery=native_recovery::load(&app)?;
+    native_task_edit_scope::owner_checkpoint_allows(
+        recovery.as_ref(),&scope.task_id,&origin_action_id,"awaiting_approval",now_ms())?;
+    // Enforce a real user-facing native confirmation, not a WebView property.
+    confirm_native_read_task(&scope,&objective)?;
+    let latest=native_recovery::load(&app)?;
+    native_task_edit_scope::owner_checkpoint_allows(
+        latest.as_ref(),&scope.task_id,&origin_action_id,"awaiting_approval",now_ms())?;
+    let mut grants=state.task_authorizations.lock()
+        .map_err(|_|"Rust task authorization state poisoned.")?;
+    let task=scope.task_id.clone();
+    let grant=grants.issue(scope,now_ms())?;
+    if let Err(error)=append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"native_task_read_scope_issued".into(),
+        tool:"ui_discover".into(),
+        detail:"Owner confirmed finite read-only UIA task in native Windows dialog; no mutation or paid model request granted.".into(),
+        success:true,action_id:Some(origin_action_id),
+    }){
+        grants.revoke(&task);
+        return Err(error);
+    }
+    Ok(grant)
+}
+#[tauri::command]
+fn revoke_native_read_task_scope(
+    task_id:String,state:State<'_,ActionState>,app:AppHandle
+)->Result<(),String>{
+    uuid::Uuid::parse_str(&task_id)
+        .map_err(|_|"Invalid task UUID for native scope revoke.")?;
+    state.task_authorizations.lock()
+        .map_err(|_|"Task grant cannot be safely revoked.")?.revoke(&task_id);
+    append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"native_task_read_scope_revoked".into(),
+        tool:"ui_discover".into(),
+        detail:"Owner revoked future UIA inspections; any existing worker requires separate Stop and audit.".into(),
+        success:true,action_id:None,
+    })
+}
+
 #[tauri::command]
 fn revoke_task_read_grants(
     task_id: String,
@@ -21838,6 +21947,7 @@ async fn execute_action(
     inspection_scope_id: Option<String>,
     project_scope_id: Option<String>,
     premiere_read_scope_id: Option<String>,
+    task_scope_id: Option<String>,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
@@ -21878,7 +21988,26 @@ async fn execute_action(
                 (grant_id.is_some()||edit_scope_id.is_some()||inspection_scope_id.is_some()||project_scope_id.is_some()){
                 return Err("Premiere read delegation cannot combine with another grant.".into());
             }
-            if let Some(scope_id)=premiere_read_scope_id.as_deref(){
+            if task_scope_id.is_some()&&
+                (grant_id.is_some()||edit_scope_id.is_some()||
+                 inspection_scope_id.is_some()||project_scope_id.is_some()||
+                 premiere_read_scope_id.is_some()){
+                return Err("Task-wide native read authorization cannot combine with another grant.".into());
+            }
+            if let Some(scope_id)=task_scope_id.as_deref(){
+                let task=task_id.as_deref().ok_or("Scoped read requires exact task UUID.")?;
+                if prepared.native_uia_target.is_none(){
+                    return Err("Task scope UIA action lacks separately bound OS window identity.".into());
+                }
+                let action=native_task_grant::task_authorization::native_read_prepared(
+                    task,&action_id,&prepared.tool,&prepared.action)?;
+                let recovery=native_recovery::load(&app)?;
+                native_task_edit_scope::owner_checkpoint_allows(
+                    recovery.as_ref(),task,&action_id,"executing",now_ms())?;
+                state.task_authorizations.lock()
+                    .map_err(|_|"Rust task scope state unavailable.")?
+                    .reserve_after_native_preflight(&app,scope_id,&action,now_ms())?;
+            }else if let Some(scope_id)=premiere_read_scope_id.as_deref(){
                 let task=task_id.as_deref().ok_or("Scoped Premiere read requires exact task UUID.")?;
                 let record=native_recovery::load(&app)?;
                 native_task_edit_scope::owner_checkpoint_allows(record.as_ref(),task,
@@ -22261,6 +22390,12 @@ async fn execute_action(
                 },
             )?;
             native_worker_job::audit(&app,&action_id,result.success,now_ms())?;
+            if let Some(scope)=task_scope_id.as_deref(){
+                let task=task_id.as_deref().ok_or("Native read task UUID missing at audit.")?;
+                state.task_authorizations.lock()
+                    .map_err(|_|"Task audit reconciliation lock unavailable.")?
+                    .reconcile_from_rust_journal(&app,task,scope,now_ms())?;
+            }
             native_job_history::finish(&app)?;
             if scheduled_step.is_some(){
                 native_scheduler::finish(&app,&action_id,&result.tool,Some(result.success))?;
@@ -22318,6 +22453,12 @@ async fn execute_action(
                 },
             )?;
             native_worker_job::audit(&app,&action_id,false,now_ms())?;
+            if let Some(scope)=task_scope_id.as_deref(){
+                let task=task_id.as_deref().ok_or("Native read task UUID missing at failure.")?;
+                state.task_authorizations.lock()
+                    .map_err(|_|"Task failure reconciliation lock unavailable.")?
+                    .reconcile_from_rust_journal(&app,task,scope,now_ms())?;
+            }
             native_job_history::finish(&app)?;
             if scheduled_step.is_some(){
                 let native=native_worker_job::read(&app)?
@@ -22335,7 +22476,7 @@ async fn execute_powershell(
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, None, None, None, None, None, None, state, app).await
+    execute_action(action_id, None, None, None, None, None, None, None, state, app).await
 }
 
 #[tauri::command]
@@ -22786,6 +22927,8 @@ pub fn run() {
             prepare_powershell,
             issue_task_read_grant,
             revoke_task_read_grants,
+            issue_native_read_task_scope,
+            revoke_native_read_task_scope,
             deny_action,
             issue_task_edit_scope,
             revoke_task_edit_scopes,

@@ -5,9 +5,11 @@
 //! executor integration must call admission AFTER Rust prepare and BEFORE
 //! dispatch under the pending-action lock, and finish using the *real* Rust
 //! audit receipt. No checkpoint, model text or WebView state restores authority.
-//! Existing Allow once, exact-file physical checks, UIA root binding and Rust
-//! action audit remain mandatory until that integration is tested end-to-end.
+//! Exact-file physical checks and Rust action audit remain mandatory.
+//! M1.3 integrates a separately owner-confirmed READ-ONLY UIA path. UI clicks,
+//! typing, filesystem edits and browser writes still require legacy approval.
 use std::collections::{HashMap,HashSet};
+use serde::Deserialize;
 use uuid::Uuid;
 
 pub(crate) const MAX_DURATION_MS:u64=10*24*60*60*1000;
@@ -16,7 +18,8 @@ const MAX_ISSUED:usize=8_192;
 const MAX_ACTIONS:u32=20_000;
 const MAX_AI_REQUESTS:u32=2048;
 
-#[derive(Clone,Copy,Debug,PartialEq,Eq,Hash)]
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Hash,Deserialize)]
+#[serde(rename_all="snake_case")]
 pub(crate) enum Risk { ReadOnly, UiMutation, FileEdit }
 
 fn risk_for(tool:&str)->Option<Risk>{
@@ -63,7 +66,8 @@ fn is_exact_local_windows_file(s:&str)->bool{
     count>0
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone,Debug,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
 pub(crate) struct OwnerScope {
     pub task_id:String,
     pub owner_consent_id:String,
@@ -79,8 +83,33 @@ pub(crate) struct OwnerScope {
     // Unknown prices are always refused when this is Some.
     pub max_estimated_ai_micro_usd:Option<u64>,
 }
+// Never accept a claimed application from the provider or WebView. For the
+// M1.3 opt-in subset, derive the exact window selector from the Rust-parsed
+// ToolAction. The native UIA binding is independently required at dispatch.
+pub(crate) fn native_read_target(action:&crate::ToolAction)->Option<&str>{
+    match action {
+        crate::ToolAction::UiDiscover{window} => Some(window.as_str()),
+        crate::ToolAction::UiFind{window:Some(window),name,automation_id}
+            if name.as_ref().is_some_and(|s|!s.is_empty())||
+               automation_id.as_ref().is_some_and(|s|!s.is_empty())
+            =>Some(window.as_str()),
+        _=>None
+    }
+}
+pub(crate) fn native_read_prepared(task:&str,id:&str,tool:&str,
+    action:&crate::ToolAction)->Result<PreparedAction,String>{
+    let app=native_read_target(action)
+        .filter(|name|label(name,100)&&!name.contains('*')&&!name.contains('?'))
+        .ok_or("Task scope does not delegate this mutating or unbound native tool.")?;
+    if !matches!(tool,"ui_find"|"ui_discover"){
+        return Err("Task scope action tool is not an exact prepared UIA read.".into());
+    }
+    Ok(PreparedAction{task_id:task.into(),action_id:id.into(),tool:tool.into(),
+        application:app.into(),exact_file:None})
+}
+
 impl OwnerScope {
-    fn validate(&self)->Result<(),String>{
+    pub(crate) fn validate(&self)->Result<(),String>{
         if !valid_uuid(&self.task_id)||!valid_uuid(&self.owner_consent_id)||
             self.task_id==self.owner_consent_id||
             self.objective_digest.len()!=64||
@@ -466,6 +495,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn m13_native_read_adapter_never_accepts_mutations_or_an_unbound_window(){
+        let t=id();let aid=id();
+        let discover=crate::ToolAction::UiDiscover{window:"Premiere".into()};
+        assert_eq!(native_read_target(&discover),Some("Premiere"));
+        assert!(native_read_prepared(&t,&aid,"ui_discover",&discover).is_ok());
+        assert!(native_read_prepared(&t,&aid,"ui_click",&discover).is_err());
+        let find=crate::ToolAction::UiFind{window:Some("Premiere".into()),
+            name:Some("Save".into()),automation_id:None};
+        assert!(native_read_prepared(&t,&aid,"ui_find",&find).is_ok());
+        let unbound=crate::ToolAction::UiFind{window:None,
+            name:Some("Save".into()),automation_id:None};
+        assert!(native_read_prepared(&t,&aid,"ui_find",&unbound).is_err());
+        let mutation=crate::ToolAction::UiClick{window:Some("Premiere".into()),
+            name:Some("Save".into()),automation_id:None};
+        assert!(native_read_prepared(&t,&aid,"ui_click",&mutation).is_err());
+    }
     #[test]
     fn one_live_action_clock_reversal_and_bounded_count_fail_closed(){
         let mut s=Store::default();let o=scope();let task=o.task_id.clone();
