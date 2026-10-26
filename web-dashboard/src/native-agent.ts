@@ -14,6 +14,7 @@ import {verifiedSimpleOpening} from "./native-opening-completion.mjs";
 import {auditedYouTubeLaunch,youtubeReadbackProposal,verifiedYouTubeHome,youtubeSearchReadbackProposal,verifiedYouTubeSearch} from "./native-browser-completion.mjs";
 import {premiereUiReadback,auditedPremiereUiReady} from "./native-premiere-readiness.mjs";
 import {nativeReadProgress} from "./native-human-progress.mjs";
+import {nextAuditedUiMutationReadback} from "./native-ui-mutation-readback.mjs";
 import {verifiedSimpleNotepadOpening,strictlySimplePremiereOpening} from "./native-opening-completion.mjs";
 import {classifyNativeProviderFailure} from "./native-provider-failure.mjs";
 import {newApplicationContinuity,recordAuditedApplication,selectApplicationContinuity,continuityReadback,continuityHint,confirmedContinuityHint,checkConfirmedContinuity} from "./native-application-continuity.mjs";
@@ -893,13 +894,26 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   updateReply(threadId,index,(replies.get(threadId)?.[index]||"")+"\n\n"+extra);
  }
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
+  const taskBudget=taskBudgets.get(task.threadId);
+  // After a Rust-audited UIA mutation, use two NEW independently approved
+  // native read-only actions instead of paying an AI planner to guess a
+  // selector. A stale/replaced window or missing control is a safe pause.
+  const boundUiReadback=nextAuditedUiMutationReadback(task.action.id,result.tool,
+   pendingUiReadback.get(task.threadId)??null,observedWindows.get(task.threadId)??null);
+  if(boundUiReadback?.blocked){
+   const saved=taskBudget?await persistRecovery(taskBudget,"paused",task.action.id):false;
+   haltTask(task.threadId,saved?"ui_readback_unverified":"recovery_journal_failed");
+   appendReply(task.threadId,task.promptIndex,boundUiReadback.blocked+
+    " पिछला Action दोबारा नहीं चलाया गया। कोई Paid AI Request नहीं भेजी गई।");
+   showActionFeedback("Independent UIA readback blocked by window/control identity. No replay.");
+   return;
+  }
   const premiereRead=result.tool==="ui_windows"
    ?premiereUiReadback(task.objective,task.action.id,result,taskEvidence.get(task.threadId)??null,true):null;
-  const plannedReadback=premiereRead??nextMasterReadbackProposal(task.objective,result.tool)??
+  const plannedReadback=boundUiReadback?.proposal??premiereRead??nextMasterReadbackProposal(task.objective,result.tool)??
    (result.tool==="open_url"?systemOpeningReadback(systemLaunchProofs.get(task.threadId)):null)??
    (result.tool==="browser_start"?youtubeReadbackProposal(browserLaunchProofs.get(task.threadId)):null)??
    youtubeSearchReadbackProposal(task.objective,task.action.id,task.proposal,result)?.proposal??null;
-  const taskBudget=taskBudgets.get(task.threadId);
   // Validate the exact objective and Rust-bound context BEFORE consuming a
   // paid-request reservation. Deterministic readback needs no model context.
   let orchestrator="";
