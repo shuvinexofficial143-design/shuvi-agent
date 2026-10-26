@@ -11838,7 +11838,7 @@ while ($shuviDiscoveryQueue.Count -gt 0) {{
     }}
 }}
 # Only bounded timing numbers, never private window, control or text contents.
-[Console]::Error.WriteLine(('SHUVI_UIA_DISCOVERY_SCAN nodes={0} elapsed_ms={1}' -f $shuviDiscoveryNodes,$shuviDiscoveryClock.ElapsedMilliseconds))
+[Console]::Error.WriteLine(('SHUVI_UIA_DISCOVERY_SCAN nodes={{0}} elapsed_ms={{1}}' -f $shuviDiscoveryNodes,$shuviDiscoveryClock.ElapsedMilliseconds))
 $interactive = [System.Collections.Generic.List[object]]::new()
 $context = [System.Collections.Generic.List[object]]::new()
 for ($i=0; $i -lt $all.Count; $i++) {{
