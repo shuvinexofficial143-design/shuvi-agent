@@ -11,9 +11,11 @@ test("Windows installer uses the committed Node lockfile",()=>{
 
 test("Windows installer is gated by full exact-commit verification",()=>{
   const verify=workflow.indexOf("run: npm run verify:full");
-  const build=workflow.indexOf("run: npx tauri build --bundles nsis");
+  const build=workflow.indexOf("run: npm run build:windows-installer");
   assert.ok(verify>=0);
   assert.ok(build>verify);
+  assert.doesNotMatch(workflow,/run: npx tauri build/);
+  assert.match(workflow,/windows-m62-real-nsis-install-acceptance\.mjs/);
   assert.match(workflow,/name: full-test-attestation/);
   assert.match(workflow,/path: \.shuvi-attest\/full-\*\.json/);
   assert.match(workflow,/if-no-files-found: error/);

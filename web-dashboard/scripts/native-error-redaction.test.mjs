@@ -6,7 +6,7 @@ test("Batch 43 protects credentials in errors returned to chat and owner UI",()=
  const prefix=["s","k","-"].join("");
  const example=["abcdef","ghijkl","mnopqr","stuvwx","yz012345"].join("");
  assert.doesNotMatch(redacted("Bad "+prefix+example),new RegExp(example));
- assert.match(redacted("Authorization: Bearer "+example),/\[REDACTED_TOKEN\]/);
+ assert.match(redacted("Authorization: Bearer "+example),/\[REDACTED_AUTHORIZATION\]/);
  assert.match(redacted("api_key="+example),/\[REDACTED\]/);
  assert.equal(redacted("UI lookup failed: name not found"),"UI lookup failed: name not found");
  assert.ok(redacted("x".repeat(9000)).length<=2400);
