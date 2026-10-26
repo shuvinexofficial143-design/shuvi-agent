@@ -27,5 +27,6 @@ test("M1.2 only reconciles from the real exclusive Rust worker journal",()=>{
 test("M1.2 cannot claim one-click execution until the native executor calls its new adapter",()=>{
  const libStat=readFileSync(new URL("../src-tauri/src/native_task_grant.rs",import.meta.url),"utf8");
  assert.match(libStat,/It is not yet an execution grant/);
- assert.match(kernel,/does not start an action or bypass existing per-action owner consent today/);
+ assert.match(kernel,/Existing Allow once, exact-file physical checks, UIA root binding and Rust/);
+ assert.match(kernel,/action audit remain mandatory until that integration is tested end-to-end/);
 });
