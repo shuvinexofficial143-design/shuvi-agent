@@ -75,6 +75,8 @@ pub(crate) struct OwnerScope {
     pub objective_digest:String, // SHA-256 hex of the reviewed task; not prose.
     pub applications:Vec<String>, // exact app names, never a wildcard
     pub exact_files:Vec<String>,  // additionally checked by existing native file guard
+    #[serde(default)]
+    pub exact_controls:Vec<String>, // M1.5: a single owner-reviewed AutomationId
     pub tools:Vec<String>,
     pub risks:Vec<Risk>,
     pub valid_for_ms:u64,
@@ -106,9 +108,37 @@ pub(crate) fn native_read_prepared(task:&str,id:&str,tool:&str,
         return Err("Task scope action tool is not an exact prepared UIA read.".into());
     }
     Ok(PreparedAction{task_id:task.into(),action_id:id.into(),tool:tool.into(),
-        application:app.into(),exact_file:None})
+        application:app.into(),exact_file:None,
+        control_id:match action{
+            crate::ToolAction::UiFind{automation_id,..}=>automation_id.clone(),
+            _=>None
+        },native_root:None})
 }
 
+pub(crate) fn native_value_prepared(task:&str,id:&str,tool:&str,
+    action:&crate::ToolAction,
+    bound:&crate::native_uia_window_guard::NativeUiaTarget)
+    ->Result<PreparedAction,String>{
+    let (window,control)=match action{
+        crate::ToolAction::UiSetValue{window:Some(w),automation_id:Some(c),..}
+            =>(w,c),
+        _=>return Err("Task mutation is not an exact native UIA ValuePattern edit.".into())
+    };
+    if tool!="ui_set_value"||!label(window,100)||!label(control,100)||
+        control.contains('*')||control.contains('?')||
+        bound.automation_id!=*control||bound.hwnd<=0||
+        bound.pid==0||bound.process_start_ticks<=0{
+        return Err("Native UIA control identity does not match prepared edit.".into());
+    }
+    Ok(PreparedAction{
+        task_id:task.into(),action_id:id.into(),tool:tool.into(),
+        application:window.into(),exact_file:None,control_id:Some(control.into()),
+        native_root:Some(NativeReadRoot{
+            hwnd:bound.hwnd as u64,pid:bound.pid as u64,
+            start_ticks:bound.process_start_ticks.to_string()
+        })
+    })
+}
 impl OwnerScope {
     pub(crate) fn validate(&self)->Result<(),String>{
         if !valid_uuid(&self.task_id)||!valid_uuid(&self.owner_consent_id)||
@@ -121,19 +151,24 @@ impl OwnerScope {
             self.max_ai_requests==0||self.max_ai_requests>MAX_AI_REQUESTS||
             self.max_estimated_ai_micro_usd==Some(0)||
             self.applications.is_empty()||self.applications.len()>16||
-            self.exact_files.len()>64||self.tools.is_empty()||self.tools.len()>32||
+            self.exact_files.len()>64||self.exact_controls.len()>1||
+            self.tools.is_empty()||self.tools.len()>32||
             self.risks.is_empty()||self.risks.len()>3{
             return Err("Owner task scope or finite budgets invalid.".into());
         }
         if self.applications.iter().any(|app|!label(app,100)||app=="*"||
             app.contains('*')||app.contains('?'))||
            self.exact_files.iter().any(|p|!is_exact_local_windows_file(p))||
+           self.exact_controls.iter().any(|id|!label(id,100)||
+              id.contains('*')||id.contains('?'))||
            self.tools.iter().any(|t|risk_for(t).is_none())||
            self.tools.iter().any(|t|!self.risks.contains(&risk_for(t).unwrap()))||
            self.applications.iter().collect::<HashSet<_>>().len()!=self.applications.len()||
            self.exact_files.iter().collect::<HashSet<_>>().len()!=self.exact_files.len()||
            self.tools.iter().collect::<HashSet<_>>().len()!=self.tools.len()||
            self.risks.iter().collect::<HashSet<_>>().len()!=self.risks.len()||
+           self.tools.iter().any(|t|t=="ui_set_value")&&
+              self.exact_controls.len()!=1||
            self.tools.iter().any(|t|matches!(risk_for(t),Some(Risk::FileEdit)))&&
               self.exact_files.is_empty(){
             return Err("Owner task lists are ambiguous, risky or outside typed allowlist.".into());
@@ -149,6 +184,8 @@ pub(crate) struct PreparedAction {
     pub tool:String,      // native prepared typed tool, NOT model risk assertion
     pub application:String, // must come from verified native target
     pub exact_file:Option<String>,
+    pub control_id:Option<String>,
+    native_root:Option<NativeReadRoot>,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub(crate) enum Outcome { AuditedSuccess, AuditedFailure, Unknown }
@@ -200,6 +237,8 @@ struct Grant {
     observed_ids:HashSet<String>,
     pending:Option<Pending>,
     read_root:Option<NativeReadRoot>,
+    awaiting_readback:Option<String>,
+    confirmed_readback:bool,
     paused:bool,
 }
 #[derive(Default)]
@@ -228,7 +267,8 @@ impl Store {
         self.active.insert(scope.task_id.clone(),Grant{
             scope,scope_id:id.clone(),deadline_ms:expiry,last_observed_ms:now,
             actions:0,requests:0,estimated_ai_micro_usd:0,
-            observed_ids:HashSet::new(),pending:None,read_root:None,paused:false
+            observed_ids:HashSet::new(),pending:None,read_root:None,awaiting_readback:None,
+            confirmed_readback:false,paused:false
         });
         Ok(id)
     }
@@ -259,6 +299,30 @@ impl Store {
            !g.scope.risks.contains(&risk)||
            !g.scope.applications.iter().any(|app|app==&action.application){
             return Err("Prepared tool, application or risk is outside owner scope.".into());
+        }
+        if let Some(control)=g.awaiting_readback.as_deref(){
+            if action.tool!="ui_find"||action.control_id.as_deref()!=Some(control){
+                return Err("A native ValuePattern edit needs exact separately audited UIA readback.".into());
+            }
+        }
+        if action.tool=="ui_set_value" {
+            let control=action.control_id.as_deref()
+                .ok_or("Scoped SetValue lacks a native-bound exact AutomationId.")?;
+            if !g.scope.exact_controls.iter().any(|id|id==control)||
+                action.native_root.is_none(){
+                return Err("Scoped ValuePattern edit is outside owner-reviewed control.".into());
+            }
+            let root=action.native_root.as_ref().unwrap();
+            if g.read_root.as_ref().is_some_and(|prior|prior!=root){
+                g.paused=true;
+                return Err("UIA application process generation changed before editing.".into());
+            }
+            if g.read_root.is_none(){g.read_root=Some(root.clone());}
+        }
+        if !g.scope.exact_controls.is_empty()&&risk==Risk::ReadOnly&&
+           (action.tool!="ui_find"||
+            !g.scope.exact_controls.iter().any(|id|Some(id.as_str())==action.control_id.as_deref())){
+            return Err("After scoped editing only the exact approved control may be inspected.".into());
         }
         match risk {
             Risk::FileEdit=>{
@@ -305,6 +369,20 @@ impl Store {
             grant.paused=true;
             return Err("Foreign UIA readback cannot confirm a native task step.".into());
         }
+        if let Some(control)=grant.awaiting_readback.as_deref(){
+            let json:Value=serde_json::from_str(stdout)
+                .map_err(|_|"Cannot verify post-edit UIA control.")?;
+            let row=match &json{
+                Value::Array(items) if items.len()==1=>&items[0],
+                Value::Object(_)=>&json,
+                _=>return Err("Post-edit inspection needs exactly one control.".into())
+            };
+            if row.get("AutomationId").and_then(Value::as_str)!=Some(control){
+                grant.paused=true;
+                return Err("Post-edit UIA control changed or was not observed.".into());
+            }
+            grant.confirmed_readback=true;
+        }
         if let Some(previous)=&grant.read_root{
             if previous!=&root{
                 grant.paused=true;
@@ -324,6 +402,18 @@ impl Store {
         let pending=g.pending.as_ref().ok_or("No scoped action awaiting Rust audit.")?;
         if pending.id!=action_id||pending.tool!=tool{
             return Err("Audit has foreign action UUID or tool.".into());
+        }
+        if outcome==Outcome::AuditedSuccess&&tool=="ui_set_value"{
+            g.awaiting_readback=g.scope.exact_controls.first().cloned();
+            g.confirmed_readback=false;
+        }else if outcome==Outcome::AuditedSuccess&&tool=="ui_find"&&
+            g.awaiting_readback.is_some(){
+            if !g.confirmed_readback{
+                g.paused=true;
+                return Err("Read did not verify post-edit control identity.".into());
+            }
+            g.awaiting_readback=None;
+            g.confirmed_readback=false;
         }
         g.pending=None;
         if outcome!=Outcome::AuditedSuccess {g.paused=true;}
@@ -402,6 +492,7 @@ mod tests {
         OwnerScope{task_id:id(),owner_consent_id:id(),objective_digest:"a".repeat(64),
          applications:vec!["Adobe Premiere Pro".into(),"Notepad".into()],
          exact_files:vec![r"C:\User\Project\notes.txt".into()],
+         exact_controls:vec!["Save".into()],
          tools:vec!["ui_windows".into(),"ui_find".into(),
              "ui_click".into(),"ui_set_value".into(),"write_file".into()],
          risks:vec![Risk::ReadOnly,Risk::UiMutation,Risk::FileEdit],
@@ -410,7 +501,8 @@ mod tests {
     }
     fn action(task:&str,tool:&str,app:&str,path:Option<&str>)->PreparedAction{
         PreparedAction{task_id:task.into(),action_id:id(),tool:tool.into(),
-            application:app.into(),exact_file:path.map(str::to_owned)}
+            application:app.into(),exact_file:path.map(str::to_owned),
+            control_id:None,native_root:None}
     }
     #[test]
     fn exact_owner_consent_is_finite_and_never_renewed_silently(){
@@ -574,6 +666,44 @@ mod tests {
             name:Some("Save".into()),automation_id:None};
         assert!(native_read_prepared(&t,&aid,"ui_click",&mutation).is_err());
     }
+
+    #[test]
+    fn bounded_native_value_edits_require_exact_control_and_new_inspection(){
+        let mut owner=scope();
+        owner.tools=vec!["ui_find".into(),"ui_set_value".into()];
+        owner.risks=vec![Risk::ReadOnly,Risk::UiMutation];
+        owner.exact_files.clear();owner.max_actions=5;
+        let task=owner.task_id.clone();
+        let mut store=Store::default();
+        let grant=store.issue(owner,100).unwrap();
+        let native_root=NativeReadRoot{hwnd:42,pid:24,start_ticks:"8675309".into()};
+        let mut first=action(&task,"ui_set_value","Notepad",None);
+        first.control_id=Some("Save".into());first.native_root=Some(native_root.clone());
+        store.reserve_prepared(&grant,&first,101).unwrap();
+        store.record_audit(&task,&grant,&first.action_id,"ui_set_value",
+            Outcome::AuditedSuccess,102).unwrap();
+        let mut second=action(&task,"ui_set_value","Notepad",None);
+        second.control_id=Some("Save".into());second.native_root=Some(native_root.clone());
+        assert!(store.reserve_prepared(&grant,&second,103).is_err());
+        let mut wrong=action(&task,"ui_find","Notepad",None);
+        wrong.control_id=Some("Another".into());
+        assert!(store.reserve_prepared(&grant,&wrong,104).is_err());
+        let mut read=action(&task,"ui_find","Notepad",None);
+        read.control_id=Some("Save".into());
+        store.reserve_prepared(&grant,&read,105).unwrap();
+        let observation=serde_json::json!([{"AutomationId":"Save",
+            "ObservedWindowHwnd":42,"ObservedWindowPid":24,
+            "ObservedWindowProcessStartTicks":"8675309"}]).to_string();
+        store.verify_native_read_output(&task,&grant,&read.action_id,
+            "ui_find",&observation,106).unwrap();
+        store.record_audit(&task,&grant,&read.action_id,"ui_find",
+            Outcome::AuditedSuccess,107).unwrap();
+        store.reserve_prepared(&grant,&second,108).unwrap();
+        store.record_audit(&task,&grant,&second.action_id,"ui_set_value",
+            Outcome::Unknown,109).unwrap();
+        assert!(store.reserve_prepared(&grant,&read,110).is_err());
+    }
+
     #[test]
     fn m13_real_uia_root_bindings_require_independent_exact_process_generation(){
         let good=serde_json::json!([{
