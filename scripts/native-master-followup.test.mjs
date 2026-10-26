@@ -834,7 +834,7 @@ test("Batch 07 invalid provider tool is blocked BEFORE native preparation",async
  assert.equal(s.calls.filter(c=>c.name==="prepare_tool").length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.approval.hidden,true);
- assert.match(s.transport.getReplies("bad-proposal")[0],/preparation failed/);
+ assert.match(s.transport.getReplies("bad-proposal")[0],/कोई नया Action नहीं चला/);
 });
 test("Batch 07 first mismatched Rust prepared tool cannot create approval",async()=>{
  const s=setup({first:launch,wrongStageIndex:1});
@@ -843,7 +843,7 @@ test("Batch 07 first mismatched Rust prepared tool cannot create approval",async
  assert.equal(s.calls.filter(c=>c.name==="prepare_tool").length,1);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.approval.hidden,true);
- assert.match(s.transport.getReplies("wrong-initial-kind")[0],/tool preparation failed or its outcome is unknown/);
+ assert.match(s.transport.getReplies("wrong-initial-kind")[0],/कोई नया Action नहीं चला/);
 });
 test("Batch 07 continuation rejects mismatched prepared kind after audited first step",async()=>{
  const read={content:'{"tool":"ui_windows","arguments":{}}',provider:"xkiro",

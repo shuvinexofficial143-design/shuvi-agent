@@ -75,8 +75,8 @@ test("successful paid AI reply remains acknowledged when tool prepare fails", as
   const result = await transport.send("Open Notepad", "thread-1", 0);
   assert.equal(result.ok, true, "AI success must never become a draft after tool failure");
   assert.match(result.reply, /I can help with that/);
-  assert.match(result.reply, /tool preparation failed or its outcome is unknown/);
-  assert.match(transport.getReplies("thread-1")[0], /Do not resend this paid AI message/);
+  assert.match(result.reply, /कोई नया Action नहीं चला/);
+  assert.match(transport.getReplies("thread-1")[0], /अनचाहा Paid Request नहीं करूँगी/);
   assert.equal(mock.calls.filter(c => c === "chat").length, 1);
   assert.equal(mock.calls.filter(c => c === "prepare_tool").length, 1);
   assert.equal(mock.calls.includes("execute_action"), false);

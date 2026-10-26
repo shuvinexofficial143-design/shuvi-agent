@@ -29,7 +29,8 @@ test("unrecognized model JSON never implies Windows action executed",()=>{
   assert.match(ts,/AI tool response rejected/);
   assert.match(ts,/Windows outcome is NOT unknown/);
   assert.match(ts,/No Windows action was prepared or executed/);
-  assert.match(ts,/showActionFeedback\("AI replied but Windows could not prepare/);
+  assert.match(ts,/showActionFeedback\("AI का जवाब मिला, लेकिन Windows Action तैयार नहीं हुआ/);
+  assert.match(ts,/कोई नया Action नहीं चला/);
 });
 test("manual Allow once is still required before any native execute command",()=>{
   const src=ts.slice(ts.indexOf("async function decide("),ts.indexOf("approve.addEventListener("));
