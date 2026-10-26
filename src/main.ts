@@ -3832,6 +3832,7 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   projectReopenEvidence=null;
   renderPremiereProjectProofProgress();
   await revokeNativeTaskReads(stoppingReadTaskId);
+  await revokeNativeUiTaskRead(stoppingReadTaskId);
   if(!stillStopping())return;
 
   if(stoppingPending&&stoppingProposal){

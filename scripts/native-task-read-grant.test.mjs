@@ -89,6 +89,7 @@ test("Owner can revoke read reuse explicitly without aborting a running task",()
   assert.match(ui,/id="revokeTaskReadGrants" type="button" disabled/);
   assert.match(ui,/el<HTMLButtonElement>\("#revokeTaskReadGrants"\)\.addEventListener\("click",async/);
   assert.match(ui,/const confirmed=await revokeNativeTaskReads\(taskId\)/);
-  assert.match(ui,/button\.textContent=confirmed\?"Read grants revoked":"Read reuse disabled; Rust revoke unconfirmed"/);
+  assert.match(ui,/const nativeScopeRevoked=await revokeNativeUiTaskRead\(taskId\)/);
+  assert.match(ui,/button\.textContent=confirmed&&nativeScopeRevoked\?"Read grants revoked":"Read reuse disabled; Rust revoke unconfirmed"/);
   assert.match(ui,/el<HTMLButtonElement>\("#revokeTaskReadGrants"\)\.disabled=false/);
 });
