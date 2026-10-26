@@ -584,7 +584,8 @@ test("Premiere opening has separate detect, launch and window-inspection approva
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2,
   "window inspection must NOT happen before a third approval");
  await until(()=>s.approval.hidden===false,"third action approval visible");
- assert.match(s.transport.getReplies("premiere-inspect")[0],/window inspection|readback/i);
+ assert.match(s.transport.getReplies("premiere-inspect")[0],/ऐप की खुली हुई विंडो जाँच रही हूँ/);
+ assert.doesNotMatch(s.transport.getReplies("premiere-inspect")[0],/\bPID\b|\bHWND\b|RuntimeId|PowerShell|\{\s*"tool"/);
 });
 
 test("audited failed read-only UI lookup stages window recovery without paying AI again",async()=>{
