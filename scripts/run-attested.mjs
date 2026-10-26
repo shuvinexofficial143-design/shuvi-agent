@@ -18,6 +18,8 @@ export function commandPlan(scope){
   const frontend=[
     {name:"validate",command:process.platform==="win32"?"npm.cmd":"npm",args:["run","validate"]},
     {name:"node_tests",command:process.platform==="win32"?"npm.cmd":"npm",args:["test"]},
+    // BUG-025: run the independent web-dashboard suite in exact-HEAD frontend/full attestation.
+    {name:"dashboard_tests",command:process.platform==="win32"?"npm.cmd":"npm",args:["--prefix","web-dashboard","test"]},
     {name:"frontend_build",command:process.platform==="win32"?"npm.cmd":"npm",args:["run","build"]},
   ];
   const rust=[

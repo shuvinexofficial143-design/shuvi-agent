@@ -13,9 +13,9 @@ function passingCommands(scope){
 }
 
 test("attestation scopes use closed command plans",()=>{
-  assert.deepEqual(commandPlan("frontend").map(v=>v.name),["validate","node_tests","frontend_build"]);
+  assert.deepEqual(commandPlan("frontend").map(v=>v.name),["validate","node_tests","dashboard_tests","frontend_build"]);
   assert.deepEqual(commandPlan("rust").map(v=>v.name),["cargo_check","cargo_tests"]);
-  assert.deepEqual(commandPlan("full").map(v=>v.name),["validate","node_tests","frontend_build","cargo_check","cargo_tests"]);
+  assert.deepEqual(commandPlan("full").map(v=>v.name),["validate","node_tests","dashboard_tests","frontend_build","cargo_check","cargo_tests"]);
   assert.equal(parseScope(["--scope","rust"]),"rust");
   assert.throws(()=>parseScope(["--scope","unknown"]));
 });

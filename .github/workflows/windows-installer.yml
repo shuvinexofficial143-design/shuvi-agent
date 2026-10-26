@@ -9,6 +9,7 @@ permissions:
 jobs:
   build-installer:
     runs-on: windows-latest
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,14 +18,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - uses: dtolnay/rust-toolchain@stable
-
       - name: Install locked frontend dependencies
         run: npm ci
 
-      - name: Verify exact release commit
+      - name: Verify exact source and dashboard test suites
         run: npm run verify:full
+      - name: BUG-016 build only the fixed SHA-pinned NSIS path
+        run: npm run build:windows-installer
+      - name: Verify installation, immutable worker and uninstall on disposable CI
+        env:
+          SHUVI_M62_EPHEMERAL_CI: "1"
+        run: node scripts/windows-m62-real-nsis-install-acceptance.mjs
+
+      - name: Stage only checked unsigned installer with exact SHA witness
+        shell: pwsh
+        run: |
+          $manifests = @(Get-ChildItem -LiteralPath .shuvi-release -Filter 'shuvi-pinned-nsis-*.json' -File)
+          if ($manifests.Count -ne 1) { throw 'Expected exactly one pinned NSIS manifest.' }
+          $manifest = Get-Content -LiteralPath $manifests[0].FullName -Raw | ConvertFrom-Json
+          $nsisDir = Join-Path $PWD "src-tauri\target\$($manifest.target)\release\bundle\nsis"
+          $installer = Join-Path $nsisDir $manifest.installerFilename
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'Pinned NSIS installer is missing.' }
+          $actualSha = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha -ne $manifest.installerSha256) { throw 'Installer SHA-256 is not manifest-matched.' }
+          $stage = Join-Path $PWD '.shuvi-test-installer'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item -LiteralPath $installer -Destination (Join-Path $stage $manifest.installerFilename) -Force
+          Copy-Item -LiteralPath $manifests[0].FullName -Destination (Join-Path $stage $manifests[0].Name) -Force
 
       - name: Upload full verification attestation
         if: always()
@@ -32,14 +53,19 @@ jobs:
         with:
           name: full-test-attestation
           path: .shuvi-attest/full-*.json
-          if-no-files-found: error
-
-      - name: Build NSIS installer
-        run: npx tauri build --bundles nsis
-
-      - name: Upload Windows installer
+          if-no-files-found: warn
+          include-hidden-files: true
+      - name: Upload exact tested UNSIGNED installer and SHA manifest
         uses: actions/upload-artifact@v4
         with:
-          name: shuvi-windows-installer
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          name: SHUVI62-UNSIGNED-PINNED-TEST-INSTALLER
+          path: .shuvi-test-installer/*
           if-no-files-found: error
+          retention-days: 3
+      - name: Upload M62/M63 test witnesses (not production approval)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shuvi62-manual-nsis-content-witnesses
+          path: .shuvi-release/*.json
+          if-no-files-found: warn

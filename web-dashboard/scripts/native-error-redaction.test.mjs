@@ -77,3 +77,23 @@ test("Native Chat hides raw and duplicate tool JSON while retaining approval wor
  assert.match(duplicate,/No Windows action was prepared or executed/);
  assert.doesNotMatch(duplicate,/notepad\.exe/);
 });
+
+test("BUG-014: full Basic/Digest/unknown Authorization headers are redacted before display and logs",async()=>{
+ const {redactNativeOutput,redactNativeMessage}=await import("../src/native-error-redaction.mjs");
+ const credential=["alpha","bravo","charlie","delta"].join("");
+ for(const redact of [redacted,redactNativeOutput,redactNativeMessage]){
+  for(const raw of [
+   "Provider returned 401: Authorization: Basic "+credential+"==\nstatus unauthorized",
+   "AUTHORIZATION: Digest username="+credential+", nonce="+credential+"\r\nstatus 401",
+   "Authorization:\n Basic "+credential+"\nrequest denied",
+   "authorization = Custom "+credential+"\nstatus: 403",
+   "Authorization: Bearer "+credential+"\nprovider error"
+  ]){
+   const safe=redact(raw);
+   assert.ok(!safe.includes(credential),"Authorization value leaked in native diagnostic");
+   assert.match(safe,/\[REDACTED_AUTHORIZATION\]/);
+   assert.match(safe,/status|request denied|provider error/i);
+  }
+ }
+ assert.equal(redacted("UI lookup failed: name not found"),"UI lookup failed: name not found");
+});
