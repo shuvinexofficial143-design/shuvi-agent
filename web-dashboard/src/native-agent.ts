@@ -5,7 +5,7 @@
  */
 import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
 import {admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from "../../src/master-autonomy-contract.mjs";
-import {checkOpeningToolSelection,preparationFailureMessage} from "./native-preparation-policy.mjs";
+import {checkOpeningToolSelection,preparationFailureMessage,safePreparationChatMessage} from "./native-preparation-policy.mjs";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,completeAuditedYouTubePage,completeAuditedYouTubeSearch,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
@@ -1178,7 +1178,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     event:"orchestration_stopped",tool:response.tool_proposal.tool,
     detail:("Native preparation failed without execution: "+redactNativeError(error)).slice(0,1100)
    });}catch{/* a missing audit never authorizes retry */}
-   appendReply(task.threadId,task.promptIndex,preparationFailureMessage(saved));
+   appendReply(task.threadId,task.promptIndex,safePreparationChatMessage(saved,error));
    showActionFeedback("Native preparation failed. Details: Activity/Audit. No automatic replay.");
   }
  }
@@ -2257,11 +2257,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       // possibly-executed Windows mutation.
       const saved=await persistRecovery(taskBudget,"paused");
       updateTask(threadId,pauseTask(createTask(),saved?"prepare_failed":"recovery_journal_failed"));
-      showActionFeedback("AI replied but Windows could not prepare its action: "+redactNativeError(error)+
-       ". Nothing executed. Check the action details; do not resend this paid request blindly.");
+      showActionFeedback("AI का जवाब मिला, लेकिन Windows Action तैयार नहीं हुआ। कोई नया Action नहीं चला। तकनीकी विवरण Activity/Audit में देखें।");
       // The paid model response already arrived. A separate Windows prepare failure
       // cannot turn that successful AI response into an unsent draft/retry.
-      const notice="Windows tool preparation failed or its outcome is unknown. No execute command was sent. Do not resend this paid AI message just to retry the tool.";
+      const notice=safePreparationChatMessage(saved,error)+
+       " AI का मिला हुआ जवाब दोबारा भेजकर अनचाहा Paid Request नहीं करूँगी।";
       const proposalError=redactNativeError(error);
       const acknowledgedReply=reply+"\n\n"+
        (proposalError.includes("replace the original user objective")
