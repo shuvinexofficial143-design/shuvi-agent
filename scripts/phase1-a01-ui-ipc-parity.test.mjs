@@ -25,6 +25,7 @@ const uniqueNames=[
   "finalize_native_task_delivery",
   "get_workspace",
   "issue_native_read_task_scope",
+  "issue_native_value_task_scope",
   "issue_task_read_grant",
   "list_providers",
   "load_session_checkpoint",

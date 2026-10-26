@@ -126,7 +126,7 @@ pub(crate) fn native_value_prepared(task:&str,id:&str,tool:&str,
     };
     if tool!="ui_set_value"||!label(window,100)||!label(control,100)||
         control.contains('*')||control.contains('?')||
-        bound.automation_id!=*control||bound.hwnd<=0||
+        bound.automation_id.as_str()!=control.as_str()||bound.hwnd<=0||
         bound.pid==0||bound.process_start_ticks<=0{
         return Err("Native UIA control identity does not match prepared edit.".into());
     }
@@ -502,7 +502,10 @@ mod tests {
     fn action(task:&str,tool:&str,app:&str,path:Option<&str>)->PreparedAction{
         PreparedAction{task_id:task.into(),action_id:id(),tool:tool.into(),
             application:app.into(),exact_file:path.map(str::to_owned),
-            control_id:None,native_root:None}
+            control_id:if matches!(tool,"ui_find"|"ui_set_value"){Some("Save".into())}else{None},
+            native_root:if tool=="ui_set_value"{
+                Some(NativeReadRoot{hwnd:42,pid:24,start_ticks:"8675309".into()})
+            }else{None}}
     }
     #[test]
     fn exact_owner_consent_is_finite_and_never_renewed_silently(){
