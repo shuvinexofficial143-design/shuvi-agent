@@ -46,7 +46,7 @@ fn is_exact_local_windows_file(s:&str)->bool{
     let b=s.as_bytes();
     if s.len()<6||s.len()>260||b.len()<6||!b[0].is_ascii_alphabetic()||
         b[1]!=b':'||b[2]!=b'\\'||s.ends_with('\\')||s.contains('/')||
-        s.contains(':',2)||s.chars().any(char::is_control){return false;}
+        s[2..].contains(':')||s.chars().any(char::is_control){return false;}
     let mut count=0;
     for component in s[3..].split('\\'){
         if component.is_empty()||component=="."||component==".."||
@@ -308,13 +308,8 @@ mod tests {
     }
     #[test]
     fn risk_and_duration_cannot_be_inferred_or_wildcarded(){
-        for mut bad in [scope(),scope(),scope(),scope(),scope()] {
-            match bad.max_actions {
-                3 if bad.tools.len()==5=>{bad.valid_for_ms=MAX_DURATION_MS+1;},
-                _=>{}
-            }
-            assert!(bad.validate().is_err());
-        }
+        let mut bad=scope();bad.valid_for_ms=MAX_DURATION_MS+1;
+        assert!(bad.validate().is_err());
         let mut bad=scope();bad.applications=vec!["*".into()];assert!(bad.validate().is_err());
         let mut bad=scope();bad.tools.push("shell".into());assert!(bad.validate().is_err());
         let mut bad=scope();bad.risks.retain(|x|*x!=Risk::FileEdit);assert!(bad.validate().is_err());
