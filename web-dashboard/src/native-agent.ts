@@ -5,7 +5,7 @@
  */
 import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
 import {admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from "../../src/master-autonomy-contract.mjs";
-import {checkOpeningToolSelection,preparationFailureMessage,safePreparationChatMessage} from "./native-preparation-policy.mjs";
+import {checkOpeningToolSelection,safePreparationChatMessage} from "./native-preparation-policy.mjs";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,completeAuditedYouTubePage,completeAuditedYouTubeSearch,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
