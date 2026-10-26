@@ -13,6 +13,7 @@ import {buildBoundedContinuationContext,isWithinRustLimit} from "./native-contin
 import {verifiedSimpleOpening} from "./native-opening-completion.mjs";
 import {auditedYouTubeLaunch,youtubeReadbackProposal,verifiedYouTubeHome,youtubeSearchReadbackProposal,verifiedYouTubeSearch} from "./native-browser-completion.mjs";
 import {premiereUiReadback,auditedPremiereUiReady} from "./native-premiere-readiness.mjs";
+import {nativeReadProgress} from "./native-human-progress.mjs";
 import {verifiedSimpleNotepadOpening,strictlySimplePremiereOpening} from "./native-opening-completion.mjs";
 import {classifyNativeProviderFailure} from "./native-provider-failure.mjs";
 import {newApplicationContinuity,recordAuditedApplication,selectApplicationContinuity,continuityReadback,continuityHint,confirmedContinuityHint,checkConfirmedContinuity} from "./native-application-continuity.mjs";
@@ -1035,7 +1036,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(followupRoot)taskGoalRoots.set(task.threadId,followupRoot);
   else taskGoalRoots.delete(task.threadId);
   histories.set(task.threadId,[...(plannedReadback?prev:messages),{role:"assistant",content:answer}].slice(-22));
-  appendReply(task.threadId,task.promptIndex,(plannedReadback?"Native readback step:\n":"Master next step:\n")+answer);
+  appendReply(task.threadId,task.promptIndex,
+    plannedReadback?nativeReadProgress(plannedReadback):"Master next step:\n"+answer);
   if(!response.tool_proposal){
    const paused=await persistRecovery(taskBudget,"paused",task.action.id);
    if(paused)showOwnerCompletionChoice(taskBudget,task.action.id);

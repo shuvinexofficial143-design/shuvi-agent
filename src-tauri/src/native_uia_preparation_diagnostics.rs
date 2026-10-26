@@ -34,6 +34,19 @@ pub(crate) fn numeric_timing_note(stderr:&[u8])->Option<String>{
     }
     None
 }
+pub(crate) fn numeric_discovery_timing_note(stderr:&[u8])->Option<String>{
+    if stderr.len()>4096{return None;}
+    let content=std::str::from_utf8(stderr).ok()?;
+    for line in content.lines(){
+        let Some(values)=line.strip_prefix("SHUVI_UIA_DISCOVERY_SCAN ")else{continue};
+        let mut pieces=values.split_whitespace();
+        let nodes=pieces.next()?.strip_prefix("nodes=")?.parse::<u32>().ok()?;
+        let elapsed=pieces.next()?.strip_prefix("elapsed_ms=")?.parse::<u64>().ok()?;
+        if pieces.next().is_some()||nodes>1200||elapsed>30_000{return None;}
+        return Some(format!("SHUVI_UIA_DISCOVERY_SCAN nodes={nodes} elapsed_ms={elapsed}"));
+    }
+    None
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -49,6 +62,16 @@ mod tests{
         assert!(classify_rejection(b"SHUVI_UIA_PREPARE_BOUNDED").contains("BOUNDED"));
         assert!(classify_rejection(b"SHUVI_UIA_PREPARE_AMBIGUOUS").contains("AMBIGUOUS"));
         assert!(!classify_rejection(b"secret-password-user-private-window").contains("private-window"));
+    }
+    #[test]
+    fn discovery_timing_is_integer_only_bounded_and_cannot_include_private_ui_labels(){
+        assert_eq!(
+            numeric_discovery_timing_note(b"SHUVI_UIA_DISCOVERY_SCAN nodes=13 elapsed_ms=42\r\n"),
+            Some("SHUVI_UIA_DISCOVERY_SCAN nodes=13 elapsed_ms=42".into())
+        );
+        assert!(numeric_discovery_timing_note(b"SHUVI_UIA_DISCOVERY_SCAN nodes=1201 elapsed_ms=1").is_none());
+        assert!(numeric_discovery_timing_note(b"SHUVI_UIA_DISCOVERY_SCAN nodes=13 elapsed_ms=2 private=title").is_none());
+        assert!(numeric_discovery_timing_note(b"SHUVI_UIA_DISCOVERY_SCAN nodes=13 elapsed_ms=999999").is_none());
     }
     #[test]
     fn timing_exposes_only_bounded_integers_and_refuses_trailing_data(){

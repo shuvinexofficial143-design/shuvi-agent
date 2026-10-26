@@ -11884,6 +11884,11 @@ foreach ($item in $items) {{
 Assert-ShuviObservedWindow
 ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
             let output = run_hidden_powershell(&script)?;
+            if let Some(note)=native_uia_preparation_diagnostics::numeric_discovery_timing_note(&output.stderr){
+                // Only fixed markers and bounded numbers; no UI labels,
+                // control values or provider stderr in user-visible Chat.
+                eprintln!("{note}");
+            }
             if !output.status.success() {
                 return Err(format!("UI discovery failed: {}",String::from_utf8_lossy(&output.stderr)));
             }
