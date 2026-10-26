@@ -21449,9 +21449,8 @@ fn issue_native_read_task_scope(
         .map_err(|_|"Prepared owner task action state unavailable.")?;
     let original=pending.get(&origin_action_id)
         .ok_or("Owner must review a currently prepared read-only UIA action.")?;
-    if now_ms().saturating_sub(original.created_at_ms)>PENDING_ACTION_TTL_MS||
-       original.native_uia_target.is_none(){
-        return Err("Original UIA read preparation expired or lacks an OS-bound target.".into());
+    if now_ms().saturating_sub(original.created_at_ms)>PENDING_ACTION_TTL_MS{
+        return Err("Original UIA read preparation expired.".into());
     }
     let selected=native_task_grant::task_authorization::native_read_target(&original.action)
         .ok_or("Original action is not a bound named native read.")?;
@@ -21996,9 +21995,10 @@ async fn execute_action(
             }
             if let Some(scope_id)=task_scope_id.as_deref(){
                 let task=task_id.as_deref().ok_or("Scoped read requires exact task UUID.")?;
-                if prepared.native_uia_target.is_none(){
-                    return Err("Task scope UIA action lacks separately bound OS window identity.".into());
-                }
+                // Unlike mutating UIA, safe read-only ui_find/ui_discover
+                // establish native window generation in independently audited
+                // stdout; prepare_native_uia_binding intentionally returns
+                // None for these non-mutating variants.
                 let action=native_task_grant::task_authorization::native_read_prepared(
                     task,&action_id,&prepared.tool,&prepared.action)?;
                 let recovery=native_recovery::load(&app)?;
@@ -22294,6 +22294,21 @@ async fn execute_action(
     // window. Verify the OS-attested root across the WHOLE task-scoped
     // sequence before publishing a successful Rust action audit or returning
     // any observed controls to the renderer. Uncertain reads fail closed.
+    // M1.3: a task-wide read is never accepted on a title match alone.
+    // The native UIA PowerShell script includes real HWND/PID/process-birth
+    // in each row; verify it in Rust before the successful action audit.
+    let execution=match execution {
+        Ok(result) if task_scope_id.is_some()&&result.success=>{
+            match (task_scope_id.as_deref(),task_id.as_deref()){
+                (Some(scope),Some(task))=>state.task_authorizations.lock()
+                    .map_err(|_|"Native read task output verification unavailable.")?
+                    .verify_native_read_output(task,scope,&action_id,&result.tool,&result.stdout,now_ms())
+                    .map(|_|result),
+                _=>Err("Read task identity lost before independent UIA verification.".into()),
+            }
+        },
+        other=>other,
+    };
     let execution=match execution {
         Ok(result) if project_scope_id.is_some()&&result.success=>{
             match (project_scope_id.as_deref(),task_id.as_deref(),read_workspace(&app)){

@@ -18,8 +18,8 @@ test("M1.3 real Rust dispatch accepts only separate native OS-approved task scop
 });
 test("M1.3 native scope does not delegate mutation or anonymous windows",()=>{
  assert.match(src,/M1\.3 only delegates named read-only UIA inspections/);
- assert.match(src,/original\.native_uia_target\.is_none\(\)/);
- assert.match(src,/prepared\.native_uia_target\.is_none\(\)/);
+ assert.match(auth,/fn observed_read_root\(stdout:&str\)/);
+ assert.match(src,/verify_native_read_output\(task,scope,&action_id,&result\.tool,&result\.stdout,now_ms\(\)\)/);
  assert.match(src,/owner_checkpoint_allows\(/);
  assert.match(auth,/pub\(crate\) fn native_read_target\(action:&crate::ToolAction\)/);
  assert.match(auth,/UiDiscover\{window\}/);

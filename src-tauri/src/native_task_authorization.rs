@@ -10,6 +10,7 @@
 //! typing, filesystem edits and browser writes still require legacy approval.
 use std::collections::{HashMap,HashSet};
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 pub(crate) const MAX_DURATION_MS:u64=10*24*60*60*1000;
@@ -153,6 +154,41 @@ pub(crate) struct PreparedAction {
 pub(crate) enum Outcome { AuditedSuccess, AuditedFailure, Unknown }
 #[derive(Clone)]
 struct Pending {id:String,tool:String}
+#[derive(Clone,Debug,PartialEq,Eq)]
+struct NativeReadRoot { hwnd:u64,pid:u64,start_ticks:String }
+// Only a real UIA stdout blob from native execute_tool may reach this
+// verifier. It cannot be populated by a model, cached screenshot or status.
+fn observed_read_root(stdout:&str)->Result<NativeReadRoot,String>{
+    if stdout.is_empty()||stdout.len()>250_000{
+        return Err("Native UIA output absent or exceeded bounded read budget.".into());
+    }
+    let json:Value=serde_json::from_str(stdout)
+        .map_err(|_|"Native UIA output was not a structured readback.")?;
+    let rows:Vec<&Value>=match &json{
+        Value::Array(items) if !items.is_empty()&&items.len()<=160=>
+            items.iter().collect(),
+        Value::Object(_)=>vec![&json],
+        _=>return Err("Native UIA response has no bounded control rows.".into())
+    };
+    let mut known=None;
+    for row in rows {
+        let hwnd=row.get("ObservedWindowHwnd").and_then(Value::as_u64)
+            .filter(|n|*n>0).ok_or("Native UIA read missing bound HWND.")?;
+        let pid=row.get("ObservedWindowPid").and_then(Value::as_u64)
+            .filter(|n|*n>0&&*n<=u32::MAX as u64)
+            .ok_or("Native UIA read missing bound PID.")?;
+        let started=row.get("ObservedWindowProcessStartTicks")
+            .and_then(Value::as_str).filter(|t|!t.is_empty()&&t.len()<=24&&
+                *t!="0"&&t.bytes().all(|b|b.is_ascii_digit()))
+            .ok_or("Native UIA read missing process birth-time proof.")?;
+        let value=NativeReadRoot{hwnd,pid,start_ticks:started.to_string()};
+        if known.as_ref().is_some_and(|root|root!=&value){
+            return Err("Native UIA control batch mixes multiple OS processes.".into());
+        }
+        known=Some(value);
+    }
+    known.ok_or("No verified native UIA process witness.".into())
+}
 struct Grant {
     scope:OwnerScope,
     scope_id:String,
@@ -163,6 +199,7 @@ struct Grant {
     estimated_ai_micro_usd:u64,
     observed_ids:HashSet<String>,
     pending:Option<Pending>,
+    read_root:Option<NativeReadRoot>,
     paused:bool,
 }
 #[derive(Default)]
@@ -191,7 +228,7 @@ impl Store {
         self.active.insert(scope.task_id.clone(),Grant{
             scope,scope_id:id.clone(),deadline_ms:expiry,last_observed_ms:now,
             actions:0,requests:0,estimated_ai_micro_usd:0,
-            observed_ids:HashSet::new(),pending:None,paused:false
+            observed_ids:HashSet::new(),pending:None,read_root:None,paused:false
         });
         Ok(id)
     }
@@ -254,6 +291,31 @@ impl Store {
         // inter-process UUID exclusion and cannot be replaced by this check.
         self.reserve_prepared(scope_id,action,now)
     }
+    /// Only the native executor calls this after the real read-only tool ran.
+    /// Same-window title is never enough: exact root HWND, PID and process
+    /// generation must match the first independently audited observation.
+    pub(crate) fn verify_native_read_output(&mut self,task:&str,scope_id:&str,
+        action_id:&str,tool:&str,stdout:&str,now:u64)->Result<(),String>{
+        let root=observed_read_root(stdout)?;
+        let grant=self.grant(task,scope_id,now)?;
+        let pending=grant.pending.as_ref()
+            .ok_or("Task readback has no awaiting exact native action.")?;
+        if pending.id!=action_id||pending.tool!=tool||
+           !matches!(tool,"ui_find"|"ui_discover"){
+            grant.paused=true;
+            return Err("Foreign UIA readback cannot confirm a native task step.".into());
+        }
+        if let Some(previous)=&grant.read_root{
+            if previous!=&root{
+                grant.paused=true;
+                return Err("Native UIA target restarted or changed; task safely paused.".into());
+            }
+        }else{
+            grant.read_root=Some(root);
+        }
+        Ok(())
+    }
+
     /// The transition is private: an external WebView, scheduler or AI plan
     /// cannot supply a claimed "success" to the M1 task scope.
     fn record_audit(&mut self,task:&str,scope_id:&str,
@@ -512,6 +574,40 @@ mod tests {
             name:Some("Save".into()),automation_id:None};
         assert!(native_read_prepared(&t,&aid,"ui_click",&mutation).is_err());
     }
+    #[test]
+    fn m13_real_uia_root_bindings_require_independent_exact_process_generation(){
+        let good=serde_json::json!([{
+            "Name":"Save","ObservedWindowHwnd":987,"ObservedWindowPid":1234,
+            "ObservedWindowProcessStartTicks":"123456789012"
+        }]).to_string();
+        assert_eq!(observed_read_root(&good).unwrap().hwnd,987);
+        for payload in [
+            "[]".to_string(),
+            serde_json::json!({"Name":"Save","ObservedWindowHwnd":987,
+              "ObservedWindowPid":1234}).to_string(),
+            serde_json::json!([{"ObservedWindowHwnd":987,"ObservedWindowPid":1234,
+              "ObservedWindowProcessStartTicks":"123456789012"},
+              {"ObservedWindowHwnd":988,"ObservedWindowPid":1234,
+              "ObservedWindowProcessStartTicks":"123456789012"}]).to_string(),
+            serde_json::json!({"ObservedWindowHwnd":987,"ObservedWindowPid":1234,
+              "ObservedWindowProcessStartTicks":"FAKE"}).to_string()
+        ]{
+            assert!(observed_read_root(&payload).is_err());
+        }
+        let mut store=Store::default();let original=scope();let task=original.task_id.clone();
+        let id=store.issue(original,100).unwrap();
+        let a=action(&task,"ui_find","Notepad",None);
+        store.reserve_prepared(&id,&a,101).unwrap();
+        store.verify_native_read_output(&task,&id,&a.action_id,"ui_find",&good,102).unwrap();
+        store.record_audit(&task,&id,&a.action_id,"ui_find",Outcome::AuditedSuccess,103).unwrap();
+        let b=action(&task,"ui_find","Notepad",None);
+        store.reserve_prepared(&id,&b,104).unwrap();
+        let changed=good.replace("123456789012","123456789013");
+        assert!(store.verify_native_read_output(&task,&id,&b.action_id,
+            "ui_find",&changed,105).is_err());
+        assert!(store.reserve_prepared(&id,&action(&task,"ui_find","Notepad",None),106).is_err());
+    }
+
     #[test]
     fn one_live_action_clock_reversal_and_bounded_count_fail_closed(){
         let mut s=Store::default();let o=scope();let task=o.task_id.clone();
