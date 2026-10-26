@@ -67,6 +67,7 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
  // This is an extra provenance barrier beyond the dashboard invalidation.
  if(readActionId!==null){
   if(typeof readActionId!=="string"||!readActionId||readActionId===pending.sourceActionId||
+     readActionId===pending.windowSourceActionId||
      readActionId===pending.controlSourceActionId||
      typeof pending.windowSourceActionId!=="string"||!pending.windowSourceActionId||
      !windowSession||windowSession.sourceTool!=="ui_windows"||
