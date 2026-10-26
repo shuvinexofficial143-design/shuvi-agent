@@ -26,7 +26,7 @@ test("post-execution project root check precedes native audit and old shell stay
  const check=lib.indexOf(".confirm(task,scope,&action_id,&root)");
  const audit=lib.indexOf('event: "executed".into()',check);
  assert.ok(check>=0&&audit>check);
- assert.ok(lib.includes("execute_action(action_id, None, None, None, None, None, None, state, app).await"));
+ assert.ok(lib.includes("execute_action(action_id, None, None, None, None, None, None, None, state, app).await"));
 });
 
 test("project grant cannot silently renew after 8 uses or expiry; redirected ancestor blocked",()=>{

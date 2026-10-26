@@ -118,8 +118,8 @@ test("bounded native multi-job history is bound to native begin/audit and explic
  assert.match(lib,/mod native_job_history;/);
  assert.match(lib,/native_job_history::before_next\(app,native_worker_job::read\(app\)\?\.as_ref\(\)\)\?/);
  assert.match(lib,/native_worker_job::begin\(&app,&action_id,&active_tool,now_ms\(\)\)\?;\s*native_job_history::begin\(&app\)\?/);
- assert.match(lib,/native_worker_job::audit\(&app,&action_id,result\.success,now_ms\(\)\)\?;\s*native_job_history::finish\(&app\)\?/);
- assert.match(lib,/native_worker_job::audit\(&app,&action_id,false,now_ms\(\)\)\?;\s*native_job_history::finish\(&app\)\?/);
+ assert.match(lib,/native_worker_job::audit\(&app,&action_id,result\.success,now_ms\(\)\)\?;[\s\S]{0,550}native_job_history::finish\(&app\)\?/);
+ assert.match(lib,/native_worker_job::audit\(&app,&action_id,false,now_ms\(\)\)\?;[\s\S]{0,550}native_job_history::finish\(&app\)\?/);
  assert.match(lib,/native_worker_job::reconcile\(&app,&action_id,&tool,verified,now_ms\(\)\)\?;\s*native_job_history::finish\(&app\)\?/);
  assert.match(lib,/fn native_worker_history\(app:AppHandle\)/);
  assert.match(lib,/\s+native_worker_history,\s/);

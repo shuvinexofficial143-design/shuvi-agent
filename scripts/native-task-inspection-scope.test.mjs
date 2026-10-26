@@ -26,7 +26,7 @@ test("inspection scope is read-only, bounded and non-billing",()=>{
 });
 
 test("legacy manual PowerShell wrapper supplies explicit empty inspection scope",()=>{
- assert.ok(lib.includes("execute_action(action_id, None, None, None, None, None, None, state, app).await"));
+ assert.ok(lib.includes("execute_action(action_id, None, None, None, None, None, None, None, state, app).await"));
  assert.ok(!lib.includes("execute_action(action_id, None, None, None, state, app).await"));
 });
 
