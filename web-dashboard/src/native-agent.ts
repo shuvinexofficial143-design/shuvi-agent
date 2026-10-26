@@ -30,7 +30,7 @@ import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
 import {observedWindowInventory,checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
 import {newAuditedWindowObservation,currentObservedWindows} from "./native-window-observation-session.mjs";
 import {newAuditedControlObservation,checkObservedControlTarget} from "./native-ui-control-session.mjs";
-import {needsUiReadback,newPendingUiReadback,checkPendingUiReadback,auditUiReadback} from "./native-ui-readback-session.mjs";
+import {needsUiReadback,newPendingUiReadback,checkPendingUiReadback,auditUiReadback,scrubPausedUiReadback} from "./native-ui-readback-session.mjs";
 import {auditedNativeUiaExpiry} from "./native-uia-expiry-recovery.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
@@ -744,6 +744,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){
+  // Drop the private text of a failed/abandoned SetValue immediately.
+  // Keep the old mutation readback guard to prevent accidental replay.
+  if(pendingUiReadback.has(id))
+   pendingUiReadback.set(id,scrubPausedUiReadback(pendingUiReadback.get(id)));
   const project=projectScopes.get(id);
   if(project){
    projectScopes.delete(id);autoProjectActionId=null;scopedProjectActionId=null;

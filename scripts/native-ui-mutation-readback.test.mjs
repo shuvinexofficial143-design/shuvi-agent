@@ -60,7 +60,8 @@ test("missing original selector/window and unrelated reads never fall through to
   {...before,hwnd:null},
   {...before,windowSourceActionId:null},
   {...before,controlName:"Text\u202eEditor",automationId:""},
-  {...before,processStartTicks:"0"}
+  {...before,processStartTicks:"0"},
+  {...before,processStartTicks:null}
  ])assert.ok(nextAuditedUiMutationReadback("mutate-1","ui_set_value",modified,null,1100)?.blocked);
  for(const tool of ["ui_find","ui_discover","browser_page_state","ui_click"])
   assert.ok(nextAuditedUiMutationReadback("unrelated-9",tool,before,fresh,1300)?.blocked);

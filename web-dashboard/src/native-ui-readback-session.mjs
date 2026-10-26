@@ -11,6 +11,15 @@ const READS=new Set(["ui_find","ui_discover"]);
 const cleanTitle=t=>exactUiSelector(t)?t:"";
 const findUnique=(rows,title)=>rows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.toLocaleLowerCase("en-US"));
 
+// A paused/denied/stopped task must not retain the owner's UIA SetValue
+// contents indefinitely. Preserve the pending readback fence so an old,
+// unverified mutation never becomes permission for a fresh mutation.
+export function scrubPausedUiReadback(pending){
+ if(!pending||pending.readbackRequired!==true)return null;
+ if(pending.expectedValue==null)return pending;
+ return Object.freeze({...pending,expectedValue:null});
+}
+
 export function needsUiReadback(tool){return MUTATIONS.has(tool);}
 export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.now(),controlSnapshot=null){
  if(!needsUiReadback(proposal?.tool)||typeof actionId!=="string"||!actionId||

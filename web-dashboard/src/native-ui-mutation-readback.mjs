@@ -31,8 +31,7 @@ export function nextAuditedUiMutationReadback(actionId,tool,pending,windows,nowM
  if(!exactUiSelector(pending.title,180)||
     !Number.isSafeInteger(pending.hwnd)||pending.hwnd<=0||
     !Number.isSafeInteger(pending.pid)||pending.pid<=0||
-    (pending.processStartTicks!=null&&
-     normalizedProcessStartTicks(pending.processStartTicks)===null)||
+    normalizedProcessStartTicks(pending.processStartTicks)===null||
     (!exactUiSelector(pending.controlName,180)&&
      !exactUiSelector(pending.automationId,180)))
   return blocked("मूल Window या Control की सुरक्षित पहचान नहीं मिली। नया निरीक्षण आवश्यक है।");
@@ -49,8 +48,7 @@ export function nextAuditedUiMutationReadback(actionId,tool,pending,windows,nowM
    return blocked("UI परिवर्तन के बाद की अलग Windows जाँच सत्यापित नहीं हुई।");
   const matching=currentObservedWindows(windows,nowMs).filter(w=>
    w.title===pending.title&&w.hwnd===pending.hwnd&&w.pid===pending.pid&&
-   (pending.processStartTicks==null||
-    w.processStartTicks===pending.processStartTicks));
+   w.processStartTicks===pending.processStartTicks);
   if(matching.length!==1)
    return blocked("App की पुरानी Window बदल गई है या स्पष्ट नहीं है। अनुमान से Control नहीं चुनूँगी।");
   const args={window:pending.title};
