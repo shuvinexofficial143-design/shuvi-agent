@@ -154,14 +154,17 @@ function renderPremiereProjectProofProgress():void{
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
 // This renderer entry is only a hint; Rust owner-consent is always authoritative.
-let nativeUiTaskRead:{taskId:string;scopeId:string;window:string;expires:number}|null=null;
+let nativeUiTaskRead:{taskId:string;scopeId:string;window:string;control:string|null;expires:number}|null=null;
 function nativeUiTaskWindow(p:ToolProposal):string|null{
- if(!["ui_find","ui_discover"].includes(p.tool))return null;
+ if(!["ui_find","ui_discover","ui_set_value"].includes(p.tool))return null;
  const w=p.arguments?.window;
  if(typeof w!=="string"||!w||w.trim()!==w||w.length>100||
     w.toLowerCase()==="desktop"||/[\\u0000-\\u001f*?]/.test(w))return null;
  if(p.tool==="ui_find"&&![p.arguments?.name,p.arguments?.automation_id]
     .some(v=>typeof v==="string"&&v.trim()))return null;
+ if(p.tool==="ui_set_value"&&
+    !(typeof p.arguments?.automation_id==="string"&&p.arguments.automation_id.trim()&&
+      typeof p.arguments?.value==="string"))return null;
  return w;
 }
 async function revokeNativeUiTaskRead(taskId:string):Promise<boolean>{
@@ -2189,9 +2192,13 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
 
     // Same-window, low-risk read continuation only after owner native dialog.
     const readScope=nativeUiTaskRead;
-    if(!remoteTask&&!cancelRequested&&pendingAction.risk==="low"&&
+    if(!remoteTask&&!cancelRequested&&
        readScope&&readScope.taskId===activePermissionScope.taskId&&
-       readScope.expires>Date.now()&&readScope.window===nativeUiTaskWindow(proposal)){
+       readScope.expires>Date.now()&&readScope.window===nativeUiTaskWindow(proposal)&&
+       (readScope.control===null
+         ?pendingAction.risk==="low"&&["ui_find","ui_discover"].includes(proposal.tool)
+         :["ui_find","ui_set_value"].includes(proposal.tool)&&
+           proposal.arguments?.automation_id===readScope.control)){
       await executePendingProposal(proposal,null,readScope.scopeId);
       return;
     }
@@ -2649,6 +2656,15 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     typeof proposal.task_step_id==="string"&&Boolean(uiGraph)&&
     typeof uiOwner==="string"&&uiOwner.length>0&&uiOwner.length<=2400&&
     Boolean(nativeUiTaskWindow(proposal));
+  const offerUiValueTask=!uiRemote&&pendingAction.risk==="medium"&&
+    proposal.tool==="ui_set_value"&&
+    typeof proposal.task_step_id==="string"&&Boolean(uiGraph)&&
+    typeof uiOwner==="string"&&uiOwner.length>0&&uiOwner.length<=2400&&
+    Boolean(nativeUiTaskWindow(proposal))&&
+    typeof proposal.arguments?.automation_id==="string"&&
+    proposal.arguments.automation_id.trim().length>0&&
+    proposal.arguments.automation_id.length<=100&&
+    !/[*?]/.test(proposal.arguments.automation_id);
   const allowReadGrant = pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
     ["read_file","list_directory","ui_find","list_processes","browser_dom_read",
      "workspace_scan","search_text","git_status","git_diff","premiere_bridge_status",
@@ -2662,6 +2678,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     '<div class="button-row"><button id="chatApprove" class="primary">Allow once</button>',
     ...(allowReadGrant ? ['<button id="chatAllowSession"></button>'] : []),
     ...(offerUiTaskRead?['<button id="chatAllowNativeUiTask">Approve Task UI Reads</button>']:[]),
+    ...(offerUiValueTask?['<button id="chatAllowNativeValueTask">Approve bounded text edits</button>']:[]),
     '<button id="chatDeny">Deny</button></div>'
   ].join("");
   const chatRisk = chatPermission.querySelector<HTMLElement>(".risk");
@@ -2775,7 +2792,52 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
           activePermissionScope.taskId!==ownerTask||cancelRequested){
         await revokeNativeUiTaskRead(ownerTask);return;
       }
-      nativeUiTaskRead={taskId:ownerTask,scopeId,window:windowTitle,expires:Date.now()+1_200_000};
+      nativeUiTaskRead={taskId:ownerTask,scopeId,window:windowTitle,control:null,expires:Date.now()+1_200_000};
+      el<HTMLButtonElement>("#revokeTaskReadGrants").disabled=false;
+      await executePendingProposal(proposal,null,scopeId);
+    };
+  }
+
+  // A separate native Windows dialog discloses SetValue risk and limits
+  // this grant to ONE AutomationId and one named application for <=10 min.
+  const valueButton=chatPermission.querySelector<HTMLButtonElement>("#chatAllowNativeValueTask");
+  if(valueButton){
+    valueButton.onclick=async()=>{
+      if(!uiCurrent()||!pendingAction||!offerUiValueTask)return;
+      const ownerTask=uiScope.taskId,firstAction=uiPending.id;
+      const windowTitle=nativeUiTaskWindow(proposal);
+      const control=proposal.arguments?.automation_id;
+      if(!windowTitle||typeof control!=="string"||typeof uiOwner!=="string")return;
+      valueButton.disabled=true;
+      let scopeId:string;
+      try{
+        const hash=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(uiOwner));
+        const objectiveDigest=Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,"0")).join("");
+        if(!uiCurrent()||pendingAction?.id!==firstAction)return;
+        scopeId=await invoke<string>("issue_native_value_task_scope",{
+          scope:{taskId:ownerTask,ownerConsentId:firstAction,objectiveDigest,
+            applications:[windowTitle],exactFiles:[],exactControls:[control],
+            tools:["ui_find","ui_set_value"],risks:["read_only","ui_mutation"],
+            validForMs:600_000,maxActions:10,maxAiRequests:1,
+            maxEstimatedAiMicroUsd:null},
+          objective:uiOwner,originActionId:firstAction
+        });
+      }catch{
+        if(uiCurrent()){
+          valueButton.disabled=false;
+          const reason=chatPermission.querySelector<HTMLElement>(".permission-reason");
+          if(reason)reason.textContent="Rust ने Text Editing Task की अनुमति नहीं दी। Allow once या Deny चुनें।";
+        }
+        return;
+      }
+      if(!uiCurrent()||pendingAction?.id!==firstAction||
+          activePermissionScope.taskId!==ownerTask||cancelRequested){
+        await revokeNativeUiTaskRead(ownerTask);
+        return;
+      }
+      nativeUiTaskRead={
+        taskId:ownerTask,scopeId,window:windowTitle,control,expires:Date.now()+600_000
+      };
       el<HTMLButtonElement>("#revokeTaskReadGrants").disabled=false;
       await executePendingProposal(proposal,null,scopeId);
     };
