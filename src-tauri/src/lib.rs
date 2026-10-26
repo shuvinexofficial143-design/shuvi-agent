@@ -2830,33 +2830,65 @@ fn ps_single_quote(value: &str) -> String {
 // On an unmatched exact UIA selector, normalize only letter case, spacing
 // and punctuation. Never guess semantic synonyms for a write/click action;
 // let the Master inspect ui_discover and explicitly choose an observed label.
+// BUG-002: GetFirstChild/GetNextSibling traverse incrementally with a finite
+// node/time budget. Never return partial matches when the proof budget expires.
+// This resolver is shared by ui_find AND ALL native UIA mutation tools.
 const UI_ELEMENT_RESOLVE_SCRIPT: &str = r#"
 function Resolve-ShuviUiMatches {
     param($root, $condition)
-    $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    if ($found.Count -gt 0 -or [string]::IsNullOrWhiteSpace($uiRequestedName) -or $uiRequestedAutomationId) {
-        return ,$found
-    }
+    if ($null -eq $root) { throw 'UIA search requires one verified window root.' }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $maxNodes = 2000
+    $maxMs = 8000
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    $stack = [System.Collections.Generic.Stack[System.Windows.Automation.AutomationElement]]::new()
+    $first = $walker.GetFirstChild($root)
+    if ($null -ne $first) { $stack.Push($first) }
+    $found = [System.Collections.Generic.List[System.Windows.Automation.AutomationElement]]::new()
+    $normalized = [System.Collections.Generic.List[System.Windows.Automation.AutomationElement]]::new()
+    $normalizedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $normalize = {
         param([string]$s)
         (($s.ToLowerInvariant() -replace '[^\p{L}\p{Nd}]+',' ') -replace '\s+',' ').Trim()
     }
-    $wanted = & $normalize $uiRequestedName
-    if ($wanted.Length -lt 3) { return ,$found }
-    $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-    $matchingNames = @()
-    for ($i=0; $i -lt [Math]::Min($all.Count, 2000); $i++) {
-        try {
-            $label = [string]$all.Item($i).Current.Name
-            if ([string]::IsNullOrWhiteSpace($label)) { continue }
-            if ((& $normalize $label) -eq $wanted) { $matchingNames += $label }
-        } catch {}
+    $wantNormalized = if ([string]::IsNullOrWhiteSpace($uiRequestedName) -or
+                          -not [string]::IsNullOrWhiteSpace($uiRequestedAutomationId)) {
+        ''
+    } else { & $normalize $uiRequestedName }
+    if ($wantNormalized.Length -lt 3) { $wantNormalized = '' }
+    $seen = 0
+    while ($stack.Count -gt 0) {
+        if ($seen -ge $maxNodes -or $watch.ElapsedMilliseconds -ge $maxMs) {
+            throw ('SHUVI_UIA_RESOLVE_BUDGET_EXCEEDED nodes=' + $seen +
+                   ' elapsed_ms=' + $watch.ElapsedMilliseconds +
+                   '; refused incomplete selector proof; no UI action executed.')
+        }
+        $node = $stack.Pop()
+        $seen++
+        # Provider traversal errors are NOT silently skipped: an unknown
+        # descendant could be an additional matching control.
+        $sibling = $walker.GetNextSibling($node)
+        if ($null -ne $sibling) { $stack.Push($sibling) }
+        $child = $walker.GetFirstChild($node)
+        if ($null -ne $child) { $stack.Push($child) }
+        $name = [string]$node.Current.Name
+        $automationId = [string]$node.Current.AutomationId
+        if (([string]::IsNullOrWhiteSpace($uiRequestedName) -or
+             [string]::Equals($name,$uiRequestedName,[System.StringComparison]::Ordinal)) -and
+            ([string]::IsNullOrWhiteSpace($uiRequestedAutomationId) -or
+             [string]::Equals($automationId,$uiRequestedAutomationId,[System.StringComparison]::Ordinal))) {
+            $found.Add($node)
+        }
+        if ($wantNormalized -ne '' -and
+            -not [string]::IsNullOrWhiteSpace($name) -and
+            (& $normalize $name) -eq $wantNormalized) {
+            $normalized.Add($node)
+            [void]$normalizedNames.Add($name)
+        }
     }
-    $distinct = @($matchingNames | Select-Object -Unique)
-    if ($distinct.Count -ne 1) { return ,$found }
-    $actualCondition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::NameProperty, $distinct[0])
-    return ,($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $actualCondition))
+    if ($found.Count -gt 0) { return ,($found.ToArray()) }
+    if ($normalizedNames.Count -eq 1) { return ,($normalized.ToArray()) }
+    return ,([System.Windows.Automation.AutomationElement[]]@())
 }
 "#;
 
@@ -11390,18 +11422,55 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                 r#"(() => {{
   const selector = {selector_json};
   const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 25);
-  return nodes.map((el, index) => ({{
-    index,
-    tag: el.tagName,
-    id: el.id || null,
-    name: el.getAttribute('name'),
-    role: el.getAttribute('role'),
-    type: el.getAttribute('type'),
-    text: String(el.innerText || el.textContent || '').trim().slice(0, 500),
-    value: ('value' in el) ? String(el.value).slice(0, 500) : null,
-    href: el.href || null,
-    disabled: !!el.disabled
-  }}));
+  // BUG-007: Mask at the CDP collection source, BEFORE stdout, audit,
+  // renderer or any provider sees the DOM payload. Never ask the model
+  // to decide which secret values to redact.
+  const sensitiveHint = /password|passwd|passphrase|secret|token|api.?key|auth|otp|one.?time|credential|private.?key|session.?key|access.?key|cvv|cvc|card.?number|credit.?card|payment|pin(?:code)?/i;
+  const protectedField = (node) => {{
+    if (!node || typeof node.getAttribute !== 'function') return false;
+    const attrs = ['type','name','id','autocomplete','aria-label',
+                   'placeholder','data-testid','data-private','data-secret',
+                   'data-sensitive','formcontrolname','data-1p-ignore'];
+    const hint = attrs.map(key => String(node.getAttribute(key) || '')).join(' ');
+    const type = String(node.getAttribute('type') || '').toLowerCase();
+    const auto = String(node.getAttribute('autocomplete') || '').toLowerCase();
+    return ['password','hidden','file'].includes(type) ||
+      sensitiveHint.test(hint) ||
+      ['current-password','new-password','one-time-code','cc-number',
+       'cc-csc','cc-exp','cc-exp-month','cc-exp-year'].includes(auto) ||
+      node.isContentEditable === true;
+  }};
+  const nestedSecret = (node) => {{
+    // Ancestors must not export text of sensitive descendants, including
+    // custom password widgets and forms returned by broad CSS selectors.
+    try {{
+      return !!node.querySelector?.(
+        'input[type="password" i],input[type="hidden" i],input[type="file" i],'+
+        '[autocomplete*="password" i],[autocomplete="one-time-code" i],'+
+        '[name*="secret" i],[name*="token" i],[name*="password" i],'+
+        '[id*="secret" i],[id*="token" i],[id*="password" i],'+
+        '[data-sensitive],[data-secret],[data-private]'
+      );
+    }} catch {{ return true; }}
+  }};
+  return nodes.map((el, index) => {{
+    const sensitive = protectedField(el) || nestedSecret(el);
+    return {{
+      index,
+      tag: el.tagName,
+      id: sensitive ? null : (el.id || null),
+      name: sensitive ? null : el.getAttribute('name'),
+      role: el.getAttribute('role'),
+      type: el.getAttribute('type'),
+      text: sensitive ? null : String(el.innerText || el.textContent || '').trim().slice(0, 500),
+      value: sensitive ? null : (('value' in el) ? String(el.value).slice(0, 500) : null),
+      // href can include session tokens in query, fragment OR pathname.
+      // Return no untrusted navigation URL in this read-only DOM tool.
+      href: null,
+      disabled: !!el.disabled,
+      redacted: sensitive
+    }};
+  }});
 }})()"#
             );
 
@@ -11926,7 +11995,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
 $shuviReadElements = [System.Collections.Generic.List[object]]::new()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
-    $e = $matches.Item($i)
+    $e = $matches[$i]
     [int[]]$shuviControlRid = $e.GetRuntimeId()
     if ($null -eq $shuviControlRid -or $shuviControlRid.Count -lt 1 -or $shuviControlRid.Count -gt 64) {{
         throw 'UIA control has no valid RuntimeId for independent readback.'
@@ -12022,7 +12091,7 @@ $items | ConvertTo-Json -Compress"#
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
-$e = $matches.Item(0)
+$e = $matches[0]
 Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
@@ -12079,7 +12148,7 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
-$e = $matches.Item(0)
+$e = $matches[0]
 Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
@@ -12133,7 +12202,7 @@ if (-not $shuviValueVerified) {{
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
-$e = $matches.Item(0)
+$e = $matches[0]
 Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
@@ -12188,7 +12257,7 @@ if (-not $shuviFocusVerified) {{
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
-$e = $matches.Item(0)
+$e = $matches[0]
 Assert-ShuviNativeTarget -root $root -element $e
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {{
@@ -12253,7 +12322,7 @@ if (-not $shuviMovementVerified) {{
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
-$e = $matches.Item(0)
+$e = $matches[0]
 Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
@@ -12309,7 +12378,7 @@ if (-not $shuviToggleVerified) {{
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
-$e = $matches.Item(0)
+$e = $matches[0]
 Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
@@ -12368,7 +12437,7 @@ Add-Type -AssemblyName System.Windows.Forms
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
-$e = $matches.Item(0)
+$e = $matches[0]
 Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
