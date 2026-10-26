@@ -25,6 +25,11 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  // a same-label replacement control must never clear post-action readback.
  const observedIdentity=observedControlIdentity(proposal,controlSnapshot,windowSession,nowMs);
  const controlSourceActionId=controlSnapshot?.sourceActionId??null;
+ // Snapshot the owner's intended value only for private, in-memory readback.
+ // A native executed receipt does not show that the same value survived.
+ const rawExpectedValue=proposal?.tool==="ui_set_value"?proposal?.arguments?.value:null;
+ const expectedValue=typeof rawExpectedValue==="string"&&rawExpectedValue.length<=4096
+  ?rawExpectedValue:null;
  const controlRuntimeId=observedIdentity?.runtimeId??null;
  const controlType=observedIdentity?.controlType??null;
  // Bind the readback to the exact control originally mutated, not merely
@@ -36,13 +41,13 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
   windowSourceActionId,controlSourceActionId,
   title:title||"",hwnd:null,pid:null,processStartTicks:null,controlName,automationId,controlRuntimeId,controlType,
-  mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
+  mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,expectedValue,
   observedAtMs:nowMs,readbackRequired:true});
  return Object.freeze({version:1,sourceActionId:actionId,windowSourceActionId,controlSourceActionId,title:matching[0].title,
   hwnd:matching[0].hwnd,pid:matching[0].pid,
   processStartTicks:matching[0].processStartTicks??null,
   controlName,automationId,controlRuntimeId,controlType,
-  mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
+  mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,expectedValue,
   observedAtMs:nowMs,readbackRequired:true});
 }
 
@@ -148,6 +153,17 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
   // and selector with a different semantic role. Exact role equality from
   // the original audited discovery is mandatory before the read can unlock.
   if(pending.controlType!=null&&same[0].ControlType!==pending.controlType)return pending;
+  // Identity-only readback is insufficient after SetValue. Require native
+  // ValuePattern value from a fresh separately audited exact UIA read.
+  // A password/masked/unreadable field must remain unverified.
+  if(pending.mutationTool==="ui_set_value"){
+   if(typeof pending.expectedValue!=="string"||pending.expectedValue.length>4096||
+      proposal.tool!=="ui_find")return pending;
+   const row=same[0];
+   if(typeof row.Value!=="string"||row.Value.length>4096||
+      row.Value!==pending.expectedValue)return pending;
+   if(Object.hasOwn(row,"CurrentValue")&&row.CurrentValue!==row.Value)return pending;
+  }
   // For stateful actions, an independent read has to contain actual UIA
   // pattern-state evidence; a generic inventory can never prove that state.
   if(["ui_toggle","ui_expand_collapse","ui_focus","ui_scroll"].includes(pending.mutationTool)){
