@@ -247,10 +247,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  recoveryPanel.className="shuvi-native-recovery-panel";
  recoveryPanel.setAttribute("role","region");
  recoveryPanel.setAttribute("aria-label","Windows task recovery controls next to chat composer");
- recoveryPanel.append(recoveryNotice,recoveryCheck,recoveryRetry,recoveryOwnerDone,recoveryDismiss);
- const recoveryDiagnostics=field("p");recoveryDiagnostics.setAttribute("role","status");recoveryDiagnostics.hidden=true;recoveryPanel.append(recoveryDiagnostics);
+ recoveryPanel.append(recoveryNotice,recoveryRetry);
+ const advancedRecovery=field("details");
+ advancedRecovery.append(field("summary","Advanced recovery · only if automatic reconciliation fails"),recoveryCheck,recoveryOwnerDone,recoveryDismiss);
+ const recoveryDiagnostics=field("p");recoveryDiagnostics.setAttribute("role","status");recoveryDiagnostics.hidden=true;
  budgetNote.className="shuvi-native-note";
- panel.append(title,status,showDetails,openSettings,notes,budgetLabel,aiQuotaLabel,budgetNote,aiLedgerShow,aiLedgerInfo,taskStatus,goalStatus);
+ panel.append(title,status,showDetails,openSettings,notes,budgetLabel,aiQuotaLabel,budgetNote,aiLedgerShow,aiLedgerInfo,taskStatus,goalStatus,advancedRecovery);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
