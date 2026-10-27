@@ -432,7 +432,7 @@ test("missing audit stops after first action and never calls model again",async(
  await until(()=>s.approval.hidden===true,"approval cleanup");
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.staged.length,1);
- assert.match(s.transport.getReplies("c2")[0],/Result Verify नहीं हुआ/);
+ assert.match(s.transport.getReplies("c2")[0],/अंतिम Receipt नहीं मिली/);
 });
 test("user denial stops; no follow-up AI or Windows action",async()=>{
  const s=setup();
@@ -1067,7 +1067,7 @@ test("Batch 19 thrown read error with conflicting successful native audit cannot
  await until(()=>s.transport.connected(),"native ready");
  await s.transport.send("Premiere me New Project khojo","thrown-contradiction",0);
  s.allow.listeners.get("click")();
- await until(()=>s.transport.getReplies("thrown-contradiction")[0]?.includes("Native action outcome unknown"),
+ await until(()=>s.transport.getReplies("thrown-contradiction")[0]?.includes("कोई Blind Retry नहीं किया गया"),
   "conflicting audit must fail closed");
  assert.equal(s.staged.length,1,"no read-only recovery approval after contradiction");
  assert.equal(s.chatInputs.length,1,"no further paid request");
