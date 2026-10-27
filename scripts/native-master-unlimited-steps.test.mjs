@@ -16,6 +16,6 @@ test("new actions require explicit approval and duplicate proposals are still bl
  assert.match(native,/Repeated action blocked/);
  assert.match(native,/approval\.hidden=false/);
  assert.match(native,/invoke<ActionResult>\("execute_action"/);
- assert.match(native,/r\.action_id===current\.action\.id/);
+ assert.match(native,/\"action_audit_trace\",\{actionId:current\.action\.id\}/);
  assert.match(native,/if\(verified\)await continueAfterVerifiedAction/);
 });
