@@ -174,6 +174,12 @@ pub(crate) fn attach_durable_job(
         } else {
             status.supervisor_health="rust_supervisor_observed".into();
         }
+    } else if job.phase=="outcome_unknown" {
+        // A terminated external call with ambiguous side effects remains
+        // QUARANTINED, even after the Rust execution lease is released.
+        status.state="recovery_required".into();
+        status.requires_owner_review=true;
+        status.supervisor_health="external_outcome_unknown_needs_owner_review".into();
     } else if status.lease_owned_by_this_process&&status.action_id.is_some(){
         // A finished journal can never attest a different action which still
         // owns the host lease. The audit journal might be stale/corrupted.

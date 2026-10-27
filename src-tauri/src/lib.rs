@@ -9392,7 +9392,7 @@ fn read_action_audit_receipt(
                 continue;
             };
             if entry.action_id.as_deref() == Some(action_id)
-                && matches!(entry.event.as_str(), "executed" | "failed" | "denied")
+                && matches!(entry.event.as_str(), "executed" | "failed" | "denied" | "outcome_unknown")
             {
                 matched = Some(entry);
             }
@@ -21105,18 +21105,27 @@ fn reconcile_native_worker_job(
     }
     let job=native_worker_job::read(&app)?
         .ok_or("No interrupted native job is available for owner review.")?;
-    if job.phase!="running"||job.action_id!=action_id||job.tool!=tool{
-        return Err("An owner review must match the exact running journal UUID and tool.".into());
+    if !matches!(job.phase.as_str(),"running"|"outcome_unknown")||
+       job.action_id!=action_id||job.tool!=tool{
+        return Err("Owner review must match the exact interrupted native journal UUID and tool.".into());
     }
     let verified=match read_action_audit_receipt(&app,&action_id)? {
         None=>None,
         Some(receipt)=>{
-            if receipt.action_id.as_deref()!=Some(action_id.as_str())
-                ||receipt.tool!=tool||!matches!(receipt.event.as_str(),"executed"|"failed")
-                ||(receipt.event=="failed"&&receipt.success){
+            if receipt.action_id.as_deref()!=Some(action_id.as_str())||
+                receipt.tool!=tool||
+                !matches!(receipt.event.as_str(),"executed"|"failed"|"outcome_unknown")||
+                (receipt.event=="failed"&&receipt.success)||
+                (receipt.event=="outcome_unknown"&&(receipt.success||job.phase!="outcome_unknown")){
                 return Err("Native action audit conflicts with interrupted worker; manual forensic inspection required.".into());
             }
-            Some(receipt.event=="executed"&&receipt.success)
+            if receipt.event=="outcome_unknown" {
+                // Exact native UNKNOWN is never upgraded by mere owner review
+                // into a successful or confirmed failed external action.
+                None
+            }else{
+                Some(receipt.event=="executed"&&receipt.success)
+            }
         }
     };
     // Even if an executed receipt exists, the old task graph and recovery

@@ -66,3 +66,7 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - Follow-on from e585a73b BUG-028; prior exact Frontend/Rust PASS, Windows installer running at observed check.
 - BUG-003: identify explicitly ambiguous external timeout/unknown results, persist native worker `outcome_unknown` phase (not audit_verified false), prevent premature worker/scheduler history closure; owner exact UUID reconciliation allowed, no auto-retry. Confirmed failures remain `failed` with no success.
 - Added native worker Rust test and frontend source regression; CI and Windows host E2E pending.
+
+## Increment 09 follow-up — owner-review compatibility
+- `read_action_audit_receipt` now sees exact `outcome_unknown` audit events. Existing `REVIEW UNKNOWN` native owner reconciliation accepts matching `running` or `outcome_unknown` journals, keeps verified result None for UNKNOWN, never turns it into FAILED/SUCCESS. Read-only worker status publishes `recovery_required`; Windows UI exposes explicit owner review for either phase, not automatic unlock. Regression added.
+- Exact HEAD CI and Windows owner E2E pending.

@@ -1194,7 +1194,7 @@ function renderOrchestrationStatus(): void {
   const reviewButton = el<HTMLButtonElement>("#reviewNativeJob");
   reviewButton.classList.toggle("hidden", !nativeHostStatus || nativeHostStatusUnavailable
     ||nativeHostStatus.state!=="recovery_required"
-    ||nativeHostStatus.durableJobPhase!=="running"
+    ||!["running","outcome_unknown"].includes(nativeHostStatus.durableJobPhase??"")
     ||nativeHostStatus.leaseOwnedByThisProcess
     ||!nativeHostStatus.durableJobActionId||!nativeHostStatus.durableJobTool);
   const graphProgress = taskGraphProgress(orchestration.task_graph);

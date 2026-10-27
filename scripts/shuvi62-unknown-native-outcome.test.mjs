@@ -29,3 +29,18 @@ test("BUG-003: native worker persists distinct unknown until exact owner review,
  assert.doesNotMatch(record,/crate::native_scheduler::resource_lanes::release_after_verified_audit\(/);
  assert.match(job,/unknown_native_side_effect_is_durable_and_requires_exact_owner_reconciliation/);
 });
+
+test("BUG-003: owner recovery reads exact native UNKNOWN receipt, requires explicit review, UI exposes a safe button",()=>{
+ const reader=lib.slice(lib.indexOf("fn read_action_audit_receipt("),lib.indexOf("fn premiere_checkpoint_from_audit("));
+ assert.match(reader,/"denied" \| "outcome_unknown"/);
+ const reconcile=lib.slice(lib.indexOf("fn reconcile_native_worker_job("),lib.indexOf("fn native_worker_history("));
+ assert.match(reconcile,/if !matches!\(job\.phase\.as_str\(\),"running"\|"outcome_unknown"\)/);
+ assert.match(reconcile,/receipt\.event=="outcome_unknown"/);
+ assert.match(reconcile,/if receipt\.event=="outcome_unknown" \{[\s\S]*?None/);
+ assert.match(reconcile,/confirmation!="REVIEW UNKNOWN"/);
+ const status=readFileSync(new URL("../src-tauri/src/native_worker_status.rs",import.meta.url),"utf8");
+ const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+ assert.match(status,/else if job\.phase=="outcome_unknown"/);
+ assert.match(status,/status\.requires_owner_review=true/);
+ assert.match(ui,/"running","outcome_unknown"\]\.includes\(nativeHostStatus\.durableJobPhase/);
+});
