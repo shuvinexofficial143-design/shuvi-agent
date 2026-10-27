@@ -89,7 +89,7 @@ test("approval is bound to exactly one live task and one-use identifier",()=>{
 test("BUG-009: JS remote command validation allows bounded multiline and measures UTF-16 units",()=>{
  const multi="Open Premiere\nImport videos\r\nEdit timeline\tExport";
  assert.equal(validateRemoteMessage({...message(),text:multi},ctx()).ok,true);
- assert.equal(validateRemoteMessage({...message(),text:"A\\u0007B".replace("\\\\u0007","\\u0007")},ctx()).ok,false);
+ assert.equal(validateRemoteMessage({...message(),text:"A"+String.fromCharCode(7)+"B"},ctx()).ok,false);
  assert.equal(validateRemoteMessage({...message(),text:"🎬".repeat(1250)},ctx()).ok,true);
  assert.equal(validateRemoteMessage({...message(),text:"🎬".repeat(1251)},ctx()).error,"invalid_text");
 });
