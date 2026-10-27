@@ -22980,6 +22980,55 @@ fn action_audit_receipt(action_id:String,app:AppHandle)->Result<Option<AuditEntr
     read_action_audit_receipt(&app, &action_id)
 }
 
+// P0: one guarded, exact-UUID supersession transaction. A renderer or a
+// stale WebView cannot clear another task, a running OS worker or an UNKNOWN
+// Premiere mutation. Only native terminal evidence releases the old journal.
+#[tauri::command]
+fn retire_audited_superseded_native_task(
+ task_id:String,revision:u64,action_id:String,
+ state:State<'_,ActionState>,app:AppHandle
+)->Result<bool,String>{
+ let _lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+ {
+  let running=state.running_action_tools.lock()
+   .map_err(|_|"Running native action state unavailable.")?;
+  let started=state.running_action_started_at_ms.lock()
+   .map_err(|_|"Native worker start state unavailable.")?;
+  native_worker_status::require_clear_for_new_dispatch(&running,&started)?;
+ }
+ let previous=native_recovery::load(&app)?
+  .ok_or("Previous native recovery checkpoint is missing.")?;
+ if previous.version!=2||previous.task_id.as_deref()!=Some(task_id.as_str())||
+  previous.revision!=Some(revision)||previous.action_id.as_deref()!=Some(action_id.as_str()){
+  return Err("Old task identity or revision changed during safe reconciliation.".into());
+ }
+ let trace=read_action_audit_trace(&app,&action_id)?;
+ let terminals=trace.iter().filter(|r|matches!(r.event.as_str(),
+  "executed"|"failed"|"denied"|"outcome_unknown")).collect::<Vec<_>>();
+ if terminals.len()!=1||trace.iter().any(|r|r.tool!=terminals[0].tool){
+  return Err("Exact native action terminal audit missing or conflicting; no supersession.".into());
+ }
+ let audited=terminals[0];
+ let executed=audited.event=="executed"&&audited.success;
+ let denied=audited.event=="denied"&&!audited.success;
+ if !executed&&!denied{
+  return Err("Prior native action not independently successful/denied; unknown mutation preserved.".into());
+ }
+ let job=native_worker_job::read(&app)?;
+ if executed{
+  let exact=job.as_ref().is_some_and(|j|j.action_id==action_id&&j.tool==audited.tool&&
+    j.phase=="audit_verified"&&j.audit_success==Some(true));
+  if !exact{return Err("Native worker journal does not verify exact action UUID/tool; old task retained.".into());}
+ }else if previous.phase!="awaiting_approval"&&previous.phase!="native_denied"{
+  return Err("Denied action can retire only its nonexecuting approval checkpoint.".into());
+ }
+ // Checks independently owned subprocess receipts; a supervisor heartbeat
+ // alone cannot release a dangerous in-flight operation.
+ native_worker_job::require_resolved(&app)?;
+ native_recovery::retire_audited_superseded(&app,&task_id,revision,&action_id)?;
+ Ok(true)
+}
+
 #[tauri::command]
 fn action_audit_trace(action_id:String,app:AppHandle)->Result<Vec<AuditEntry>,String>{
     read_action_audit_trace(&app,&action_id)
@@ -23459,6 +23508,7 @@ pub fn run() {
             native_command_queue::claim_native_command,
             native_command_queue::finish_native_command,
             native_recovery::retire_verified_native_recovery,
+            retire_audited_superseded_native_task,
             premiere_bridge_start,
             premiere_bridge_status,
             premiere_bridge_stop,
