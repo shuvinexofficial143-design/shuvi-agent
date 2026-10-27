@@ -227,9 +227,36 @@ pub(crate) fn load(app:&AppHandle)->Result<Option<NativeRecoveryRecord>,String>{
     }else{parse(&backup)?};
     Ok(Some(record))
 }
+// Preserve the complete old Rust recovery evidence before either an owner
+// acknowledgement or a safe automatic supersession. A failed archive prevents
+// clearing the primary, so a crash cannot silently destroy forensic records.
+fn archive_recovery_before_clear(file:&Path)->Result<(),String>{
+    let backup=file.with_extension("json.bak");
+    if !file.exists()&&!backup.exists(){return Ok(());}
+    let directory=file.with_file_name("native-recovery-archive");
+    fs::create_dir_all(&directory)
+        .map_err(|_|"Native recovery archive directory unavailable; journal retained.".to_string())?;
+    for (label,candidate) in [("primary",file),("backup",backup.as_path())]{
+        if !candidate.exists(){continue;}
+        // Archive corrupt evidence too; do not assume that invalid bytes can
+        // be discarded just because they cannot be safely recovered.
+        let bytes=crate::read_file_bytes_bounded(candidate,1024*1024,"native recovery evidence archive")?;
+        let name=format!("{}-{}.json",uuid::Uuid::new_v4(),label);
+        let target=directory.join(name);
+        let mut output=fs::OpenOptions::new().write(true).create_new(true).open(&target)
+            .map_err(|_|"Could not create unique native recovery evidence archive.".to_string())?;
+        std::io::Write::write_all(&mut output,&bytes)
+            .map_err(|_|"Native recovery archive write failed; original journal retained.".to_string())?;
+        output.sync_all()
+            .map_err(|_|"Native recovery archive sync failed; original journal retained.".to_string())?;
+    }
+    Ok(())
+}
 pub(crate) fn clear(app:&AppHandle)->Result<(),String>{
     let _guard=RECOVERY_LOCK.lock().map_err(|_|"Native recovery lock unavailable.")?;
-    crate::premiere_store::clear_snapshot(&path(app)?)
+    let file=path(app)?;
+    archive_recovery_before_clear(&file)?;
+    crate::premiere_store::clear_snapshot(&file)
 }
 
 // Unlike owner abandonment, automatic retirement may only delete an exact
@@ -271,6 +298,21 @@ pub(crate) fn retire_verified_native_recovery(task_id:String,revision:u64,app:Ap
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn cleared_recovery_preserves_exact_native_evidence_bytes_in_archive(){
+        let folder=std::env::temp_dir().join(format!("shuvi63-archive-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let file=folder.join("native-recovery.json");
+        let bytes=serde_json::to_vec(&state()).unwrap();
+        fs::write(&file,&bytes).unwrap();
+        archive_recovery_before_clear(&file).unwrap();
+        crate::premiere_store::clear_snapshot(&file).unwrap();
+        assert!(!file.exists());
+        let archive=folder.join("native-recovery-archive");
+        let saved=fs::read_dir(archive).unwrap().map(|e|fs::read(e.unwrap().path()).unwrap()).collect::<Vec<_>>();
+        assert_eq!(saved,vec![bytes]);
+        let _=fs::remove_dir_all(folder);
+    }
     fn state()->NativeRecoveryRecord{
         NativeRecoveryRecord{
             version:2,task_id:Some("0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172".into()),
