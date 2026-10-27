@@ -2088,8 +2088,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(paired.reason!=="matched_previous_task"||local.record?.version!==2||
     !local.record.taskId||!Number.isSafeInteger(local.record.revision))return false;
   const old=local.record;
-  if(old.phase==="executing"||old.phase==="outcome_unknown")return false;
-  if(old.stagedActions>0){
+  // A renderer's executing/UNKNOWN phase may be stale after the exact
+  // native worker already completed; only Rust under OS lease may clear it.
+  const guardedOld=old.phase==="executing"||old.phase==="outcome_unknown";
+  if(guardedOld&&!old.actionId)return false;
+  if(old.stagedActions>0&&!guardedOld){
    if(old.phase==="awaiting_approval"&&pending?.action.id===old.actionId){
     try{await invoke<void>("deny_action",{actionId:pending.action.id});}catch{return false;}
     clearPending();
@@ -2118,7 +2121,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     actionId:old.actionId,stagedActions:old.stagedActions,
     modelRequests:old.modelRequests,supersededAt:Date.now()});
    recoveryStorage.setItem(key,JSON.stringify(history));
-   await invoke<void>("clear_native_recovery");
+   if(guardedOld){
+    const retired=await invoke<boolean>("retire_audited_superseded_native_task",{
+     taskId:old.taskId,revision:old.revision,actionId:old.actionId
+    });
+    if(retired!==true)throw Error("Exact Rust native action was not safely retired");
+   }else await invoke<void>("clear_native_recovery");
    if(!clearNativeRecovery(recoveryStorage))throw Error("Local recovery journal split");
   }catch{recoveryCheckpointFailed=true;recoveryAcknowledged=false;return false;}
   rustRecovery=null;pausedPlanning=null;completedVerifiedBudget=null;cleanNoActionPausedBudget=null;
