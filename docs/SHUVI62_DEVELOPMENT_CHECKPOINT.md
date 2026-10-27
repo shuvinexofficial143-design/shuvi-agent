@@ -48,3 +48,8 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - Verified base HEAD d62de7ed CI 40458275042 3/3 success.
 - Fixed in code BUG-021/022/023/024: 4.5s authenticated mobile status poll, visibility/background bounded refresh and disconnect cancellation; derived task expiry without fake native receipt; truthful configured-vs-source readiness; public local/cloud bridge message distinction.
 - Existing native consent and exact Action UUID remain required. Regression tests added. New commit exact-HEAD CI pending; no live owner device E2E claimed.
+
+## Increment 07 — P0 BUG-029 bounded combined-image Vision enablement
+- Confirmed previous df4bb10f exact CI 40466162018 three jobs success. Verified `MotionGraphicsReviewRemotionFrames` executes exactly one `analyze_png_frames_with_provider` call despite multiple frames; `PremiereReviewFrames` makes one request per frame.
+- Shared Rust request quota/ledger now admits combined Remotion multi-frame review as one paid request and Premiere `seconds.len()==1`; refuses Premiere multi-frame and paid loops. UI exact action UUID usage reconciliation covers these routes. Regression source tests added.
+- New HEAD CI and owner Windows/paid-provider E2E pending. Not a billing cap; no automatic paid retry.

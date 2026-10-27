@@ -6,11 +6,11 @@ const ui=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta
 test("BUG-029: all single-request Vision/Creative task routes reach shared Rust quota+ledger before provider dispatch",()=>{
  const fn=rust.slice(rust.indexOf("fn native_single_metered_action("),rust.indexOf("fn audit_safe_action_detail("));
  for(const arm of ["InspectScreen","MotionGraphicsGeneratePlan","MotionGraphicsGenerateCorrection",
-   "MotionGraphicsReviewPreview","PremiereInspectFrame"]){
+   "MotionGraphicsReviewPreview","MotionGraphicsReviewRemotionFrames","PremiereInspectFrame",
+   "PremiereReviewFrames"]){
    assert.ok(fn.includes("ToolAction::"+arm+"{"),arm);
  }
- for(const multi of ["PremiereReviewFrames","PremiereReviewSessionNext",
-   "MotionGraphicsReviewRemotionFrames","PremiereFinishMediaBatch"]){
+ for(const multi of ["PremiereReviewSessionNext","PremiereFinishMediaBatch"]){
    assert.ok(fn.includes("ToolAction::"+multi+"{"),multi);
  }
  assert.match(fn,/per-call durable metering/);
@@ -33,5 +33,29 @@ test("BUG-029: renderer must reconcile exact ledger action charge before audit_v
  assert.match(decide,/entry\.taskId===taskId&&entry\.requestId===current\.action\.id/);
  assert.match(decide,/entry\.index===index/);
  assert.match(decide,/paid_action_ledger_mismatch/);
- assert.match(ui,/Multi-frame\/looping paid tools refuse task execution until separately metered/);
+ assert.match(ui,/Multi-call paid loops remain blocked until per-request metering/);
+});
+
+test("BUG-029: bundled Remotion preview review is one quota debit for one provider call",()=>{
+ const fn=rust.slice(rust.indexOf("fn native_single_metered_action("),rust.indexOf("fn audit_safe_action_detail("));
+ assert.match(fn,/MotionGraphicsReviewRemotionFrames\{request,frames,provider,\.\.\}/);
+ assert.match(fn,/multi_frame_prompt\(&request\.plan,&times\)\?/);
+ assert.match(fn,/multi_frame_system_prompt\(\)\.len\(\)/);
+ const exec=rust.slice(rust.indexOf("async fn execute_tool_with_action_id("),rust.indexOf("async fn execute_action("));
+ const review=exec.slice(exec.indexOf("ToolAction::MotionGraphicsReviewRemotionFrames {request,accepted,frames,provider} =>"));
+ const finish=review.indexOf("ToolAction::MotionGraphicsGeneratePlan");
+ const block=finish>=0?review.slice(0,finish):review.slice(0,2500);
+ assert.equal((block.match(/analyze_png_frames_with_provider\(/g)||[]).length,1);
+ const before=fn.indexOf("ToolAction::MotionGraphicsReviewRemotionFrames");
+ const after=fn.indexOf("ToolAction::PremiereReviewFrames",before);
+ assert.ok(before>=0&&after>before);
+ assert.match(ui,/"motion_graphics_review_remotion_frames"/);
+});
+test("BUG-029: Premiere review supports ONE paid frame, not a silent N-frame budget bypass",()=>{
+ const fn=rust.slice(rust.indexOf("fn native_single_metered_action("),rust.indexOf("fn audit_safe_action_detail("));
+ assert.match(fn,/ToolAction::PremiereReviewFrames\{seconds,prompt,provider\}/);
+ assert.match(fn,/if seconds\.len\(\)!=1/);
+ assert.match(fn,/per-call durable metering; no provider request sent/);
+ assert.match(ui,/"premiere_review_frames"/);
+ assert.match(fn,/ToolAction::PremiereReviewSessionNext\{\.\.\}/);
 });

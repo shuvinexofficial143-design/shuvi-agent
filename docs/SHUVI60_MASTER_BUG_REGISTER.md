@@ -35,7 +35,7 @@
 | BUG-026 | High / P0 | MITIGATED IN CODE (Increment 03; not closed, CI/Windows pending) | Screenshot overlay privacy | Pending | Unknown | PENDING |
 | BUG-027 | Medium | FIXED IN CODE (Increment 02; CI pending) | Screenshot directory safety | Pending | Unknown | PENDING |
 | BUG-028 | High | NOT REVALIDATED | Native paid AI ledger | Pending | Unknown | PENDING |
-| BUG-029 | High / P0 | FIXED IN CODE (single-call cross-route; multi-call blocked; CI/Windows pending) | Cross-route paid AI budget | Pending | Unknown | PENDING |
+| BUG-029 | High / P0 | PARTIALLY FIXED IN CODE (Increment 07: combined Remotion and one Premiere frame metered; multi-call loops OPEN) | Cross-route paid AI budget | Pending | Unknown | PENDING |
 
 **Latest confirmed open from source before this increment:** BUG-002, BUG-007, BUG-016, BUG-025. Historical BUG-001 verified. Remaining historical 24 must not be misreported as closed or live-open without latest source revalidation.
 
@@ -78,3 +78,8 @@
 - BUG-023: source-implemented cloud queue, CAS, authenticated outbound relay report `source_implemented_configuration_unverified` unless strict server-only remote auth + Supabase setting shapes are present, then `configured_unverified`; never live-verified.
 - BUG-022: public website notice now distinguishes unreachable localhost read-only bridge from separate cloud mobile relay; avoids false native-connected claims.
 - Exact new HEAD CI and real owner Windows/mobile E2E remain PENDING; BUG-029 multi-call Vision/Creative metering and BUG-026 compositor acceptance still open.
+
+## Shuvi 62 Increment 07 (2026-10-27)
+- Previous base HEAD df4bb10f74f13d754f8b7c6bf9fa34a3ed641474 Run 40466162018 exact Frontend/Rust/Windows Installer **3/3 CI SUCCESS**.
+- BUG-029 follow-up: `MotionGraphicsReviewRemotionFrames` is one combined provider call for several approved images; now debits one durable native AI quota/ledger reservation, including generated multi-frame system+user prompt bytes, with exact action UUID reconciliation in owner UI. One-image `PremiereReviewFrames` similarly admitted and accounted as one call. `PremiereReviewFrames` with >1 image, review-session loops, and finishing vision loops stay blocked for native paid tasks rather than overrun owner budget.
+- Does not claim a USD spending cap, live provider invoices, full multi-call support, or Windows E2E. New HEAD CI pending.

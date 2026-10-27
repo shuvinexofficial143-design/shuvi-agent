@@ -9077,10 +9077,27 @@ fn native_single_metered_action(action:&ToolAction)
         ToolAction::MotionGraphicsReviewPreview{plan,sample_time_seconds,provider,..} =>
             (provider,motion_graphics_review::review_prompt(plan,*sample_time_seconds)?.len()),
         ToolAction::PremiereInspectFrame{prompt,provider,..} => (provider,prompt.len()),
-        ToolAction::MotionGraphicsReviewRemotionFrames{..}
-        |ToolAction::PremiereReviewFrames{..}
-        |ToolAction::PremiereReviewSessionNext{..} =>
-            return Err("Native task multi-frame AI review needs per-call durable metering; no provider request sent.".into()),
+        // Remotion multi-frame review sends ONE combined provider request, no
+        // iteration over paid calls. Meter that request exactly once even when
+        // multiple verified, pre-approved image frames are attached.
+        ToolAction::MotionGraphicsReviewRemotionFrames{request,frames,provider,..} => {
+            let times=frames.iter().map(|frame|frame.requested_time_seconds).collect::<Vec<_>>();
+            let review=motion_graphics_review::multi_frame_prompt(&request.plan,&times)?;
+            let bytes=motion_graphics_review::multi_frame_system_prompt().len()
+                .checked_add(1).and_then(|n|n.checked_add(review.len()))
+                .ok_or("Native motion multi-frame paid context size overflow.")?;
+            return Ok(Some((provider.provider.as_str(),provider.model.as_str(),bytes)));
+        }
+        // A one-frame Premiere ReviewFrames action invokes the image provider
+        // once. Multiple frames still invoke it in a loop and remain blocked.
+        ToolAction::PremiereReviewFrames{seconds,prompt,provider} => {
+            if seconds.len()!=1 {
+                return Err("Native task multi-frame Premiere review needs per-call durable metering; no provider request sent.".into());
+            }
+            (provider,prompt.len())
+        }
+        ToolAction::PremiereReviewSessionNext{..} =>
+            return Err("Native task review-session vision loop needs per-call durable metering; no provider request sent.".into()),
         ToolAction::PremiereFinishMediaBatch{provider:Some(_),..} =>
             return Err("Native finishing vision loop requires separately metered paid request receipts; no provider request sent.".into()),
         _=>return Ok(None),

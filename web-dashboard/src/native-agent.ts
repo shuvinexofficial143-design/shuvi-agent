@@ -219,7 +219,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   aiQuotaSelect.append(choice);
  }
  aiQuotaSelect.value="4";aiQuotaLabel.append(aiQuotaSelect);
- const budgetNote=field("p","Windows actions remain bounded by 8/24/48 and expire after 2 hours. A separate owner-selected 2/4/8/16 hard PAID REQUEST count includes Master chat plus single-call task Vision/Creative tools. Multi-frame/looping paid tools refuse task execution until separately metered. Each task request has a 256 KiB prompt-text limit and cumulative 512 KiB; image data has separate upload limits. Not a token or USD cap. No auto-resume after restart.");
+ const budgetNote=field("p","Windows actions remain bounded by 8/24/48 and expire after 2 hours. Owner-selected 2/4/8/16 hard PAID REQUEST count covers Master chat and single-call Vision/Creative, including one combined Remotion multi-frame review and exactly one Premiere frame. Multi-call paid loops remain blocked until per-request metering. Each task request has a 256 KiB prompt-text limit and cumulative 512 KiB; image bytes have separate upload limits. Not a token or USD cap. No auto-resume after restart.");
  const aiLedgerShow=field("button","Show task AI request ledger");aiLedgerShow.type="button";
  const aiLedgerInfo=field("p","Task requests and provider-reported tokens; actual USD billed UNKNOWN.");
  aiLedgerInfo.setAttribute("role","status");
@@ -1434,7 +1434,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     // of inventing an allowance, retrying paid calls or losing spend history.
     if(["inspect_screen","motion_graphics_generate_plan",
         "motion_graphics_generate_correction","motion_graphics_review_preview",
-        "premiere_inspect_frame"].includes(current.action.kind)){
+        "motion_graphics_review_remotion_frames","premiere_inspect_frame",
+        "premiere_review_frames"].includes(current.action.kind)){
      const meteredBudget=taskBudgets.get(current.threadId);
      if(meteredBudget){
       const taskId=recoveryTaskId(meteredBudget);
