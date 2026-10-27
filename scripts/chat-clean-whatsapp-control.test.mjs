@@ -33,5 +33,5 @@ test("WhatsApp is controlled as an installed Windows application, not a web inte
  assert.match(rust,/if !proposal\.arguments\.as_object\(\)\.is_some_and/);
  assert.match(rust,/RiskLevel::Medium/);
  assert.match(rust,/separately approved action/);
- assert.match(native,/audit_log/);
+ assert.match(native,/action_audit_trace/);
 });
