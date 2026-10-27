@@ -46,7 +46,7 @@ test("P0-A executor uses exact rotated audit trace rather than global last-200 a
  assert.ok(start>0);
  assert.match(block,/Uuid::parse_str\(action_id\)/);
  assert.match(block,/for candidate in \[&rotated,&path\]/);
- assert.match(block,/trace\.len\(\)>=64/);
+ assert.match(rust,/trace\.len\(\)>=64/);
  assert.match(rust,/fn action_audit_trace\(action_id:String,app:AppHandle\)/);
  const verifier=ts.slice(ts.indexOf("// P0-A: global audit tail"),ts.indexOf("executionVerified=verified;"));
  assert.match(verifier,/"action_audit_trace"/);
