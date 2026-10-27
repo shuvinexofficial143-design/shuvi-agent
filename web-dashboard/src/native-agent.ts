@@ -219,7 +219,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   aiQuotaSelect.append(choice);
  }
  aiQuotaSelect.value="4";aiQuotaLabel.append(aiQuotaSelect);
- const budgetNote=field("p","Windows actions remain bounded by 8/24/48 and expire after 2 hours. A separate 2/4/8/16 hard PAID REQUEST count limit is owner-selected. Native task-owned paid requests also have a 256 KiB input limit each and 512 KiB cumulative input-data budget. These are not token, USD spending or verified billing caps. No auto-resume after restart.");
+ const budgetNote=field("p","Windows actions remain bounded by 8/24/48 and expire after 2 hours. A separate owner-selected 2/4/8/16 hard PAID REQUEST count includes Master chat plus single-call task Vision/Creative tools. Multi-frame/looping paid tools refuse task execution until separately metered. Each task request has a 256 KiB prompt-text limit and cumulative 512 KiB; image data has separate upload limits. Not a token or USD cap. No auto-resume after restart.");
  const aiLedgerShow=field("button","Show task AI request ledger");aiLedgerShow.type="button";
  const aiLedgerInfo=field("p","Task requests and provider-reported tokens; actual USD billed UNKNOWN.");
  aiLedgerInfo.setAttribute("role","status");
@@ -1428,6 +1428,28 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }finally{
      if(activeNativeActionId===current.action.id)activeNativeActionId=null;
      refreshState();
+    }
+    // BUG-029: sync the exact Rust-side charge before advancing the owner
+    // recovery journal. A missing/conflicting receipt halts the task instead
+    // of inventing an allowance, retrying paid calls or losing spend history.
+    if(["inspect_screen","motion_graphics_generate_plan",
+        "motion_graphics_generate_correction","motion_graphics_review_preview",
+        "premiere_inspect_frame"].includes(current.action.kind)){
+     const meteredBudget=taskBudgets.get(current.threadId);
+     if(meteredBudget){
+      const taskId=recoveryTaskId(meteredBudget);
+      const index=meteredBudget.modelRequests+1;
+      const usages=await invoke<Array<{
+       taskId:string;requestId:string;index:number;status:string
+      }>>("native_task_ai_usage");
+      const receipt=Array.isArray(usages)?usages.find(entry=>
+       entry.taskId===taskId&&entry.requestId===current.action.id&&
+       entry.index===index&&["reported","unknown"].includes(entry.status)):null;
+      if(!receipt||!reserveNativeModelRequest(meteredBudget)){
+       haltTask(current.threadId,"paid_action_ledger_mismatch");
+       throw Error("Native vision/creative paid request receipt could not be reconciled to the owner task budget. No automatic paid retry.");
+      }
+     }
     }
     // Native Result is not self-attested success: require the exact audited action receipt.
     const receipts=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("audit_log",{limit:200});

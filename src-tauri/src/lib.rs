@@ -9060,6 +9060,35 @@ fn motion_json_sha256(value:&Value)->Result<String,String>{
     Ok(format!("{:x}",hash.finalize()))
 }
 
+// BUG-029: classify *every* independently metered provider route reachable
+// inside a native approved task. Single-call routes share the exact Rust
+// task request-count/quota+durable ledger; multi-call routes cannot silently
+// consume an unbounded number of paid requests under one owner approval.
+// Manual separately approved tools outside a native task remain independent.
+fn native_single_metered_action(action:&ToolAction)
+    -> Result<Option<(&str,&str,usize)>,String>
+{
+    let (provider,bytes)=match action {
+        ToolAction::InspectScreen{prompt,provider,..} => (provider,prompt.len()),
+        ToolAction::MotionGraphicsGeneratePlan{request,provider} =>
+            (provider,request.prompt()?.len()),
+        ToolAction::MotionGraphicsGenerateCorrection{request,provider} =>
+            (provider,request.prompt()?.len()),
+        ToolAction::MotionGraphicsReviewPreview{plan,sample_time_seconds,provider,..} =>
+            (provider,motion_graphics_review::review_prompt(plan,*sample_time_seconds)?.len()),
+        ToolAction::PremiereInspectFrame{prompt,provider,..} => (provider,prompt.len()),
+        ToolAction::MotionGraphicsReviewRemotionFrames{..}
+        |ToolAction::PremiereReviewFrames{..}
+        |ToolAction::PremiereReviewSessionNext{..} =>
+            return Err("Native task multi-frame AI review needs per-call durable metering; no provider request sent.".into()),
+        ToolAction::PremiereFinishMediaBatch{provider:Some(_),..} =>
+            return Err("Native finishing vision loop requires separately metered paid request receipts; no provider request sent.".into()),
+        _=>return Ok(None),
+    };
+    if bytes==0{return Err("Metered native provider prompt is empty; no paid request sent.".into());}
+    Ok(Some((provider.provider.as_str(),provider.model.as_str(),bytes)))
+}
+
 fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
     match tool {
         "powershell" => format!(
@@ -22206,7 +22235,7 @@ async fn execute_action(
     // count is not an execution lock; the Rust guard is the authority.
     let mut native_slot=Some(claim_monitored_native_execution(state.inner(),&app)?);
 
-    let (action, expired_action) = {
+    let (action, expired_action, paid_action_reserved) = {
         let mut pending = state
             .pending
             .lock()
@@ -22221,7 +22250,7 @@ async fn execute_action(
             || target_window_capture::expired_capture_binding(
                 prepared.created_at_ms, now_ms(), prepared.capture_target.as_ref())
         {
-            (None, pending.remove(&action_id))
+            (None, pending.remove(&action_id), false)
         } else {
             let active_tool = prepared.tool.clone();
             // The persisted DAG must permit the exact prepared action before
@@ -22324,6 +22353,42 @@ async fn execute_action(
                     .map_err(|_|"Rust read grant state unavailable.".to_string())?;
                 grants.consume(task,id,sig,now_ms())?;
             }
+            // BUG-029: billable tool side routes are admitted only against
+            // this exact executing task UUID/action UUID and immutable owner
+            // quota, BEFORE screenshot/provider requests or worker startup.
+            // This prevents an approved creative/vision action from bypassing
+            // the 2/4/8/16 budget used by chat().
+            let recovery=native_recovery::load(&app)?;
+            let owned_task=recovery.as_ref().filter(|record|
+                record.version==2 && record.revision.is_some() &&
+                record.phase=="executing" &&
+                record.action_id.as_deref()==Some(action_id.as_str()) &&
+                now_ms()<record.expires_at);
+            let mut paid_reserved=false;
+            if let Some(record)=owned_task {
+                if let Some((provider,model,bytes))=native_single_metered_action(&prepared.action)? {
+                    let task=record.task_id.as_deref()
+                        .ok_or("Owner native task identity missing; no paid provider request.")?;
+                    let index=record.model_requests.checked_add(1)
+                        .ok_or("Owner paid request index overflow.")?;
+                    {
+                        let mut quotas=state.task_ai_quota.lock()
+                            .map_err(|_|"Native task AI quota unavailable; provider request refused.")?;
+                        quotas.reserve_context(task,index,bytes,now_ms())?;
+                    }
+                    // Use the exact Rust-prepared action UUID as the charge ID.
+                    // A duplicate/unfinished ledger prevents a second charge.
+                    native_task_ai_ledger::reserve(&app,task,&action_id,index,provider,model)?;
+                    paid_reserved=true;
+                }
+            } else if recovery.as_ref().is_some_and(|record|
+                record.action_id.as_deref()==Some(action_id.as_str())) {
+                // A stale, invalid or unverified task checkpoint never turns
+                // a paid action into an unmetered manual provider request.
+                if native_single_metered_action(&prepared.action)?.is_some(){
+                    return Err("Native task AI recovery is not executing this action; paid request refused.".into());
+                }
+            }
             // Publish the durable, action-bound worker record BEFORE any tool
             // can run. If disk state is unresolved, keep approval pending.
             native_worker_job::begin(&app,&action_id,&active_tool,now_ms())?;
@@ -22343,7 +22408,7 @@ async fn execute_action(
             let action = pending
                 .remove(&action_id)
                 .ok_or_else(|| "Action disappeared before execution could start.".to_string())?;
-            (Some(action), None)
+            (Some(action), None, paid_reserved)
         }
     };
     if let Some(action) = expired_action {
@@ -22545,6 +22610,15 @@ async fn execute_action(
         ).await
     };
     drop(pulse);
+    if paid_action_reserved {
+        // A failure/timeout or a missing usage reply is UNKNOWN, never free.
+        // This receipt shares the same ledger and monotonic task indices as
+        // chat() and blocks all replay even across a process restart.
+        if native_task_ai_ledger::complete(&app,&action_id,None,
+            execution.as_ref().is_ok_and(|outcome|outcome.success)).is_err(){
+            return Err("Metered native AI action ledger completion unknown. No automatic paid retry.".into());
+        }
+    }
     // The model must never see output from a recycled same-title native
     // window. Verify the OS-attested root across the WHOLE task-scoped
     // sequence before publishing a successful Rust action audit or returning

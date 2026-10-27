@@ -35,7 +35,7 @@
 | BUG-026 | High / P0 | MITIGATED IN CODE (Increment 03; not closed, CI/Windows pending) | Screenshot overlay privacy | Pending | Unknown | PENDING |
 | BUG-027 | Medium | FIXED IN CODE (Increment 02; CI pending) | Screenshot directory safety | Pending | Unknown | PENDING |
 | BUG-028 | High | NOT REVALIDATED | Native paid AI ledger | Pending | Unknown | PENDING |
-| BUG-029 | High / P0 | NOT REVALIDATED | Cross-route paid AI budget | Pending | Unknown | PENDING |
+| BUG-029 | High / P0 | FIXED IN CODE (single-call cross-route; multi-call blocked; CI/Windows pending) | Cross-route paid AI budget | Pending | Unknown | PENDING |
 
 **Latest confirmed open from source before this increment:** BUG-002, BUG-007, BUG-016, BUG-025. Historical BUG-001 verified. Remaining historical 24 must not be misreported as closed or live-open without latest source revalidation.
 
@@ -60,3 +60,8 @@
 - BUG-015: search_text literal query and exact workspace path omitted from persisted audit, regardless of whether a secret looks like a token. Prepared in-memory consent retains original detail.
 - BUG-029: confirmed existing native task paid-request boundary is chat-only; separate Vision/Creative billable calls are not counted in owner selected task quota. **Still OPEN** pending Rust authoritative cross-route reservation, no false spending safety claim.
 - Latest previous CI 40452821089 (8bcb1fc) was Frontend PASS, Rust and NSIS running at start of increment. Exact newer CI pending.
+
+## Shuvi 62 Increment 04 (2026-10-27)
+- BUG-029 code: Rust task-bound `inspect_screen`, single-call motion generation/correction/review and Premiere frame inspection now reserve original owner quota + durable per-request ledger under exact action UUID, before provider call. Uses same 2/4/8/16 quota and 256 KiB prompt cap; no automatic replay. Task multi-frame/finishing review remains fail-closed until per-call metering. Manual separately owner-approved non-task tools are independent.
+- Frontend verifies exact action UUID/task ID/index ledger receipt then spends one local native model request before recovery can advance; unknown receipt halts. Provider token usage/verified dollar caps are *not* claimed. Exact new CI and real owner Windows tests PENDING.
+- Prior HEAD 505e315 exact CI 40453995626 had Frontend PASS, Rust/Installer IN PROGRESS at beginning of this increment. Do not infer full CI success.

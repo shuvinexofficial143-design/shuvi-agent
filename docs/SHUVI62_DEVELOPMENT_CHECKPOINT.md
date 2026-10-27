@@ -29,3 +29,9 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - BUG-026 mitigation: bound Z-order scan, reject any visible top-level HWND overlap of the entire approved screenshot rectangle, repeat three times around screen copy and persisted PNG. Existing exact PID/HWND/birth, foreground, five-point and PNG integrity guards remain. Cannot claim full compositor/race immunity or owner-PC PASS.
 - BUG-015 persistent audit redaction of arbitrary literal search terms and selected path; still retain explicit action permission details only in memory.
 - Added source and geometric synthetic regressions; BUG-029 cross-route billable AI guard remains OPEN; no new USD cap or additional owner permission claim.
+
+## Increment 04 — P0 BUG-029 shared native paid request accounting
+- Base HEAD `505e315767f82d867cc39ab71f23cdc15fc20edd`.
+- Single billable native-task Vision/Creative/one-frame routes reserve from one Rust quota and durable ledger (action UUID = request UUID), with JS exact ledger reconciliation before recovery checkpoint. Multi-call paid creative/finishing loops refuse execution inside native tasks rather than silently bypassing owner-selected request count.
+- Manual separately approved non-task creative actions retain previous behavior and are outside native task quota. No verified billing/USD limit, no provider usage tokens guaranteed, no automatic replay after ambiguous outcome.
+- New CI & owner Windows E2E PENDING; check exact-head tests first on next.
