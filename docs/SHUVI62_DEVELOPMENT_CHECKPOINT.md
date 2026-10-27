@@ -73,3 +73,8 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 
 ## Increment 09 frontend assertion correction
 - CI Run 40474640494 Frontend failed 2 source-shape assertions expecting pre-UNKNOWN `existing.phase!="running"` and `Ok()` rather than `Ok(())` for tuple arm. Updated existing bridge test and new regression test without relaxing runtime safety. Exact new CI pending.
+
+## Increment 10 — Hindi polite/indirect computer intent
+- Starting HEAD `543d1a154adc8c67e12577bc85b67b70a75ca7ec`, 3/3 exact CI Run `40475232227` verified SUCCESS before modifications.
+- BUG-004: Windows-directed polite Hindi/Roman Hindi commands route to the configured Master, not selected Chat, while tutorial/ability questions without direct second-person task command remain chat. No tool auto-approval or capability escalation. Extended native-model-routing tests.
+- New commit exact HEAD CI and real Hindi Windows acceptance remain PENDING.

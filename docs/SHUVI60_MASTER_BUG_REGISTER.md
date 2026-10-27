@@ -11,7 +11,7 @@
 | BUG-002 | High | FIXED IN CODE (pending new HEAD CI) | `src-tauri/src/lib.rs` UIA resolver, 8 execution callsites | `scripts/shuvi60-bug002-bug007.test.mjs` + existing UIA tests | Pending | PENDING |
 | BUG-007 | High / P0 Privacy | FIXED IN CODE (pending new HEAD CI) | `src-tauri/src/lib.rs` browser DOM read | `scripts/shuvi60-bug002-bug007.test.mjs` + existing browser tests | Pending | PENDING |
 | BUG-003 | High | FIXED IN CODE (Increment 09; exact-HEAD CI and owner Windows E2E pending) | Native audit outcomes | Pending | Unknown | PENDING |
-| BUG-004 | High | NOT REVALIDATED | AI intent routing | Pending | Unknown | PENDING |
+| BUG-004 | High | FIXED IN CODE (Increment 10; CI and real Hindi Windows E2E pending) | AI intent routing | Pending | Unknown | PENDING |
 | BUG-005 | Medium | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | Provider errors | Pending | Unknown | PENDING |
 | BUG-006 | High | NOT REVALIDATED | Browser continuity | Pending | Unknown | PENDING |
 | BUG-008 | High | NOT REVALIDATED | Remote task queue | Pending | Unknown | PENDING |
@@ -96,3 +96,7 @@
 - Previous HEAD e585a73b42cb214125af36ca7bef16bb49174da3 Run 40472927562 showed Frontend and Rust PASS, Windows Installer pending at source verification.
 - Explicit external helper timeout/unknown errors now produce `outcome_unknown` audit event (success false), `native_worker_job.phase="outcome_unknown"` with `audit_success=None`. Do not run generic failed reconciliation, scheduler finish or worker-history release in unknown branch. Exact UUID/tool requires owner process/audit review before another action. Legacy confirmed errors retain `failed` with bool false.
 - Rust state and Node source regressions cover UNKNOWN vs FAILED and owner review, no automatic retry; actual OS timeout E2E remains unverified. Source-level classifier may require expansion to typed results for all external providers: do not call this a complete real-world fix until Windows E2E.
+
+## SHUVI 62 Increment 10 (2026-10-27)
+- BUG-004 native intent routing: add polite Devanagari and Roman Hindi imperative markers and second-person Hindi capability-to-act requests. Informational 'how-to'/tutorial questions remain Chat even when an app/action verb appears later in the sentence. `chooseNativeRoute` still uses selected Master for all Windows actions, preserving exact provider and model; this classifier never grants Rust permission or automatically executes tools.
+- New unit regression covers Premiere/Blender/Photoshop/Audition/Notepad, explicit polite instructions, and non-action queries. Source-only fix; exact HEAD CI pending. Real owner Windows Hindi phrasing/voice E2E pending.

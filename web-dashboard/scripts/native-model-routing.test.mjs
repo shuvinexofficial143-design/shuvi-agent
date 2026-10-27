@@ -67,3 +67,40 @@ test("Batch 82 capability questions stay Chat without losing direct Can you comm
  assert.equal(classifyNativeIntent("Can you open Premiere?"),"premiere");
  assert.equal(classifyNativeIntent("Premiere export karo"),"premiere");
 });
+
+test("BUG-004: polite Devanagari Windows commands never disappear into ordinary Chat",()=>{
+ for(const [prompt,expected] of [
+  ["कृपया Premiere खोल दीजिए","premiere"],
+  ["Photoshop में लोगो लगा दीजिए","photoshop"],
+  ["Blender में मेरे लिए घर बना देना","blender"],
+  ["प्रीमियर में वीडियो एक्सपोर्ट कर दीजिए","premiere"],
+  ["Adobe Audition में आवाज सुनाकर दिखाइए","audition"],
+  ["मेरी Windows फ़ाइल सेव कर दीजिए","master"],
+  ["नोटपैड खोलकर दिखाइए","master"],
+  ["क्या आप Blender में 3D घर बना सकते हो?","blender"],
+  ["क्या तुम Premiere खोल सकते हो?","premiere"],
+  ["क्या आप Photoshop में तस्वीर एडिट कर सकते हैं?","photoshop"],
+  ["मेरे लिए एक नई फ़ाइल लिख दीजिए","master"],
+  ["कृपया मेरा पेज दिखा दीजिए","master"],
+ ])assert.equal(classifyNativeIntent(prompt),expected,prompt);
+});
+test("BUG-004: Roman Hindi polite phrasing chooses Master, not the cheaper Chat model",()=>{
+ for(const p of ["Blender me 3D model bana dena","Premiere khol kar dikha do",
+   "Photoshop me logo laga dena","Notepad me text likh kar do",
+   "Explorer me file copy kar dena"])
+  assert.notEqual(classifyNativeIntent(p),"chat",p);
+});
+test("BUG-004: capability and tutorial questions never authorize Windows action classification",()=>{
+ for(const p of ["Premiere में वीडियो कैसे एक्सपोर्ट करें?",
+   "Blender में 3D मॉडल बनाने का तरीका बताइए",
+   "Photoshop का उपयोग कैसे करें?",
+   "क्या Blender में 3D मॉडल बनाना संभव है?",
+   "क्या Premiere के अंदर वीडियो एक्सपोर्ट होता है?",
+   "Adobe Premiere export करने का तरीका समझाइए",
+   "How to save file in Photoshop?",
+   "क्या आप Photoshop के बारे में समझाइए"])
+  assert.equal(classifyNativeIntent(p),"chat",p);
+ const cfg={provider:"openrouter",roles:{chat:"chat-model",master:"master-model"}};
+ assert.equal(chooseNativeRoute("Blender में घर बना दीजिए",cfg).model,"master-model");
+ assert.equal(chooseNativeRoute("Blender में घर कैसे बनाते हैं?",cfg).model,"chat-model");
+});

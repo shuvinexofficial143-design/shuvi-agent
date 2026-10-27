@@ -43,16 +43,33 @@ const intents=[
  ["vision",/\b(?:screenshot|inspect screen|screen vision)\b|स्क्रीनशॉट|स्क्रीन देख/iu]
 ];
 const executionVerb=/\b(?:open|launch|start|create|make|build|edit|render|export|write|save|modify|design|generate|run|search|find|inspect|control|send|reply|read|download|upload|close|click|type|commit|push|install|delete|remove|update|rename|copy|paste|import|attach|select|drag|drop|move|trim|cut|split|merge|undo|redo|look(?=\s+(?:for|at)\b)|lagao|lagana|jodo|jod\s?do|hatao|badlo|badal\s?do|save\s?krdo|banao|bnado|khojo|dekho|dhundho|dhoondo|khol(?:o|na|de|do)?|khul(?:wa|do)?|chala(?:o|do)?|chal(?:u|ao)|karo|kar\s?do|kr\s?do|bhejo|likho|dikhao)\b|खोलो|खोलना|खोल\s?दो|बनाओ|बनाना|करो|करना|लिखो|लिखना|भेजो|भेजना|सेव|एडिट|चलाओ|रेंडर|डिलीट|हटाओ|डाउनलोड|इंस्टॉल|खोजो|देखो|बदल/iu;
+// BUG-004: honor polite/indirect Hindi and Roman-Hindi commands without
+// assuming every Hindi question is permission to run a Windows tool.
+// Purely informational requests remain on the owner's Chat model. This
+// classifier does NOT approve or execute anything; Rust permission is final.
+const hindiPoliteImperative=/(?:खोल\s*(?:दीजिए|दिजिए|दो|देना|दें)|खोलकर\s*(?:दिखा(?:इए|एँ|दो|दीजिए)|रख)|खोलिए|बना\s*(?:दीजिए|दो|देना|दें)|बनाकर\s*(?:दिखा(?:इए|दो|दीजिए)|दे(?:ना|दो))|कर\s*(?:दीजिए|दिजिए|दो|देना|दें)|दिखा\s*(?:दीजिए|दो|देना|दें)|दिखाइए|लगा\s*(?:दीजिए|दो|देना)|हटा\s*(?:दीजिए|दो|देना)|चला\s*(?:दीजिए|दो|देना)|चलाइए|लिख\s*(?:दीजिए|दो|देना)|लिखिए|भेज\s*(?:दीजिए|दो|देना)|भेजिए|चुनिए|बदलिए|सहेजिए|निकालिए|पेस्ट\s*(?:दीजिए|दो)|खोजिए|ढूँढिए|ढूंढिए)/iu;
+const romanPoliteImperative=/\b(?:khol\s*(?:do|de|dena|dijiye|kar|ke)|bana\s*(?:do|de|dena|dijiye)|kar\s*(?:do|de|dena|dijiye)|kr\s*(?:do|de|dena)|dikha\s*(?:do|dena|dijiye)|laga\s*(?:do|dena)|hata\s*(?:do|dena)|save\s*kar\s*(?:do|dena)|bhej\s*(?:do|dena))\b/iu;
+const hindiDirectQuestion=/^क्या\s+(?:आप|तुम|शुवि|shuvi)\b?/iu;
+const actionCapabilityRoot=/(?:खोल|बना|चल|लगा|हटा|एडिट|एक्सपोर्ट|इम्पोर्ट|रेंडर|सेव|टाइप|क्लिक|लिख|भेज|डाउनलोड|इंस्टॉल|सेलेक्ट|कॉपी|पेस्ट|create|open|edit|export|render|save|launch|start)/iu;
+const secondPersonCapability=/(?:सकते|सकती|सकोगे|पाएँगे|पाओगे|सकेंगे)\s*(?:हो|हैं|क्या|\?)?\s*[?.।]?$/iu;
+const howToQuestion=/(?:कैसे\s*(?:कर|करूँ|करें|करते|बनाऊँ|बनाएं|खोलूँ|खोलें|होता)|किस\s+तरह|क्या\s+(?:है|होता\s+है)|\bhow\s+to\b|\bsteps\s+to\b|(?:बनाने|खोलने|करने|एडिट\s+करने)\s+का\s+तरीका|समझाइए|बताइए|सिखाइए)/iu;
 export function classifyNativeIntent(text) {
  if(typeof text!=="string")return "chat";
  const input=text.trim();
  const explicit=input.match(/^@([a-z0-9-]+)(?:\s|$)/i);
  if(explicit&&names.has(explicit[1].toLowerCase()))return explicit[1].toLowerCase();
  if(/^(?:explain|what is|how (?:do|does|to)|teach me|tell me about|why |can you explain|समझाओ|क्या है|कैसे |क्यों )/iu.test(input))return "chat";
+ // "Premiere में export कैसे करें?" is a question, not a request to
+ // execute export. An explicit second-person ability-to-do request is
+ // different: "क्या आप Premiere export कर सकते हो?" belongs to Master.
+ const politeCapability=hindiDirectQuestion.test(input)&&actionCapabilityRoot.test(input)&&
+   secondPersonCapability.test(input);
+ if(howToQuestion.test(input)&&!politeCapability)return "chat";
  // A question about what software can do is not a request to operate it.
  // A direct "Can you open..." remains an actionable user command.
  if(/^(?:can|could|does|do|is|are|should|will)\s+(?!you\b|we\b|shuvi\b).{1,100}\?\s*$/iu.test(input))return "chat";
- if(!executionVerb.test(input))return "chat";
+ if(!executionVerb.test(input)&&!hindiPoliteImperative.test(input)&&
+    !romanPoliteImperative.test(input)&&!politeCapability)return "chat";
  const match=intents.filter(([,rule])=>rule.test(input));
  if(match.length===1)return match[0][0];
  if(match.length>1)return "master";
