@@ -272,8 +272,8 @@ test("A direct Premiere open request tells Master to launch, not only discover, 
  assert.equal(reply.ok,true);
  assert.equal(s.chatInputs.length,1,"no additional paid call before first approval");
  assert.equal(s.chatInputs[0].model,"model/master");
- assert.match(s.chatInputs[0].orchestration_context,/premiere_launch with \{\} FIRST/);
- assert.match(s.chatInputs[0].orchestration_context,/Do not stop at premiere_detect/);
+ assert.match(s.chatInputs[0].orchestration_context,/PREMIERE OPENING/);
+ assert.match(s.chatInputs[0].orchestration_context,/observe existing Premiere first/);
  assert.equal(s.staged.length,1);
  assert.equal(s.staged[0].proposal.tool,"premiere_launch");
  assert.deepEqual(s.staged[0].proposal.arguments,{});
@@ -287,7 +287,7 @@ test("short app-name clarification retains the previous open request as Master c
  await s.transport.send("adobe open karo","clarify",0);
  await s.transport.send("Premiere Pro","clarify",1);
  assert.equal(s.chatInputs[1].model,"model/master");
- assert.match(s.chatInputs[1].orchestration_context,/previous opening request: adobe open karo/);
+ assert.match(JSON.stringify(s.chatInputs[1].messages),/adobe open karo/);
  assert.equal(s.staged[0].proposal.tool,"premiere_launch");
 });
 
@@ -366,9 +366,10 @@ test("initial AI 503 is planning failure only, with no phantom Windows action or
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
  assert.equal(s.recoveryRetry.hidden,true,"no audited predecessor exists to resume");
  assert.equal(s.chatInputs.length,1,"no automatic retry");
- const blocked=await s.transport.send("Open Notepad","second-503",0);
- assert.equal(blocked.ok,false);
- assert.equal(s.chatInputs.length,1,"unresolved paid request cannot be silently replayed");
+ const fresh=await s.transport.send("Open Notepad","second-503",0);
+ assert.equal(fresh.ok,true,"new owner command supersedes the dormant HTTP-503 task");
+ assert.equal(s.chatInputs.length,2,"new user command sends one NEW paid request, never replays old provider request");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0,"neither old nor new action ran");
 });
 test("restart after AI 503 preserves audited Windows identity but never blindly replays a paid request or action",async()=>{
  const s=setup({simulateRustJournal:true,retryAuditReceipt:true,
@@ -663,11 +664,11 @@ test("app choice preserves original named project through native approval and fo
  assert.equal(s.staged.length,1);
  assert.equal(s.staged[0].proposal.tool,"premiere_launch");
  assert.match(s.chatInputs[1].orchestration_context,/Premiere project creation is an END GOAL/);
- assert.match(s.chatInputs[1].orchestration_context,/Shuvi AI Test 01/);
+ assert.match(JSON.stringify(s.chatInputs[1].messages),/Shuvi AI Test 01/);
  s.allow.listeners.get("click")();
  await until(()=>s.staged.length===2,"audited window verification");
  assert.match(s.chatInputs[2].orchestration_context,/Shuvi AI Test 01/);
- assert.match(s.chatInputs[2].orchestration_context,/Premiere Pro/);
+ assert.match(JSON.stringify(s.chatInputs[2].messages),/Premiere Pro/);
  assert.match(s.chatInputs[2].messages.at(-1).content,/^Original user request:/);
  assert.equal(s.staged[1].proposal.tool,"ui_windows");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
@@ -870,16 +871,16 @@ test("Batch 08 multi-turn app and folder clarification retains original goal",as
  await s.transport.send("D:\\Projects\\Test","multi-clarification",2);
  assert.equal(s.chatInputs.length,3);
  assert.equal(s.chatInputs[2].model,"model/master");
- assert.match(s.chatInputs[2].orchestration_context,/Adobe खोलकर Shuvi AI Test 01/);
- assert.match(s.chatInputs[2].orchestration_context,/Premiere Pro/);
- assert.match(s.chatInputs[2].orchestration_context,/Projects/);
+ assert.match(JSON.stringify(s.chatInputs[2].messages),/Adobe खोलकर Shuvi AI Test 01/);
+ assert.match(JSON.stringify(s.chatInputs[2].messages),/Premiere Pro/);
+ assert.match(JSON.stringify(s.chatInputs[2].messages),/Projects/);
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
  assert.equal(s.approval.hidden,false);
 });
 test("Batch 08 fresh command does not inherit older clarification goal",async()=>{
  const app={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",model:"model/master",tool_proposal:null};
- const s=setup({first:app,second:launch});
+ const s=setup({first:app,second:launch,simulateRustJournal:true});
  await until(()=>s.transport.connected(),"native IPC");
  await s.transport.send("Adobe खोलकर Shuvi Test नाम का प्रोजेक्ट बनाओ","fresh-after-choice",0);
  await s.transport.send("Photoshop खोलो","fresh-after-choice",1);
@@ -936,8 +937,8 @@ test("Batch 11 post-action save-folder clarification retains the ORIGINAL goal",
   "paused for owner choice");
  await s.transport.send("D:\\Temporary Projects","clarification-after-tool",1);
  assert.equal(s.chatInputs[2].model,"model/master");
- assert.match(s.chatInputs[2].orchestration_context,/Premiere kholo aur Shuvi AI Test/);
- assert.match(s.chatInputs[2].orchestration_context,/Temporary Projects/);
+ assert.match(JSON.stringify(s.chatInputs[2].messages),/Premiere kholo aur Shuvi AI Test/);
+ assert.match(JSON.stringify(s.chatInputs[2].messages),/Temporary Projects/);
  assert.equal(s.staged.length,2);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
 });
@@ -1089,7 +1090,7 @@ test("Batch 52 Rust returning same prepared action ID cannot stage next approval
 
 test("Batch 53 a fresh Windows command excludes unrelated previous task messages",async()=>{
  const noTool={content:"Ready",provider:"xkiro",model:"model/master",tool_proposal:null};
- const s=setup({first:noTool,second:launch});
+ const s=setup({first:noTool,second:launch,simulateRustJournal:true});
  await until(()=>s.transport.connected(),"native");
  await s.transport.send("Premiere kholo aur project banao","fresh-context",0);
  await s.transport.send("Premiere kholo","fresh-context",1);
@@ -1215,7 +1216,7 @@ test("restart with an uncertain action blocks new desktop work until explicit ow
  assert.equal(s.recoveryDismiss.hidden,false);
  const blocked=await s.transport.send("Open Premiere Pro","new-unsafe-task",0);
  assert.equal(blocked.ok,false);
- assert.match(blocked.error,/previous Windows task/);
+ assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(s.calls.some(c=>c.name==="chat"||c.name==="prepare_tool"),false);
  await s.recoveryCheck.listeners.get("click")();
  assert.match(s.recoveryNotice.textContent,/Rust Audit confirms a successful action/);
@@ -1255,7 +1256,7 @@ test("unknown outcome in the same session blocks a second paid task until owner 
  assert.equal(s.recoveryCheck.hidden,false);
  const blocked=await s.transport.send("Open Premiere Pro","second-task",0);
  assert.equal(blocked.ok,false);
- assert.match(blocked.error,/previous Windows task/);
+ assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  await s.recoveryDismiss.listeners.get("click")();
@@ -1275,7 +1276,7 @@ test("Rust recovery alone blocks new tasks even when WebView storage was lost",a
  const blocked=await s.transport.send("Open Premiere Pro","lost-local",0);
  assert.equal(blocked.ok,false);
  assert.equal(s.chatInputs.length,0);
- assert.match(s.recoveryNotice.textContent,/Rust has recovery evidence but WebView has no matching record/);
+ assert.match(s.recoveryNotice.textContent,/पुराने Action का सुरक्षित Audit|Rust has recovery evidence but WebView has no matching record/);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  await s.recoveryDismiss.listeners.get("click")();
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
@@ -1291,7 +1292,7 @@ test("a Rust-only paused checkpoint requires owner acknowledgement even without 
  await until(()=>s.transport.connected(),"native Rust paused checkpoint");
  const blocked=await s.transport.send("Open Premiere Pro","old-paused-task",0);
  assert.equal(blocked.ok,false);
- assert.match(blocked.error,/previous Windows task/);
+ assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.recoveryDismiss.hidden,false);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
@@ -1356,7 +1357,7 @@ test("failed Rust recovery save cannot be followed by a second Windows paid requ
 
 test("same-session successful no-action Master answer can retire only both journals on a fresh owner command",async()=>{
  const noTool={content:"Completed clarification without Windows tool",provider:"xkiro",model:"model/master",tool_proposal:null};
- const s=setup({first:noTool,second:launch});
+ const s=setup({first:noTool,second:launch,simulateRustJournal:true});
  await until(()=>s.transport.connected(),"native ready");
  const first=await s.transport.send("Open Adobe app?","first-action-free",0);
  assert.equal(first.ok,true);
@@ -1378,18 +1379,18 @@ test("same-session successful no-action Master answer can retire only both journ
 
 test("failure to retire no-action checkpoint blocks any later paid or native dispatch",async()=>{
  const noTool={content:"No tool action necessary",provider:"xkiro",model:"model/master",tool_proposal:null};
- const s=setup({first:noTool,second:launch,rustClearFail:true});
+ const s=setup({first:noTool,second:launch,rustClearFail:true,simulateRustJournal:true});
  await until(()=>s.transport.connected(),"native ready");
  await s.transport.send("Inspect possible app","no-action-terminal",0);
  const blocked=await s.transport.send("Launch Premiere Pro","new-task-blocked-by-disk",0);
  assert.equal(blocked.ok,false);
- assert.match(blocked.error,/could not be retired/);
+ assert.match(blocked.error,/पुराना Windows Action|could not be retired/);
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.staged.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  const stillBlocked=await s.transport.send("Open Photoshop","new-task-blocked-again",0);
  assert.equal(stillBlocked.ok,false);
- assert.match(stillBlocked.error,/previous Windows task/);
+ assert.match(stillBlocked.error,/पुराना Windows Action|previous Windows task/);
 });
 
 test("acted-on or uncertain tasks never qualify for no-action rollover",async()=>{
@@ -1448,7 +1449,7 @@ test("failed WebView removal after Rust acknowledgement keeps Windows requests b
  const before=s.chatInputs.length;
  const blocked=await s.transport.send("Open Photoshop","cannot-reuse-partial-clear",0);
  assert.equal(blocked.ok,false);
- assert.match(blocked.error,/previous Windows task/);
+ assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,before);
 });
 
@@ -1486,7 +1487,7 @@ test("divergent v2 WebView and Rust recovery revisions never replay paid or Wind
  assert.match(s.recoveryNotice.textContent,/WebView and Rust recovery records disagree/);
  const blocked=await s.transport.send("Open Premiere Pro","restart-conflict",0);
  assert.equal(blocked.ok,false);
- assert.match(blocked.error,/previous Windows task/);
+ assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
  assert.equal(s.calls.filter(c=>c.name==="save_native_recovery").length,0);
@@ -1501,7 +1502,7 @@ test("unreadable WebView recovery blocks new Windows tasks without paid model di
  assert.match(s.recoveryNotice.textContent,/WebView recovery evidence is invalid or unavailable/);
  const blocked=await s.transport.send("Open Premiere Pro","unreadable-recovery",0);
  assert.equal(blocked.ok,false);
- assert.match(blocked.error,/previous Windows task/);
+ assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
 });
