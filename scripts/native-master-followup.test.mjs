@@ -38,10 +38,10 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false,terminalNowRef=null,queueStore=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const issuedRustAiQuota=new Map();
- const durableQueue=[];let queueSeq=0;
+ const durableQueue=queueStore??[];let queueSeq=durableQueue.length;let queuePulse=null;
  let persistedRust=rustRecord;
  let inspectionGrant=null;
   let premiereReadGrant=null;
@@ -72,7 +72,12 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    const x=durableQueue[0];if(!x||x.id!==params.id||x.phase!=="claimed")throw Error("Bad native finish");
    durableQueue.shift();return;
   }
-  if(name==="retire_audited_superseded_native_task")throw Error("Unresolved native worker identity");
+  if(name==="retire_audited_superseded_native_task"){
+   if(!terminalNowRef?.ready||!simulateRustJournal||persistedRust?.taskId!==params.taskId||
+     persistedRust?.revision!==params.revision||persistedRust?.actionId!==params.actionId)
+    throw Error("Unresolved native worker identity");
+   persistedRust=null;return true;
+  }
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
   if(name==="save_native_recovery"){
    if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");
@@ -259,7 +264,8 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    removeItem:key=>data.delete(key)
   };
  })();
- globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:actualRecoveryStore};
+ globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:actualRecoveryStore,
+  setInterval(fn){queuePulse=fn;return 1;}};
  const transport=mountNativeAgent(()=>{});
  const budgetSelect=created.find(x=>x.attributes["aria-label"]==="Maximum Windows actions per task");
  if(budgetSelect)budgetSelect.value=String(budgetActions);
@@ -281,7 +287,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,durableQueue,issuedRustAiQuota,allow,premiereApprove,premiereRevoke,editApprove,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,durableQueue,tickQueue:()=>queuePulse?.(),issuedRustAiQuota,allow,premiereApprove,premiereRevoke,editApprove,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
