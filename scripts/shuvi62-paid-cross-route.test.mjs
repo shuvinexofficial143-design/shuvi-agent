@@ -28,7 +28,7 @@ test("BUG-029: renderer must reconcile exact ledger action charge before audit_v
  const decide=ui.slice(ui.indexOf("async function decide("),ui.indexOf("approve.addEventListener("));
  const receipt=decide.indexOf("native_task_ai_usage");
  const counter=decide.indexOf("reserveNativeModelRequest(meteredBudget)");
- const audit=decide.indexOf("// Native Result is not self-attested success");
+ const audit=decide.indexOf("// P0-A: global audit tail");
  assert.ok(receipt>=0&&counter>receipt&&audit>counter);
  assert.match(decide,/entry\.taskId===taskId&&entry\.requestId===current\.action\.id/);
  assert.match(decide,/entry\.index===index/);
