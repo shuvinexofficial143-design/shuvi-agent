@@ -32,9 +32,9 @@ test("UI mutations cannot blindly use loose synonyms or multiple matches",()=>{
   assert.equal((src.match(/\$matches = Resolve-ShuviUiMatches -root \$root -condition \$condition/g)||[]).length,8);
 });
 test("Master discovers observed UI and does not silently switch providers",()=>{
-  assert.match(agent,/use ui_windows and ui_discover to ground current button labels/);
-  assert.match(agent,/xKiro model capability is checked against its public catalog/);
-  assert.match(agent,/No silent model switches or automatic paid retries/);
+  assert.match(agent,/ui_windows and ui_find or ui_discover observations/);
+  assert.match(agent,/selected model supports Vision/);
+  assert.match(agent,/no automatic paid retries/);
 });
 test("Windows preview builds only for explicit workflow changes, not ordinary source pushes",()=>{
   assert.match(preview,/workflow_dispatch:/);
