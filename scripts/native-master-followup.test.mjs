@@ -1310,7 +1310,7 @@ test("Rust recovery alone blocks new tasks even when WebView storage was lost",a
  assert.equal(blocked.ok,true);
  assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
  assert.equal(s.chatInputs.length,0);
- assert.match(s.recoveryNotice.textContent,/पुराने Action का सुरक्षित Audit|Rust has recovery evidence but WebView has no matching record/);
+ assert.match(s.recoveryNotice.textContent,/Durable Queue|Queue में दर्ज|Rust has recovery evidence but WebView has no matching record/);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  await s.recoveryDismiss.listeners.get("click")();
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
@@ -1383,8 +1383,9 @@ test("failed Rust recovery save cannot be followed by a second Windows paid requ
  const failed=await s.transport.send("Open Premiere Pro","first-failed-checkpoint",0);
  assert.equal(failed.ok,false);
  const next=await s.transport.send("Open Premiere Pro","next-task-must-block",0);
- assert.equal(next.ok,false);
- assert.match(next.error,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
+ assert.equal(next.ok,true,"durable admission does not execute native task");
+ assert.equal(s.durableQueue.length,1);
+ assert.match(next.reply,/Queue में दर्ज/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.recoveryDismiss.hidden,false);
@@ -1425,8 +1426,9 @@ test("failure to retire no-action checkpoint blocks any later paid or native dis
  assert.equal(s.staged.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  const stillBlocked=await s.transport.send("Open Photoshop","new-task-blocked-again",0);
- assert.equal(stillBlocked.ok,false);
- assert.match(stillBlocked.error,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
+ assert.equal(stillBlocked.ok,true,"second command queues behind FIFO");
+ assert.equal(s.durableQueue.length,2);
+ assert.match(stillBlocked.reply,/Queue में दर्ज/);
 });
 
 test("acted-on or uncertain tasks never qualify for no-action rollover",async()=>{
@@ -1502,14 +1504,15 @@ test("owner recovery clear holds exclusive submit lock until Rust disk result is
  const clearing=s.recoveryDismiss.listeners.get("click")();
  await until(()=>s.calls.some(c=>c.name==="clear_native_recovery"),"Rust clear in flight");
  const rejected=await s.transport.send("Open Photoshop","clear-race-new",0);
- assert.equal(rejected.ok,false);
- assert.match(rejected.error,/अभी चल रहा है|already running/);
+ assert.equal(rejected.ok,true,"new command admitted while Rust clear is active");
+ assert.equal(s.durableQueue.length,1);
+ assert.match(rejected.reply,/Queue में दर्ज/);
  assert.equal(s.chatInputs.length,1);
  release();
  await clearing;
- const accepted=await s.transport.send("Open Photoshop","clear-race-new",0);
- assert.equal(accepted.ok,true);
- assert.equal(s.chatInputs.length,2);
+ s.tickQueue();
+ await until(()=>s.chatInputs.length===2,"queued task starts once Rust clear completes");
+ assert.equal(s.durableQueue.length,0,"FIFO item retired after admission");
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
 });
 
@@ -1700,7 +1703,8 @@ test("corrupt/mismatched terminal records cannot silently retire on restart",asy
  const s=setup({recoveryStore:store,rustRecord:{...valid,revision:4},simulateRustJournal:true});
  await until(()=>s.transport.connected(),"ready");
  assert.equal(s.calls.filter(c=>c.name==="retire_verified_native_recovery").length,0);
- assert.equal((await s.transport.send("Open Notepad","blocked",0)).ok,false);
+ assert.equal((await s.transport.send("Open Notepad","blocked",0)).ok,true);
+ assert.equal(s.durableQueue.length,1,"mismatched old record queues new intent without execution");
  assert.equal(s.chatInputs.length,0);
 });
 
