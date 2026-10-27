@@ -9401,6 +9401,70 @@ fn read_action_audit_receipt(
     Ok(matched)
 }
 
+// Shared Rust collector: bounded memory, no global last-N truncation.
+fn append_exact_native_audit_trace_entry(
+    trace:&mut Vec<AuditEntry>,action_id:&str,line:&str
+)->Result<(),String>{
+    let Ok(entry)=serde_json::from_str::<AuditEntry>(line) else{return Ok(());};
+    if entry.action_id.as_deref()==Some(action_id)&&matches!(
+        entry.event.as_str(),"prepared"|"approved"|"executed"|
+        "failed"|"denied"|"outcome_unknown"){
+        if trace.len()>=64{return Err("Too many records for one exact native action UUID.".into());}
+        trace.push(entry);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod native_exact_audit_trace_tests{
+    use super::*;
+    const ID:&str="123e4567-e89b-42d3-a456-426614174000";
+    const FOREIGN:&str="123e4567-e89b-42d3-a456-426614174001";
+    fn entry(id:&str,tool:&str,event:&str,success:bool)->String{
+        serde_json::to_string(&AuditEntry{
+            timestamp_ms:10,event:event.into(),tool:tool.into(),
+            detail:"bounded native regression".into(),success,
+            action_id:Some(id.into()),
+        }).unwrap()
+    }
+    #[test]
+    fn uuid_trace_survives_more_than_two_hundred_unrelated_audits(){
+        let mut entries=Vec::new();
+        for _ in 0..275{
+            append_exact_native_audit_trace_entry(&mut entries,ID,
+                &entry(FOREIGN,"ui_windows","executed",true)).unwrap();
+        }
+        append_exact_native_audit_trace_entry(&mut entries,ID,
+            &entry(ID,"ui_discover","executed",true)).unwrap();
+        assert_eq!(entries.len(),1);
+        assert_eq!(entries[0].tool,"ui_discover");
+        assert_eq!(entries[0].action_id.as_deref(),Some(ID));
+    }
+    #[test]
+    fn conflicting_terminal_actions_remain_visible_to_frontend(){
+        let mut entries=Vec::new();
+        for event in ["executed","failed"]{
+            append_exact_native_audit_trace_entry(&mut entries,ID,
+                &entry(ID,"ui_discover",event,event=="executed")).unwrap();
+        }
+        assert_eq!(entries.len(),2);
+        assert_ne!(entries[0].event,entries[1].event);
+    }
+    #[test]
+    fn trace_bounded_and_unknown_never_falsely_verified(){
+        let mut entries=Vec::new();
+        append_exact_native_audit_trace_entry(&mut entries,ID,
+            &entry(ID,"premiere_apply_assembly","outcome_unknown",false)).unwrap();
+        assert_eq!(entries[0].event,"outcome_unknown");
+        for _ in 1..64{
+            append_exact_native_audit_trace_entry(&mut entries,ID,
+                &entry(ID,"ui_discover","prepared",true)).unwrap();
+        }
+        assert!(append_exact_native_audit_trace_entry(&mut entries,ID,
+            &entry(ID,"ui_discover","approved",true)).is_err());
+    }
+}
+
 /* P0: exact per-action diagnostics. The global audit_log tail may drop a
  * valid terminal receipt under heavy UIA/premiere activity. Scan both current
  * and rotated logs for only this UUID; never turn a missing/duplicate terminal
@@ -9418,13 +9482,7 @@ fn read_action_audit_trace(app:&AppHandle,action_id:&str)->Result<Vec<AuditEntry
             .map_err(|error|format!("Could not open exact native audit: {error}"))?;
         for line in BufReader::new(file).lines(){
             let line=line.map_err(|error|format!("Could not scan exact native audit: {error}"))?;
-            let Ok(entry)=serde_json::from_str::<AuditEntry>(&line) else {continue;};
-            if entry.action_id.as_deref()==Some(action_id)&&matches!(
-                entry.event.as_str(),"prepared"|"approved"|"executed"|
-                "failed"|"denied"|"outcome_unknown"){
-                if trace.len()>=64{return Err("Too many records for one exact native action UUID.".into());}
-                trace.push(entry);
-            }
+            append_exact_native_audit_trace_entry(&mut trace,action_id,&line)?;
         }
     }
     Ok(trace)
