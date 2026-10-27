@@ -218,6 +218,15 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   }
   if(name==="action_audit_receipt")
    return (failFind||softFailedRead)?{action_id:receiptMismatch?"mismatched-action":params.actionId,tool:"ui_find",event:"failed",success:false}:null;
+  // P0: exact UUID traces; old audit tail remains for recovery UI checks.
+  if(name==="action_audit_trace"){
+   const rows=recoveryTrail??(auditOk?staged.map(s=>{
+    const failed=(softFailedRead||failFind)&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
+    return {event:failed?"failed":"executed",action_id:s.id,tool:s.proposal.tool,success:!failed};
+   }):[]);
+   return rows.filter(e=>e.action_id===params.actionId);
+  }
+  if(name==="native_worker_status")return {state:"idle",durableJobPhase:null,durableJobActionId:null};
   if(name==="audit_log"&&recoveryTrail)return recoveryTrail;
   if(name==="audit_log")return auditOk?staged.map(s=>{
    const failed=(softFailedRead||failFind)&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
