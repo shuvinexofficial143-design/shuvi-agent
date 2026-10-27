@@ -1270,7 +1270,7 @@ test("Rust recovery alone blocks new tasks even when WebView storage was lost",a
  const now=Date.now(),id="rust-previous-21";
  const rustRecord={version:1,maxActions:8,stagedActions:1,modelRequests:1,
   expiresAt:now+600000,updatedAt:now,phase:"executing",actionId:id};
- const s=setup({rustRecord});
+ const s=setup({rustRecord,simulateRustJournal:true});
  await until(()=>s.transport.connected(),"native IPC and Rust checkpoint");
  assert.equal(s.recoveryDismiss.hidden,false);
  const blocked=await s.transport.send("Open Premiere Pro","lost-local",0);
@@ -1288,7 +1288,7 @@ test("a Rust-only paused checkpoint requires owner acknowledgement even without 
  const now=Date.now();
  const rustRecord={version:1,maxActions:8,stagedActions:1,modelRequests:1,
   expiresAt:now+600000,updatedAt:now,phase:"paused",actionId:"paused-checkpoint"};
- const s=setup({rustRecord});
+ const s=setup({rustRecord,simulateRustJournal:true});
  await until(()=>s.transport.connected(),"native Rust paused checkpoint");
  const blocked=await s.transport.send("Open Premiere Pro","old-paused-task",0);
  assert.equal(blocked.ok,false);
@@ -1349,7 +1349,7 @@ test("failed Rust recovery save cannot be followed by a second Windows paid requ
  assert.equal(failed.ok,false);
  const next=await s.transport.send("Open Premiere Pro","next-task-must-block",0);
  assert.equal(next.ok,false);
- assert.match(next.error,/previous Windows task/);
+ assert.match(next.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.recoveryDismiss.hidden,false);
@@ -1465,7 +1465,7 @@ test("owner recovery clear holds exclusive submit lock until Rust disk result is
  await until(()=>s.calls.some(c=>c.name==="clear_native_recovery"),"Rust clear in flight");
  const rejected=await s.transport.send("Open Photoshop","clear-race-new",0);
  assert.equal(rejected.ok,false);
- assert.match(rejected.error,/already running/);
+ assert.match(rejected.error,/अभी चल रहा है|already running/);
  assert.equal(s.chatInputs.length,1);
  release();
  await clearing;
