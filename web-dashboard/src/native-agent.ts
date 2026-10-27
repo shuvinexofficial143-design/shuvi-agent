@@ -2252,7 +2252,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const firstStepGuidance=route.role==="chat"?null:(()=>{
      const editing=/\b(?:edit|editing|cut|trim|timeline|import|export|render|project|save)\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
      const premiere=/\b(?:premiere|premire|premier)\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective);
-     const opening=/\b(?:open|launch|start)\b|खोलो|ओपन/iu.test(effectiveObjective);
+     const opening=/\b(?:open|launch|start|kholo|khol|kholdo|kholna)\b|खोलो|ओपन/iu.test(effectiveObjective);
      const project=/\b(?:project|projct)\b|प्रोजेक्ट/iu.test(effectiveObjective)&&
       /\b(?:create|make|new|banao|banana)\b|बनाओ|नया|नई/iu.test(effectiveObjective);
      const guidance=[
