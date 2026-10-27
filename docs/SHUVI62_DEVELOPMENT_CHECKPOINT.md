@@ -70,3 +70,6 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 ## Increment 09 follow-up — owner-review compatibility
 - `read_action_audit_receipt` now sees exact `outcome_unknown` audit events. Existing `REVIEW UNKNOWN` native owner reconciliation accepts matching `running` or `outcome_unknown` journals, keeps verified result None for UNKNOWN, never turns it into FAILED/SUCCESS. Read-only worker status publishes `recovery_required`; Windows UI exposes explicit owner review for either phase, not automatic unlock. Regression added.
 - Exact HEAD CI and Windows owner E2E pending.
+
+## Increment 09 frontend assertion correction
+- CI Run 40474640494 Frontend failed 2 source-shape assertions expecting pre-UNKNOWN `existing.phase!="running"` and `Ok()` rather than `Ok(())` for tuple arm. Updated existing bridge test and new regression test without relaxing runtime safety. Exact new CI pending.

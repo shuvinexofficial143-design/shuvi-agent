@@ -8,7 +8,7 @@ test("native dispatch rejects outstanding subprocess intent even with clean main
   assert.match(owned,/receipt\.phase\.as_str\(\),"launch_pending"\|"running"/);
 });
 test("only owner-reconciled exact native journal identity can review OS process receipt",()=>{
-  assert.match(worker,/if existing\.phase!="running"\|\|existing\.action_id!=id\|\|existing\.tool!=tool/);
+  assert.match(worker,/if !matches!\(existing\.phase\.as_str\(\),"running"\|"outcome_unknown"\)\|\|existing\.action_id!=id\|\|existing\.tool!=tool/);
   assert.match(worker,/owned_process::review_process_receipt_for_owner\(app,id,tool\)\?/);
   assert.match(owned,/Foreign unresolved process receipt cannot be dismissed/);
   assert.doesNotMatch(owned,/tauri::command/);

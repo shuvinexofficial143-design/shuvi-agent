@@ -18,7 +18,7 @@ test("BUG-003: OS helper timeout is explicitly UNKNOWN, never generic FAILED",()
  assert.match(err,/Native action outcome UNKNOWN; do not retry automatically/);
 });
 test("BUG-003: native worker persists distinct unknown until exact owner review, no release or second job",()=>{
- assert.match(job,/\("outcome_unknown",None\)=>Ok\(\)/);
+ assert.match(job,/\("outcome_unknown",None\)=>Ok\(\(\)\)/);
  assert.match(job,/fn outcome_unknown_at\(/);
  assert.match(job,/record\.phase="outcome_unknown"\.into\(\)/);
  assert.match(job,/record\.audit_success=None/);
