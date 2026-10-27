@@ -233,6 +233,9 @@ public static class ShuviTargetCaptureWin32 {
     // GA_ROOT follows the actual parent window chain. Owner/GA_ROOTOWNER
     // would wrongly bless a separate same-process popup owned by the target.
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+    // Walk the actual top-level Z order ABOVE the bound HWND, not a handful
+    // of arbitrary pixels. GW_HWNDPREV=3, bounded before sending any pixels.
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")]
@@ -343,9 +346,43 @@ try {
     if (-not $desktop.Contains($bounds)) {
         throw 'Target window extends outside the visible desktop; maximize or move it before retrying.'
     }
-    # Screen-copy captures visible pixels, including foreign topmost overlays.
-    # Check representative interior samples and fail closed if another process
-    # sits over the requested HWND (this is not a full occlusion proof).
+    # BUG-026: 5 sample points alone miss small overlay rectangles. Enumerate
+    # the *entire* bounded top-level Z stack above the exact approved HWND.
+    # Intersect every visible, non-minimized top-level window with the full
+    # capture rectangle: any overlap (including same-process popups) refuses
+    # the screenshot. Do not use process matching as an overlay exemption.
+    # This conservative check may reject overlapping transparent windows;
+    # that is preferable to sending another application's pixels to AI.
+    function Assert-ShuviCaptureZOrder {
+        $checkedWindows = 0
+        $overlay = [ShuviTargetCaptureWin32]::GetWindow($target, [uint32]3)
+        while ($overlay -ne [IntPtr]::Zero) {
+            $checkedWindows++
+            if ($checkedWindows -gt 4096) {
+                throw 'Target Z-order occlusion proof exceeded budget. No screenshot sent.'
+            }
+            if (-not [ShuviTargetCaptureWin32]::IsWindow($overlay)) {
+                throw 'Target Z-order changed during occlusion proof. No screenshot sent.'
+            }
+            if ([ShuviTargetCaptureWin32]::IsWindowVisible($overlay) -and
+                -not [ShuviTargetCaptureWin32]::IsIconic($overlay)) {
+                $overlayRect = New-Object ShuviTargetCaptureWin32+RECT
+                if (-not [ShuviTargetCaptureWin32]::GetWindowRect($overlay, [ref]$overlayRect)) {
+                    throw 'Could not prove another window does not cover target. No screenshot sent.'
+                }
+                if ($overlayRect.Left -lt $rect.Right -and
+                    $overlayRect.Right -gt $rect.Left -and
+                    $overlayRect.Top -lt $rect.Bottom -and
+                    $overlayRect.Bottom -gt $rect.Top) {
+                    throw 'Another visible top-level window overlaps the approved screenshot area. No image sent.'
+                }
+            }
+            $overlay = [ShuviTargetCaptureWin32]::GetWindow($overlay, [uint32]3)
+        }
+    }
+    # Representative point ownership remains a SECOND independent check.
+    # Z-order verification and point samples cannot defeat every compositing
+    # race or OS-generated overlay; complete owner Windows E2E is still needed.
     function Assert-ShuviCaptureSurface {
     foreach ($sample in @('0.18,0.18','0.50,0.18','0.50,0.50','0.18,0.82','0.82,0.82')) {
         $fraction = $sample -split ','
@@ -371,8 +408,9 @@ try {
         }
     }
     }
-    # Sample visible target ownership both before and after the bitmap copy.
-    # This does not prove every pixel but rejects common popup/overlay races.
+    # Check full top-level window overlap AND the sampled UIA surface before
+    # screenshot allocation. Recheck around the real screen copy and after save.
+    Assert-ShuviCaptureZOrder
     Assert-ShuviCaptureSurface
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -381,7 +419,8 @@ try {
         # Foreign dialogs may appear between the first occlusion check and
         # CopyFromScreen. Discard the image before persisting it if samples
         # now hit a different window owner.
-        Assert-ShuviCaptureSurface
+        Assert-ShuviCaptureZOrder
+    Assert-ShuviCaptureSurface
         # Check focus, UIA identity, Win32 process and geometry after copying.
         [uint32]$pidAfterCopy = 0
         [void][ShuviTargetCaptureWin32]::GetWindowThreadProcessId($target, [ref]$pidAfterCopy)
@@ -425,6 +464,7 @@ try {
         throw 'Approved target changed after screenshot encoding. No image sent.'
     }
     Assert-ShuviCaptureProcessGeneration
+    Assert-ShuviCaptureZOrder
     Assert-ShuviCaptureSurface
     # Rust deletes any saved PNG if this final attestation fails.
     [PSCustomObject]@{

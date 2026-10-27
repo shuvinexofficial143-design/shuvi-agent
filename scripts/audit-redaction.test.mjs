@@ -39,3 +39,14 @@ test("deny expiry and execution audit use safe detail",()=>{
   assert.match(execute,/detail: executed_audit_detail,/);
   assert.match(execute,/detail: audit_detail,/);
 });
+
+test("BUG-015: search-text action audit must never persist the original query or path",()=>{
+  const start=rust.indexOf("fn audit_safe_action_detail");
+  const end=rust.indexOf("fn successful_execution_audit_detail",start);
+  const safe=rust.slice(start,end);
+  assert.match(safe,/"search_text" => "Workspace text search path and query omitted from persistent audit\."/);
+  // Prepared in-memory owner approval can still show the exact search input.
+  assert.match(rust,/format!\("\{\} \| query=\{\}", path, query\)/);
+  const exe=rust.slice(rust.indexOf("async fn execute_action("),rust.indexOf("async fn execute_powershell"));
+  assert.match(exe,/let audit_detail = audit_safe_action_detail\(&tool, &detail\)/);
+});

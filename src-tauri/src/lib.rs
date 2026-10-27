@@ -9078,6 +9078,9 @@ fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
             } else {"Vision prompt omitted from persistent audit.".into()}
         },
         "inspect_screen" => "Vision prompt omitted from persistent audit.".into(),
+        // BUG-015: do not persist literal search queries, even if they do not
+        // look like a password/token. Approval UI retains full in-memory detail.
+        "search_text" => "Workspace text search path and query omitted from persistent audit.".into(),
         _ => detail.chars().take(4_000).collect(),
     }
 }

@@ -23,3 +23,9 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 ## Increment 02 CI follow-up (2026-10-27)
 - Source HEAD 5964c891 CI 40452664753 frontend revealed 2 stale source-assertion tests: scripts/managed-process-identity.test.mjs and scripts/manual-shell-memory.test.mjs still demanded unsafe 'while ... unwrap_or(false)' monitoring.
 - Updated both to verify typed identity Result handling, fail-closed RAM-monitor error path, and no false success. Rust/installer results were pending at this note. No extra permissions or process killing added in this follow-up.
+
+## Increment 03 — screenshot privacy and audit-search disclosure
+- Base HEAD `8bcb1fc4930c3a8a758520cb11101e97db127495`, CI Run `40452821089` observed Frontend SUCCESS, Rust and NSIS still RUNNING before staging.
+- BUG-026 mitigation: bound Z-order scan, reject any visible top-level HWND overlap of the entire approved screenshot rectangle, repeat three times around screen copy and persisted PNG. Existing exact PID/HWND/birth, foreground, five-point and PNG integrity guards remain. Cannot claim full compositor/race immunity or owner-PC PASS.
+- BUG-015 persistent audit redaction of arbitrary literal search terms and selected path; still retain explicit action permission details only in memory.
+- Added source and geometric synthetic regressions; BUG-029 cross-route billable AI guard remains OPEN; no new USD cap or additional owner permission claim.

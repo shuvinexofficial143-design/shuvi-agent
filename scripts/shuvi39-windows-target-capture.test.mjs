@@ -105,3 +105,23 @@ test("OS generation is included in native receipt but not exported in model-faci
  assert.match(capture,/fs::remove_file\(&path\)/);
  assert.match(capture,/let _ = birth_ticks/);
 });
+
+test("BUG-026: scan full top-level Z-order, not only five interior samples",()=>{
+ const source=capture.slice(capture.indexOf("fn capture_window_png("),capture.indexOf("#[cfg(not(target_os = \"windows\"))]",capture.indexOf("fn capture_window_png(")));
+ assert.match(source,/GetWindow\(IntPtr hWnd, uint uCmd\)/);
+ assert.match(source,/function Assert-ShuviCaptureZOrder \{/);
+ assert.match(source,/GetWindow\(\$target, \[uint32\]3\)/);
+ assert.match(source,/\$checkedWindows -gt 4096/);
+ assert.match(source,/GetWindowRect\(\$overlay, \[ref\]\$overlayRect\)/);
+ for(const side of ["$overlayRect.Left -lt $rect.Right","$overlayRect.Right -gt $rect.Left",
+                    "$overlayRect.Top -lt $rect.Bottom","$overlayRect.Bottom -gt $rect.Top"]){
+  assert.ok(source.includes(side),"missing Z-order rectangle boundary "+side);
+ }
+ assert.match(source,/Another visible top-level window overlaps the approved screenshot area/);
+ const checks=[...source.matchAll(/Assert-ShuviCaptureZOrder\s*\n\s*Assert-ShuviCaptureSurface/g)];
+ assert.equal(checks.length,3,"overlap proof before copy, after copy and after image save");
+ const copy=source.indexOf("CopyFromScreen(");
+ const saved=source.indexOf("$bitmap.Save(");
+ assert.ok(source.indexOf("Assert-ShuviCaptureZOrder\n    Assert-ShuviCaptureSurface")<copy);
+ assert.ok(source.lastIndexOf("Assert-ShuviCaptureZOrder")>saved);
+});

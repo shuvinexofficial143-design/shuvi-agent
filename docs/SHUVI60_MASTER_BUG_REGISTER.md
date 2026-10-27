@@ -21,7 +21,7 @@
 | BUG-012 | High | NOT REVALIDATED | Premiere export journal | Pending | Unknown | PENDING |
 | BUG-013 | Medium | NOT REVALIDATED | Photoshop bridge | Pending | Unknown | PENDING |
 | BUG-014 | High / P0 | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | Basic credential redaction | Pending | Unknown | PENDING |
-| BUG-015 | Medium | NOT REVALIDATED | Audit privacy | Pending | Unknown | PENDING |
+| BUG-015 | Medium | FIXED IN CODE (Increment 03; CI pending) | Audit privacy | Pending | Unknown | PENDING |
 | BUG-016 | High | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | `.github/workflows/windows-installer.yml` | Pinned SHA worker parity test pending | Unknown | PENDING |
 | BUG-017 | Medium | NOT REVALIDATED | Background SHA jobs | Pending | Unknown | PENDING |
 | BUG-018 | High / P0 | FIXED IN CODE (Increment 02; CI pending) | RAM watchdog | Pending | Unknown | PENDING |
@@ -32,7 +32,7 @@
 | BUG-023 | Medium | NOT REVALIDATED | Readiness API metadata | Pending | Unknown | PENDING |
 | BUG-024 | Medium | NOT REVALIDATED | Mobile expiry status | Pending | Unknown | PENDING |
 | BUG-025 | High | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | `.github/workflows/ci.yml`, `scripts/run-attested.mjs` | Dashboard test/CI parity pending | Unknown | PENDING |
-| BUG-026 | High / P0 | NOT REVALIDATED | Screenshot overlay privacy | Pending | Unknown | PENDING |
+| BUG-026 | High / P0 | MITIGATED IN CODE (Increment 03; not closed, CI/Windows pending) | Screenshot overlay privacy | Pending | Unknown | PENDING |
 | BUG-027 | Medium | FIXED IN CODE (Increment 02; CI pending) | Screenshot directory safety | Pending | Unknown | PENDING |
 | BUG-028 | High | NOT REVALIDATED | Native paid AI ledger | Pending | Unknown | PENDING |
 | BUG-029 | High / P0 | NOT REVALIDATED | Cross-route paid AI budget | Pending | Unknown | PENDING |
@@ -54,3 +54,9 @@
 - BUG-018: Remotion, project validation and manual shell now detect RAM sampler/registered identity errors, attempt identity-checked termination, mark result not successful even after exit 0; resource abort may be unconfirmed and must be reported truthfully. No unverified process kill claims.
 - BUG-027: screen-* manual captures use the same validated non-reparse Shuvi screenshot directory as ephemeral vision; path rechecked after helper. Residual TOCTOU and owner Windows testing remain.
 - BUG-026 (foreign overlay capture) and BUG-029 (cross-route AI cost) remain P0 OPEN for further safe resolution.
+
+## Shuvi 62 Increment 03 (2026-10-27)
+- BUG-026: Screen-copy now checks all overlapping visible top-level windows above the exact target HWND (bounded 4096) before/after CopyFromScreen and after PNG save, in addition to existing 5 sample/PID/process generation checks. Static small overlay missed by old sample points now triggers refusal. **No absolute pixel provenance/OS compositor or owner Windows E2E proof**: preserve OPEN (MITIGATED) status; transient overlays and exotic compositor surfaces require real Windows testing.
+- BUG-015: search_text literal query and exact workspace path omitted from persisted audit, regardless of whether a secret looks like a token. Prepared in-memory consent retains original detail.
+- BUG-029: confirmed existing native task paid-request boundary is chat-only; separate Vision/Creative billable calls are not counted in owner selected task quota. **Still OPEN** pending Rust authoritative cross-route reservation, no false spending safety claim.
+- Latest previous CI 40452821089 (8bcb1fc) was Frontend PASS, Rust and NSIS running at start of increment. Exact newer CI pending.
