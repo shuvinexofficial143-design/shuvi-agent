@@ -1602,6 +1602,20 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        " आगे का काम रोक दिया है।");
      showActionFeedback(label);
      refreshState(label);
+     // A newer owner command explicitly supersedes continuation, not a
+     // successfully audited predecessor. Keep the exact Rust result as
+     // VERIFIED, persist a paused goal, and spend ZERO further AI requests.
+     if(verified&&ownerStopRequestedIds.has(current.action.id)){
+      const interrupted=taskBudgets.get(current.threadId);
+      const saved=interrupted?await persistRecovery(interrupted,"paused",current.action.id):false;
+      haltTask(current.threadId,saved?"superseded_by_new_command":"recovery_journal_failed");
+      appendReply(current.threadId,current.promptIndex,
+       "पुराना Action "+current.action.id.slice(0,8)+" Rust Audit में Verified है।"+
+       " नया Command Queue में है; पुराने Goal का अगला Step या AI Request नहीं चलाया गया।");
+      showActionFeedback("Old native step VERIFIED · old continuation stopped · queued new task preserved.");
+      refreshState("पुराना Action VERIFIED; नया Queue Task Safe Drain के बाद शुरू होगा।");
+      return;
+     }
      // An EXACT "Open Premiere" or "Open Notepad" task can close after two separately approved
      // native actions (launcher then OS-window inspection) with two exact
      // Rust executed audits. Do not purchase an unnecessary third AI turn.
