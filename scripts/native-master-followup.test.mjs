@@ -2118,3 +2118,35 @@ test("SHUVI63 P0: audited paused action is superseded on new command, not replay
  assert.notEqual(s.rustState()?.taskId,prior.taskId,"new task identity is independent");
  assert.equal(s.calls.filter(x=>x.name==="clear_native_recovery").length,1);
 });
+
+test("SHUVI63 P0: Rust 3000-character local preflight is never provider-unknown and fresh task proceeds",async()=>{
+ const s=setup({simulateRustJournal:true,
+  chatFailures:{1:"Agent orchestration context exceeds the 3000-character safety limit"},
+  first:launch});
+ await until(()=>s.transport.connected(),"IPC");
+ const old=await s.transport.send("Premiere timeline cutting karo","p0-long-internal",0);
+ assert.equal(old.ok,false);
+ assert.match(old.error,/Context सीमा जाँच/);
+ assert.equal(s.rustState()?.phase,"paused","local context preflight does not become planning_outcome_unknown");
+ assert.equal(s.rustState()?.stagedActions,0);
+ const previous=s.rustState()?.taskId;
+ const fresh=await s.transport.send("Open Premiere Pro","p0-fresh-after-limit",0);
+ assert.equal(fresh.ok,true);
+ assert.equal(s.chatInputs.length,2,"one failed local preflight and one fresh owner request");
+ assert.notEqual(s.rustState()?.taskId,previous);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+});
+test("SHUVI63 P0: new owner command denies old pending approval without executing it",async()=>{
+ const s=setup({first:launch,second:detection,simulateRustJournal:true});
+ await until(()=>s.transport.connected(),"IPC");
+ const old=await s.transport.send("Premiere kholo","p0-pending-old",0);
+ assert.equal(old.ok,true);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ const fresh=await s.transport.send("Open Premiere Pro","p0-new-after-pending",0);
+ assert.equal(fresh.ok,true);
+ assert.equal(s.calls.filter(x=>x.name==="deny_action").length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ assert.equal(s.calls.filter(x=>x.name==="clear_native_recovery").length,1);
+ assert.equal(s.staged.length,2);
+});
