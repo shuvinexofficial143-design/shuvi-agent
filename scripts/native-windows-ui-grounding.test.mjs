@@ -33,7 +33,8 @@ test("UI mutations cannot blindly use loose synonyms or multiple matches",()=>{
 });
 test("Master discovers observed UI and does not silently switch providers",()=>{
   assert.match(agent,/ui_windows and ui_find or ui_discover observations/);
-  assert.match(agent,/selected model supports Vision/);
+  assert.match(agent,/const premiere=\/\\b/);
+  assert.match(src,/xKiro model.*is not marked vision-capable/);
   assert.match(agent,/no automatic paid retries/);
 });
 test("Windows preview builds only for explicit workflow changes, not ordinary source pushes",()=>{
