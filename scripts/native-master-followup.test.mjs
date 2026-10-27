@@ -2196,3 +2196,72 @@ test("SHUVI63 P0: new owner command denies old pending approval without executin
  assert.equal(s.calls.filter(x=>x.name==="clear_native_recovery").length,1);
  assert.equal(s.staged.length,2);
 });
+
+
+test("P0: new Premiere command is durably queued after UNKNOWN and never replays the old action",async()=>{
+ const terminalNowRef={ready:false};
+ const workerStatusRef={current:{state:"native_action_in_flight",actionId:"action-1"}};
+ const s=setup({first:detection,second:launch,auditOk:false,simulateRustJournal:true,
+  terminalNowRef,workerStatusRef});
+ await until(()=>s.transport.connected(),"connected");
+ await s.transport.send("Premiere kholo","old-mutating-task",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="outcome_unknown","old exact worker outcome unverified");
+ const beforeAI=s.chatInputs.length,beforeActions=s.calls.filter(x=>x.name==="execute_action").length;
+ const newCommand=await s.transport.send("Premiere me timeline edit karo","queued-premiere",0);
+ assert.equal(newCommand.ok,true,"new command is accepted without unsafe execution");
+ assert.match(newCommand.reply,/Queue में दर्ज/);
+ assert.equal(s.durableQueue.length,1);
+ assert.equal(s.chatInputs.length,beforeAI,"old UNKNOWN cannot buy more AI requests");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,beforeActions,
+  "no duplicate Premiere tool after unknown result");
+ await until(()=>s.calls.some(x=>x.name==="cancel_running_action"),
+  "bounded worker stop requested");
+ s.tickQueue();s.tickQueue();
+ await until(()=>s.calls.filter(x=>x.name==="cancel_running_action").length>=1,"stop request");
+ assert.equal(s.calls.filter(x=>x.name==="cancel_running_action").length,1,
+  "no repeated stop storm while worker is still not independently verified");
+ assert.equal(s.durableQueue[0].phase,"queued","not claimed before safe Rust release");
+});
+test("P0: queued task survives restart and only dispatches after exact terminal Rust evidence",async()=>{
+ const terminalNowRef={ready:false};
+ const first=setup({first:detection,auditOk:false,simulateRustJournal:true,terminalNowRef});
+ await until(()=>first.transport.connected(),"first connection");
+ await first.transport.send("Premiere kholo","before-crash",0);
+ first.allow.listeners.get("click")();
+ await until(()=>first.rustState()?.phase==="outcome_unknown","unknown durable recovery");
+ const stored=await first.transport.send("Premiere me video cutting karo","after-crash",0);
+ assert.equal(stored.ok,true);
+ assert.equal(first.durableQueue.length,1);
+ const existing={...first.rustState()};
+ const restarted=setup({first:{content:"Ready for fresh observation.",tool_proposal:{
+  tool:"ui_windows",arguments:{}},provider:"xkiro",model:"model/master"},
+  rustRecord:existing,recoveryStore:first.recoveryStore,queueStore:first.durableQueue,
+  simulateRustJournal:true,terminalNowRef});
+ await until(()=>restarted.transport.connected(),"restart connected");
+ await until(()=>restarted.calls.some(x=>x.name==="retire_audited_superseded_native_task"),
+  "attempted exact native audit guard");
+ assert.equal(restarted.chatInputs.length,0,"no provider call before verified drain");
+ assert.equal(restarted.staged.length,0,"no native edit or read was prepared");
+ assert.equal(restarted.durableQueue[0].phase,"queued");
+ terminalNowRef.ready=true;restarted.tickQueue();
+ await until(()=>restarted.chatInputs.length===1,"first fresh task after native verified release");
+ await until(()=>restarted.durableQueue.length===0,"queued claim is retired on accepted new task");
+ assert.equal(restarted.calls.filter(x=>x.name==="execute_action").length,0,
+  "old worker was never replayed and new approval is still pending");
+ assert.equal(restarted.staged.length,1);
+ assert.equal(restarted.staged[0].proposal.tool,"ui_windows",
+  "Premiere inspection is prepared for separate bounded approval");
+ assert.equal(restarted.calls.filter(x=>x.name==="retire_audited_superseded_native_task").length>=2,true);
+});
+test("P0: a claimed command is not silently paid/replayed across restart",async()=>{
+ const queueStore=[{id:"00000000-0000-4000-8000-000000000001",
+  phase:"claimed",text:"Premiere import and export",threadId:"claimed-restart",promptIndex:0,queuedAtMs:1}];
+ const s=setup({queueStore});
+ await until(()=>s.transport.connected(),"native restart");
+ s.tickQueue();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(queueStore.length,1);
+ assert.equal(queueStore[0].phase,"claimed");
+ assert.equal(s.calls.filter(x=>["chat","prepare_tool","execute_action"].includes(x.name)).length,0);
+});
