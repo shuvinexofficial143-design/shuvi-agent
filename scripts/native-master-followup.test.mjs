@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false,terminalNowRef=null,queueStore=null,workerStatusRef=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false,terminalNowRef=null,queueStore=null,workerStatusRef=null,executionGate=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const issuedRustAiQuota=new Map();
  const durableQueue=queueStore??[];let queueSeq=durableQueue.length;let queuePulse=null;
@@ -193,6 +193,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   }
   if(name==="execute_action"){
    const action=staged.find(s=>s.id===params.actionId);
+   if(executionGate)await executionGate;
    if(params.premiereReadScopeId){
      assert.ok(premiereReadGrant,"Premiere scope required at exact Rust execution");
      assert.equal(params.premiereReadScopeId,premiereReadGrant.id);
