@@ -2118,10 +2118,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const key="shuvi.native.superseded.v1",raw=recoveryStorage?.getItem(key);
    const history=raw?JSON.parse(raw):[];
    if(!Array.isArray(history)||history.length>=100||!recoveryStorage)return false;
-   history.push({taskId:old.taskId,revision:old.revision,phase:old.phase,
-    actionId:old.actionId,stagedActions:old.stagedActions,
-    modelRequests:old.modelRequests,supersededAt:Date.now()});
-   recoveryStorage.setItem(key,JSON.stringify(history));
+   // Do not archive "superseded" until Rust can prove the old worker
+   // terminal. Polling a blocked worker must not fill the history or quota.
    if(guardedOld){
     const retired=await invoke<boolean>("retire_audited_superseded_native_task",{
      taskId:old.taskId,revision:old.revision,actionId:old.actionId
@@ -2129,6 +2127,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(retired!==true)throw Error("Exact Rust native action was not safely retired");
     guardedRetired=true;
    }else await invoke<void>("clear_native_recovery");
+   history.push({taskId:old.taskId,revision:old.revision,phase:old.phase,
+    actionId:old.actionId,stagedActions:old.stagedActions,
+    modelRequests:old.modelRequests,supersededAt:Date.now()});
+   recoveryStorage.setItem(key,JSON.stringify(history));
    if(!clearNativeRecovery(recoveryStorage))throw Error("Local recovery journal split");
   }catch{
    // An still-running/unknown worker is a WAIT condition, not a corrupt
