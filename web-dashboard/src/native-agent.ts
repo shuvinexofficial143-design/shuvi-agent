@@ -2156,13 +2156,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // P0: Rust queue admission carries no desktop permission. A claimed
  // submission is never replayed on restart (paid/provider ambiguity).
  type Queued={id:string;text:string;threadId:string;promptIndex:number;phase:"queued"|"claimed"};
- let queuePumpBusy=false,claimedQueueId:string|null=null;
+ let queuePumpBusy=false,claimedQueueId:string|null=null,queueHasItems=false;
  let queueDispatch:((text:string,thread:string,index:number,id:string)=>Promise<{ok:boolean;error?:string;reply?:string}>)|null=null;
  const queueStops=new Set<string>();
  async function queueNew(text:string,threadId:string,promptIndex:number){
   try{
    const item=await invoke<Queued>("enqueue_native_command",{text,threadId,promptIndex});
    if(item?.phase!=="queued"||!item.id)throw Error("Rust queue admission not verified");
+   queueHasItems=true;
    const msg="नया Windows Command Rust की Durable Queue में दर्ज है ("+item.id.slice(0,8)+
     ")। पहले का Worker Safe Drain होने पर नया Task शुरू होगा; पुराना Edit Replay नहीं होगा।";
    recoveryNotice.textContent=msg;recoveryNotice.hidden=false;showActionFeedback(msg);refreshState(msg);
@@ -2175,6 +2176,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   queuePumpBusy=true;
   try{
    const item=await invoke<Queued|null>("peek_native_command");
+   queueHasItems=Boolean(item);
    if(!item)return;
    if(item.phase==="claimed"){refreshState("Queued "+item.id.slice(0,8)+
     " पहले Dispatch हुआ था; परिणाम की समीक्षा के बिना Replay नहीं होगा।");return;}
@@ -2197,6 +2199,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const result=await queueDispatch(item.text,item.threadId,item.promptIndex,item.id);
    if(result.ok){
     await invoke<void>("finish_native_command",{id:item.id});
+    queueHasItems=Boolean(await invoke<Queued|null>("peek_native_command"));
     refreshState("Queued "+item.id.slice(0,8)+" नया Task सुरक्षित रूप से शुरू हुआ।");
    }else refreshState("Queued "+item.id.slice(0,8)+" submission अनिश्चित; claimed record रखा है, Replay नहीं।");
   }catch(e){refreshState("Native Queue रुकी: "+redactNativeError(e)+"। पुराने Actions नहीं दोहराए गए।");}
@@ -2234,7 +2237,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      :extendTaskClarification(retainedGoal,text,clarification);
    }
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
-   if(sending&&route.role!=="chat"&&!waitingForChoice&&!fromQueue)return queueNew(text,threadId,promptIndex);
+   if(route.role!=="chat"&&!waitingForChoice&&!fromQueue&&queueHasItems)
+    return queueNew(text,threadId,promptIndex);
+   if(sending&&route.role!=="chat"&&!waitingForChoice&&!fromQueue)
+    return queueNew(text,threadId,promptIndex);
    if(sending)return {ok:false,error:"Native Action अभी Busy है।"};
    if(route.role!=="chat"&&!waitingForChoice){
     // Serialize reconciliation with admission; no concurrent paid submission.
