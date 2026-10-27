@@ -11,7 +11,10 @@ test("project validation watchdog enforces the managed 4 GB hard ceiling",()=>{
   const block=rust.slice(start,end);
   assert.match(block,/let hard_limit_triggered = AtomicBool::new\(false\)/);
   assert.match(block,/std::thread::scope\(\|scope\|/);
-  assert.match(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
+  assert.match(block,/match managed_process_identity_matches\(state, child_pid\)/);
+  assert.match(block,/monitor_failed\.store\(true, Ordering::Release\)/);
+  assert.match(block,/let lost_supervision = monitor_failed\.load\(Ordering::Acquire\)/);
+  assert.match(block,/!exceeded_hard_limit && !lost_supervision/);
   assert.match(block,/current_runtime_status\(state\)/);
   assert.match(block,/status\.over_hard_limit/);
   assert.match(block,/terminate_registered_process_tree\(state, child_pid\)/);

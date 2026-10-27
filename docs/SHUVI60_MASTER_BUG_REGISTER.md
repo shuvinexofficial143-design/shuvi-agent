@@ -24,7 +24,7 @@
 | BUG-015 | Medium | NOT REVALIDATED | Audit privacy | Pending | Unknown | PENDING |
 | BUG-016 | High | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | `.github/workflows/windows-installer.yml` | Pinned SHA worker parity test pending | Unknown | PENDING |
 | BUG-017 | Medium | NOT REVALIDATED | Background SHA jobs | Pending | Unknown | PENDING |
-| BUG-018 | High / P0 | NOT REVALIDATED | RAM watchdog | Pending | Unknown | PENDING |
+| BUG-018 | High / P0 | FIXED IN CODE (Increment 02; CI pending) | RAM watchdog | Pending | Unknown | PENDING |
 | BUG-019 | Medium | NOT REVALIDATED | Memory polling | Pending | Unknown | PENDING |
 | BUG-020 | High / P0 | NOT REVALIDATED | Mobile approval summary | Pending | Unknown | PENDING |
 | BUG-021 | Medium | NOT REVALIDATED | Mobile status refresh | Pending | Unknown | PENDING |
@@ -33,7 +33,7 @@
 | BUG-024 | Medium | NOT REVALIDATED | Mobile expiry status | Pending | Unknown | PENDING |
 | BUG-025 | High | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | `.github/workflows/ci.yml`, `scripts/run-attested.mjs` | Dashboard test/CI parity pending | Unknown | PENDING |
 | BUG-026 | High / P0 | NOT REVALIDATED | Screenshot overlay privacy | Pending | Unknown | PENDING |
-| BUG-027 | Medium | NOT REVALIDATED | Screenshot directory safety | Pending | Unknown | PENDING |
+| BUG-027 | Medium | FIXED IN CODE (Increment 02; CI pending) | Screenshot directory safety | Pending | Unknown | PENDING |
 | BUG-028 | High | NOT REVALIDATED | Native paid AI ledger | Pending | Unknown | PENDING |
 | BUG-029 | High / P0 | NOT REVALIDATED | Cross-route paid AI budget | Pending | Unknown | PENDING |
 
@@ -48,3 +48,9 @@
 - BUG-016: disable legacy direct NSIS route; manual workflow now uses immutable SHA-pinned build, ephemeral install/uninstall, manifest SHA verification, unsigned-only artifacts.
 - Regression files: `web-dashboard/scripts/native-error-redaction.test.mjs`, `web-dashboard/scripts/native-provider-failure.test.mjs`, `scripts/shuvi62-ci-security-gates.test.mjs`, `scripts/run-attested.test.mjs`.
 - State is FIXED IN CODE only until exact-HEAD CI results are observed; owner Windows E2E remains PENDING; BUG-002/007 preserve preceding code fix and pending CI status.
+
+## Shuvi 62 Increment 02 (2026-10-27)
+- Prior HEAD 3ac5d57 exact CI 40344509868: Frontend/Rust/Windows Installer all PASS. BUG-002/005/007/014/016/025 remain pending real-owner Windows acceptance, not falsely closed.
+- BUG-018: Remotion, project validation and manual shell now detect RAM sampler/registered identity errors, attempt identity-checked termination, mark result not successful even after exit 0; resource abort may be unconfirmed and must be reported truthfully. No unverified process kill claims.
+- BUG-027: screen-* manual captures use the same validated non-reparse Shuvi screenshot directory as ephemeral vision; path rechecked after helper. Residual TOCTOU and owner Windows testing remain.
+- BUG-026 (foreign overlay capture) and BUG-029 (cross-route AI cost) remain P0 OPEN for further safe resolution.

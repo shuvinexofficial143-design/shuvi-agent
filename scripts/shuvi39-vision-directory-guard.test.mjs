@@ -23,10 +23,11 @@ test("both window and full-desktop vision reject unsafe folders BEFORE image all
  assert.ok(create>=0&&guard>create&&path>guard);
  const desktop=core.slice(core.indexOf("fn capture_screen_png_with_mode(ephemeral: bool)"),
   core.indexOf("async fn preflight_inspect_screen_vision("));
- const check=desktop.indexOf("if ephemeral {");
- const guard2=desktop.indexOf("validate_vision_capture_directory(&dir)?",check);
+ const guard2=desktop.indexOf("validate_vision_capture_directory(&dir)?");
  const path2=desktop.indexOf("let path = dir.join(",guard2);
- assert.ok(check>=0&&guard2>check&&path2>guard2);
+ const prune=desktop.indexOf("prune_screenshot_dir(");
+ assert.ok(guard2>=0&&path2>guard2&&prune>guard2);
+ assert.doesNotMatch(desktop,/if ephemeral \{\s*target_window_capture::validate_vision_capture_directory/);
  assert.match(desktop,/if !ephemeral \{\s+let _ = prune_screenshot_dir/);
 });
 test("Rust tests cover real directories, ordinary files and symlink redirects",()=>{

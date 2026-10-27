@@ -9428,9 +9428,10 @@ fn capture_screen_png_with_mode(ephemeral: bool) -> Result<std::path::PathBuf, S
         let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
         fs::create_dir_all(&dir)
             .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
-        if ephemeral {
-            target_window_capture::validate_vision_capture_directory(&dir)?;
-        }
+        // BUG-027: manual and ephemeral screenshots share the exact same
+        // junction/symlink refusal BEFORE any pruning or PowerShell write.
+        // Deliberately saved screenshots are not exempt from path validation.
+        target_window_capture::validate_vision_capture_directory(&dir)?;
 
         // Keep room for the screenshot being created. Cleanup is deliberately
         // scoped to Shuvi-owned screen-*.png files in this one temp directory.
@@ -9479,6 +9480,14 @@ try {{
                 "Screen capture failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ));
+        }
+        // A directory may be swapped while the bounded PowerShell helper ran.
+        // Recheck before accepting the produced screenshot as an owned file.
+        if let Err(error)=target_window_capture::validate_vision_capture_directory(&dir) {
+            // Best-effort: do not retain this ephemeral capture when ownership
+            // is no longer established. Failure does not permit AI upload.
+            let _ = fs::remove_file(&path);
+            return Err(format!("Screenshot directory changed during capture; no file accepted: {error}"));
         }
         if let Err(error)=target_window_capture::verify_unbound_desktop_png(&path) {
             let _ = fs::remove_file(&path);
@@ -12638,11 +12647,25 @@ try {{
             let hard_limit_terminated=AtomicBool::new(false);
             let timeout_triggered=AtomicBool::new(false);
             let timeout_terminated=AtomicBool::new(false);
+            let monitor_failed=AtomicBool::new(false);
+            let monitor_terminated=AtomicBool::new(false);
             let timeout=Duration::from_millis(prepared.timeout_ms);
             let started=std::time::Instant::now();
             let output_result=std::thread::scope(|scope|{
                 let monitor=scope.spawn(||{
-                    while managed_process_identity_matches(state,child_pid).unwrap_or(false){
+                    loop {
+                        // BUG-018: never silently abandon RAM supervision when
+                        // registered child identity cannot be inspected.
+                        match managed_process_identity_matches(state,child_pid) {
+                            Ok(true)=>{},
+                            Ok(false)=>break,
+                            Err(_)=>{
+                                monitor_failed.store(true,Ordering::Release);
+                                let stopped=terminate_registered_process_tree(state,child_pid).unwrap_or(false);
+                                monitor_terminated.store(stopped,Ordering::Release);
+                                break;
+                            }
+                        }
                         if started.elapsed()>=timeout{
                             timeout_triggered.store(true,Ordering::Release);
                             let stopped=terminate_registered_process_tree(state,child_pid).unwrap_or(false);
@@ -12657,7 +12680,12 @@ try {{
                                 break;
                             }
                             Ok(_)=>{}
-                            Err(_)=>break,
+                            Err(_)=>{
+                                monitor_failed.store(true,Ordering::Release);
+                                let stopped=terminate_registered_process_tree(state,child_pid).unwrap_or(false);
+                                monitor_terminated.store(stopped,Ordering::Release);
+                                break;
+                            },
                         }
                         std::thread::sleep(Duration::from_millis(250));
                     }
@@ -12676,13 +12704,17 @@ try {{
             let output=output_result.map_err(|error|format!("Could not wait for fixed Remotion runtime: {error}"))?;
             let timed_out=timeout_triggered.load(Ordering::Acquire);
             let over_ram=hard_limit_triggered.load(Ordering::Acquire);
-            if timed_out||over_ram||!output.status.success(){
+            let lost_supervision=monitor_failed.load(Ordering::Acquire);
+            if timed_out||over_ram||lost_supervision||!output.status.success(){
                 let guard=if timed_out{
                     if timeout_terminated.load(Ordering::Acquire){"Remotion render exceeded its approved timeout and the managed process tree was stopped."}
                     else{"Remotion render exceeded its approved timeout; process-tree termination could not be confirmed."}
                 }else if over_ram{
                     if hard_limit_terminated.load(Ordering::Acquire){"Remotion render exceeded Shuvi's 4 GB hard RAM ceiling and the managed process tree was stopped."}
                     else{"Remotion render exceeded Shuvi's 4 GB hard RAM ceiling; process-tree termination could not be confirmed."}
+                }else if lost_supervision{
+                    if monitor_terminated.load(Ordering::Acquire){"Remotion RAM/identity supervision failed and its registered child tree was stopped."}
+                    else{"Remotion RAM/identity supervision failed; termination unconfirmed, result failed closed."}
                 }else{"Fixed Remotion runtime exited unsuccessfully."};
                 return Ok(ActionResult{
                     success:false,tool,
@@ -20346,9 +20378,23 @@ try {{
             }
             let hard_limit_triggered = AtomicBool::new(false);
             let hard_limit_terminated = AtomicBool::new(false);
+            let monitor_failed = AtomicBool::new(false);
+            let monitor_terminated = AtomicBool::new(false);
             let output_result = std::thread::scope(|scope| {
                 let monitor = scope.spawn(|| {
-                    while managed_process_identity_matches(state, child_pid).unwrap_or(false) {
+                    loop {
+                        // BUG-018: identity sampler failure must not be mistaken
+                        // for a clean process exit, even if child later exits 0.
+                        match managed_process_identity_matches(state, child_pid) {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(_) => {
+                                monitor_failed.store(true, Ordering::Release);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
+                                monitor_terminated.store(stopped, Ordering::Release);
+                                break;
+                            }
+                        }
                         match current_runtime_status(state) {
                             Ok(status) if status.over_hard_limit => {
                                 hard_limit_triggered.store(true, Ordering::Release);
@@ -20357,7 +20403,12 @@ try {{
                                 break;
                             }
                             Ok(_) => {}
-                            Err(_) => break,
+                            Err(_) => {
+                                monitor_failed.store(true, Ordering::Release);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
+                                monitor_terminated.store(stopped, Ordering::Release);
+                                break;
+                            },
                         }
                         std::thread::sleep(Duration::from_millis(250));
                     }
@@ -20380,7 +20431,8 @@ try {{
                 .map_err(|error| format!("Could not wait for project task: {error}"))?;
 
             let exceeded_hard_limit = hard_limit_triggered.load(Ordering::Acquire);
-            let mut success = output.status.success() && !exceeded_hard_limit;
+            let lost_supervision = monitor_failed.load(Ordering::Acquire);
+            let mut success = output.status.success() && !exceeded_hard_limit && !lost_supervision;
             let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
             if exceeded_hard_limit {
@@ -20394,6 +20446,15 @@ try {{
                 } else {
                     format!("{warning}\n{stderr}")
                 };
+            }
+            if lost_supervision {
+                let warning = if monitor_terminated.load(Ordering::Acquire) {
+                    "Project task RAM/identity supervision failed; registered child process tree was stopped."
+                } else {
+                    "Project task RAM/identity supervision failed; child termination was not confirmed. Validation failed closed."
+                };
+                stderr = if stderr.trim().is_empty() { warning.into() }
+                         else { format!("{warning}\n{stderr}") };
             }
             if let Some(before) = git_before {
                 let after = git_local_context(&path)?;
@@ -20599,9 +20660,23 @@ try {{
 
             let hard_limit_triggered = AtomicBool::new(false);
             let hard_limit_terminated = AtomicBool::new(false);
+            let monitor_failed = AtomicBool::new(false);
+            let monitor_terminated = AtomicBool::new(false);
             let output_result = std::thread::scope(|scope| {
                 let monitor = scope.spawn(|| {
-                    while managed_process_identity_matches(state, child_pid).unwrap_or(false) {
+                    loop {
+                        // BUG-018: identity sampler failure must not be mistaken
+                        // for a clean process exit, even if child later exits 0.
+                        match managed_process_identity_matches(state, child_pid) {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(_) => {
+                                monitor_failed.store(true, Ordering::Release);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
+                                monitor_terminated.store(stopped, Ordering::Release);
+                                break;
+                            }
+                        }
                         match current_runtime_status(state) {
                             Ok(status) if status.over_hard_limit => {
                                 hard_limit_triggered.store(true, Ordering::Release);
@@ -20610,7 +20685,12 @@ try {{
                                 break;
                             }
                             Ok(_) => {}
-                            Err(_) => break,
+                            Err(_) => {
+                                monitor_failed.store(true, Ordering::Release);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
+                                monitor_terminated.store(stopped, Ordering::Release);
+                                break;
+                            },
                         }
                         std::thread::sleep(Duration::from_millis(250));
                     }
@@ -20647,8 +20727,18 @@ try {{
                 };
             }
 
+            let lost_supervision = monitor_failed.load(Ordering::Acquire);
+            if lost_supervision {
+                let warning = if monitor_terminated.load(Ordering::Acquire) {
+                    "Manual shell supervision failed; its registered child process tree was stopped."
+                } else {
+                    "Manual shell supervision failed; child termination unconfirmed. The action is failed closed."
+                };
+                stderr = if stderr.trim().is_empty() { warning.into() }
+                         else { format!("{warning}\n{stderr}") };
+            }
             Ok(ActionResult {
-                success: output.status.success() && !exceeded_hard_limit,
+                success: output.status.success() && !exceeded_hard_limit && !lost_supervision,
                 tool,
                 stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
                 stderr: truncate_output(stderr),
