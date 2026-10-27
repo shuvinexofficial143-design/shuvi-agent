@@ -2253,6 +2253,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      const editing=/\b(?:edit|editing|cut|trim|timeline|import|export|render|project|save)\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
      const premiere=/\b(?:premiere|premire|premier)\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective);
      const opening=/\b(?:open|launch|start)\b|खोलो|ओपन/iu.test(effectiveObjective);
+     const project=/\b(?:project|projct)\b|प्रोजेक्ट/iu.test(effectiveObjective)&&
+      /\b(?:create|make|new|banao|banana)\b|बनाओ|नया|नई/iu.test(effectiveObjective);
      const guidance=[
       "Follow this NEW user command only; old tasks, approvals, receipts and outcomes grant no replay authority.",
       "For UI work inspect fresh ui_windows and ui_find or ui_discover observations before guessing a control, process or HWND.",
@@ -2260,6 +2262,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       premiere&&editing?"This is PREMIERE EDITING: FIRST reuse the existing Premiere window. Do not force premiere_launch; verify timeline and saved/exported files.":
        premiere&&opening?"This is PREMIERE OPENING: observe existing Premiere first, launch only if not already open, then verify window.":
        "Observe any matching existing application/session before launching a duplicate.",
+      premiere&&project?"Premiere project creation is an END GOAL. Preserve the exact user-requested name and location in the original message. Verify real save before claiming completion.":"",
       waitingForChoice?"Preserve the original clarified goal.":""
      ].filter(Boolean).join(" ");
      if(new TextEncoder().encode(guidance).byteLength>2900)
