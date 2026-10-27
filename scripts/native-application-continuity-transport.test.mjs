@@ -68,6 +68,10 @@ test("two separate Windows goals reuse audited Edge via a NEW Allow once CDP pro
     :JSON.stringify({origin:"https://www.youtube.com",pathname:"/",readyState:"complete",title:"YouTube"});
    return {success:true,tool:proposal.tool,stdout:output,stderr:"",exit_code:0};
   }
+  if(command==="action_audit_trace")return [...staged.entries()]
+   .filter(([id])=>id===args.actionId)
+   .map(([id,proposal])=>({action_id:id,tool:proposal.tool,event:"executed",success:true}));
+  if(command==="native_worker_status")return {state:"idle",durableJobPhase:null,durableJobActionId:null};
   if(command==="audit_log")return [...staged.entries()].map(([id,proposal])=>({
    action_id:id,tool:proposal.tool,event:"executed",success:true
   }));
