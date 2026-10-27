@@ -2172,7 +2172,19 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }catch(e){return {ok:false,error:"Durable Queue में Command सुरक्षित नहीं हुआ: "+redactNativeError(e)};}
  }
  async function pumpQueue(){
-  if(queuePumpBusy||sending||!ready||!queueDispatch)return;
+  if(!ready||!queueDispatch||queuePumpBusy)return;
+  // An active execute_action may still be awaited by the renderer. The new
+  // user command requests a bounded Stop of that exact UUID once, but never
+  // releases the lease, claims the queue or blindly replays a mutation.
+  if(sending){
+   const active=activeNativeActionId;
+   if(queueHasItems&&active&&!queueStops.has(active)){
+    queueStops.add(active);ownerStopRequestedIds.add(active);
+    void invoke<boolean>("cancel_running_action",{actionId:active}).catch(()=>{});
+    refreshState("पुराने Action "+active.slice(0,8)+" का Safe Stop माँगा है। नया Command Queue में सुरक्षित है।");
+   }
+   return;
+  }
   queuePumpBusy=true;
   try{
    const item=await invoke<Queued|null>("peek_native_command");
