@@ -52,7 +52,7 @@ const romanPoliteImperative=/\b(?:khol\s*(?:do|de|dena|dijiye|kar|ke)|bana\s*(?:
 const hindiDirectQuestion=/^क्या\s+(?:आप|तुम|शुवि|shuvi)(?:\s|$)/iu;
 const actionCapabilityRoot=/(?:खोल|बना|चल|लगा|हटा|एडिट|एक्सपोर्ट|इम्पोर्ट|रेंडर|सेव|टाइप|क्लिक|लिख|भेज|डाउनलोड|इंस्टॉल|सेलेक्ट|कॉपी|पेस्ट|create|open|edit|export|render|save|launch|start)/iu;
 const secondPersonCapability=/(?:सकते|सकती|सकोगे|पाएँगे|पाओगे|सकेंगे)\s*(?:हो|हैं|क्या|\?)?\s*[?.।]?$/iu;
-const howToQuestion=/(?:कैसे\s*(?:कर|करूँ|करें|करते|बनाऊँ|बनाएं|खोलूँ|खोलें|होता)|किस\s+तरह|क्या\s+(?:है|होता\s+है)|\bhow\s+to\b|\bsteps\s+to\b|(?:बनाने|खोलने|करने|एडिट\s+करने)\s+का\s+तरीका|समझाइए|बताइए|सिखाइए)/iu;
+const howToQuestion=/(?:कैसे\s*(?:कर|करूँ|करें|करते|बनाऊँ|बनाएं|खोलूँ|खोलें|होता)|किस\s+तरह|क्या\s+(?:है|होता\s+है)|\bhow\s+to\b|\bsteps\s+to\b|(?:बनाने|खोलने|करने|एडिट\s+करने)\s+का\s+तरीका|समझाइए|बताइए|सिखाइए|संभव\s+है|हो\s+सकता\s+है|हो\s+सकती\s+है)/iu;
 export function classifyNativeIntent(text) {
  if(typeof text!=="string")return "chat";
  const input=text.trim();
