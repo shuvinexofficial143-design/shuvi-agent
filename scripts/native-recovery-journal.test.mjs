@@ -94,7 +94,7 @@ test("Rust journal captures terminal states after verified or uncertain native o
  assert.match(source,/await persistRecovery\(taskBudget,"paused",task.action.id\)/);
  assert.match(source,/const phase=failure.kind==="http_response"\?"planning_response_failed":"planning_outcome_unknown"/);
  assert.match(source,/await persistRecovery\(taskBudget,"paused"\)/);
- assert.match(source,/failure.kind==="http_response"\?"planning_response_failed":"planning_outcome_unknown"\)/);
+ assert.match(source,/preflightError\?"paused"/);
  assert.match(source,/await persistRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
 });
 
