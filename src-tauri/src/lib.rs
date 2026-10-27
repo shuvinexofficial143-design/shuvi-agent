@@ -23011,13 +23011,18 @@ fn retire_audited_superseded_native_task(
  let audited=terminals[0];
  let executed=audited.event=="executed"&&audited.success;
  let denied=audited.event=="denied"&&!audited.success;
- if !executed&&!denied{
-  return Err("Prior native action not independently successful/denied; unknown mutation preserved.".into());
+ // Only a terminally AUDITED read-only failure is free of Premiere edits.
+ // UIA/bridge read timeouts recorded as outcome_unknown are NOT safe.
+ let failed_read=audited.event=="failed"&&!audited.success&&matches!(
+  audited.tool.as_str(),"ui_windows"|"ui_discover"|"ui_find"|
+  "premiere_bridge_status"|"premiere_context"|"list_processes");
+ if !executed&&!denied&&!failed_read{
+  return Err("Prior native mutation is FAILED/UNKNOWN; no unsafe auto release.".into());
  }
  let job=native_worker_job::read(&app)?;
- if executed{
+ if executed||failed_read{
   let exact=job.as_ref().is_some_and(|j|j.action_id==action_id&&j.tool==audited.tool&&
-    j.phase=="audit_verified"&&j.audit_success==Some(true));
+    j.phase=="audit_verified"&&j.audit_success==Some(executed));
   if !exact{return Err("Native worker journal does not verify exact action UUID/tool; old task retained.".into());}
  }else if previous.phase!="awaiting_approval"&&previous.phase!="native_denied"{
   return Err("Denied action can retire only its nonexecuting approval checkpoint.".into());
