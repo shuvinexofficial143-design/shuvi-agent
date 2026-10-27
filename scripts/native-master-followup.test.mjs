@@ -2086,3 +2086,35 @@ test("Premiere scope is never offered for editing, project opening or unrelated 
   assert.equal(s.calls.filter(x=>x.name==="issue_premiere_read_scope").length,0);
  }
 });
+
+test("SHUVI63 P0: existing Premiere editing never stages a second launch",async()=>{
+ const s=setup({first:launch,simulateRustJournal:true});
+ await until(()=>s.transport.connected(),"native IPC");
+ const result=await s.transport.send("Premiere timeline cutting aur MP4 export karo","p0-existing-edit",0);
+ assert.equal(result.ok,true);
+ assert.equal(s.chatInputs.length,1);
+ assert.ok(new TextEncoder().encode(s.chatInputs[0].orchestration_context).byteLength<=2900);
+ assert.match(s.chatInputs[0].orchestration_context,/PREMIERE EDITING/);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"ui_windows","a wrong premiere_launch proposal is read-only observed first");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+});
+test("SHUVI63 P0: audited paused action is superseded on new command, not replayed",async()=>{
+ const noTool={content:"Task paused after observation",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:detection,second:noTool,following:[launch],
+  simulateRustJournal:true,retryAuditReceipt:true});
+ await until(()=>s.transport.connected(),"native IPC");
+ const first=await s.transport.send("Premiere kholo","p0-prior",0);
+ assert.equal(first.ok,true);
+ s.allow.listeners.get("click")();
+ await until(()=>s.rustState()?.phase==="paused","old action audited and paused");
+ const prior=s.rustState();
+ const next=await s.transport.send("Open Premiere Pro","p0-fresh",1);
+ assert.equal(next.ok,true);
+ assert.equal(s.chatInputs.length,3);
+ assert.equal(s.staged.length,2,"a new approval is staged, not a replay");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,
+  "only the old explicitly approved action executed; no replay");
+ assert.notEqual(s.rustState()?.taskId,prior.taskId,"new task identity is independent");
+ assert.equal(s.calls.filter(x=>x.name==="clear_native_recovery").length,1);
+});
