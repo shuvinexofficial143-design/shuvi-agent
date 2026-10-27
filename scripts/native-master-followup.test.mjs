@@ -41,6 +41,7 @@ const launch={
 function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const issuedRustAiQuota=new Map();
+ const durableQueue=[];let queueSeq=0;
  let persistedRust=rustRecord;
  let inspectionGrant=null;
   let premiereReadGrant=null;
@@ -57,6 +58,21 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const replies=[first,second,...following];
  const invoke=async(name,params={})=>{
   calls.push({name,params});
+  if(name==="enqueue_native_command"){
+   const id="00000000-0000-4000-8000-"+(++queueSeq).toString().padStart(12,"0");
+   const item={id,text:params.text,threadId:params.threadId,promptIndex:params.promptIndex,phase:"queued",queuedAtMs:Date.now()};
+   durableQueue.push(item);return item;
+  }
+  if(name==="peek_native_command")return durableQueue[0]??null;
+  if(name==="claim_native_command"){
+   const x=durableQueue[0];if(!x||x.id!==params.id||x.phase!=="queued")throw Error("Bad native claim");
+   x.phase="claimed";return {...x};
+  }
+  if(name==="finish_native_command"){
+   const x=durableQueue[0];if(!x||x.id!==params.id||x.phase!=="claimed")throw Error("Bad native finish");
+   durableQueue.shift();return;
+  }
+  if(name==="retire_audited_superseded_native_task")throw Error("Unresolved native worker identity");
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
   if(name==="save_native_recovery"){
    if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");
@@ -265,7 +281,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const recoveryRetry=created.find(x=>x.textContent==="Retry AI planning (may use tokens; no Windows replay)");
  const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
  const recoveryPanel=created.find(x=>x.className==="shuvi-native-recovery-panel");
- return {transport,calls,chatInputs,staged,issuedRustAiQuota,allow,premiereApprove,premiereRevoke,editApprove,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
+ return {transport,calls,chatInputs,staged,durableQueue,issuedRustAiQuota,allow,premiereApprove,premiereRevoke,editApprove,projectApprove,revokeProject,inspectApprove,revokeInspect,deny,approval,recoveryCheck,recoveryDismiss,recoveryOwnerDone,recoveryRetry,recoveryNotice,recoveryPanel,composerParent,recoveryStore:actualRecoveryStore,rustState:()=>persistedRust};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
