@@ -466,7 +466,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     invoke<{action_id:string|null;event:string;tool:string;success:boolean}|null>(
      "action_audit_receipt",{actionId}),
     invoke<Array<{action_id:string|null;event:string;tool:string;success:boolean}>>(
-     "audit_log",{limit:200})
+     "action_audit_trace",{actionId:actionId})
    ]);
    const verdict=reconcileNativeActionAudit(actionId,receipt,trail);
    recoveryNotice.textContent=recoveryAuditMessage(verdict)+
@@ -690,7 +690,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     throw Error("Planning recovery no longer matches its original task and revision.");
    const [receipt,trail]=await Promise.all([
     invoke<unknown>("action_audit_receipt",{actionId:resume.task.action.id}),
-    invoke<unknown>("audit_log",{limit:200})
+    invoke<unknown>("action_audit_trace",{actionId:resume.task.action.id})
    ]);
    const verdict=reconcileNativeActionAudit(resume.task.action.id,receipt,trail);
    if(verdict.kind!=="executed_audited"||verdict.tool!==resume.result.tool)
@@ -1207,7 +1207,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     return false;
    // A thrown native error is not definitive failure if the action log
    // contains a conflicting executed/success or different-tool audit.
-   const auditTrail=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("audit_log",{limit:200});
+   const auditTrail=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("action_audit_trace",{actionId:current.action.id});
    if(!Array.isArray(auditTrail)||contradictsFailureReceipt(current.action,auditTrail))return false;
    if(ownerStopRequestedIds.has(current.action.id))return false;
    const next=await invoke<Pending>("prepare_tool",{
@@ -1720,7 +1720,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(message.includes("Prepared action expired before execution")){
      try{
       const trail=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>(
-       "audit_log",{limit:200});
+       "action_audit_trace",{actionId:current.action.id});
       confirmedExpiry=auditedNativeUiaExpiry(current.action.id,current.action.kind,message,trail);
      }catch{/* no audit = unknown side effect, not a confirmed denial */}
     }
@@ -2098,7 +2098,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{
      const [receipt,trail]=await Promise.all([
       invoke<unknown>("action_audit_receipt",{actionId:old.actionId}),
-      invoke<unknown>("audit_log",{limit:200})
+      invoke<unknown>("action_audit_trace",{actionId:old.actionId})
      ]);
      const verdict=reconcileNativeActionAudit(old.actionId,receipt,trail);
      if(!["executed_audited","denied_audited"].includes(verdict.kind))return false;
