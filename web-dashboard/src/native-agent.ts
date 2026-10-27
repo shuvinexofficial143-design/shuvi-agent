@@ -2281,8 +2281,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     // OS window observation; the user must still approve the proposed read.
     const premiereEditRequest=/\b(?:premiere|premire|premier)\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective)&&
      /\b(?:edit|editing|trim|cut|timeline|import|export|render|save|project)\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
-    const premiereOpenOnly=/\b(?:open|launch|start|kholo|khol|kholdo|kholna)\b|खोलो|ओपन/iu.test(effectiveObjective)&&
-     !premiereEditRequest;
+    const premiereOpenOnly=/\b(?:open|launch|start|kholo|khol|kholdo|kholna)\b|खोलो|ओपन/iu.test(effectiveObjective);
     if(route.role!=="chat"&&premiereEditRequest&&!premiereOpenOnly&&
        response.tool_proposal?.tool==="premiere_launch")
      response.tool_proposal={tool:"ui_windows",arguments:{}};
