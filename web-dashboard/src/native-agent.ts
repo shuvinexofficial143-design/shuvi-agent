@@ -2178,9 +2178,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     " to "+route.provider+" / "+route.model+"…");
    try{
     const firstStepGuidance=route.role==="chat"?null:(()=>{
-     const editing=/\\b(?:edit|editing|cut|trim|timeline|import|export|render|project|save)\\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
-     const premiere=/\\b(?:premiere|premire|premier)\\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective);
-     const opening=/\\b(?:open|launch|start)\\b|खोलो|ओपन/iu.test(effectiveObjective);
+     const editing=/\b(?:edit|editing|cut|trim|timeline|import|export|render|project|save)\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
+     const premiere=/\b(?:premiere|premire|premier)\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective);
+     const opening=/\b(?:open|launch|start)\b|खोलो|ओपन/iu.test(effectiveObjective);
      const guidance=[
       "Follow this NEW user command only; old tasks, approvals, receipts and outcomes grant no replay authority.",
       "For UI work inspect fresh ui_windows and ui_find or ui_discover observations before guessing a control, process or HWND.",
@@ -2333,13 +2333,21 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }catch(error){
     const failure=classifyNativeProviderFailure(error);
     lastProviderHttpStatus=failure.status;
-    if(route.role!=="chat")await persistRecovery(taskBudget,
-     failure.kind==="http_response"?"planning_response_failed":"planning_outcome_unknown");
-    refreshState("AI provider planning failed. No Windows tool executed; no automatic paid retry.");
-    return {ok:false,error:"AI planning "+
-     (failure.status?"HTTP "+failure.status:"request outcome uncertain")+
-     ": "+redactNativeError(error)+
-     " No Windows action was executed by this request. A new paid request requires your explicit action and remaining budget."};
+    const preflightError=/Agent orchestration context exceeds the 3000-character safety limit|Local native orchestration preflight exceeded/i.test(String(error));
+    if(route.role!=="chat"){
+     const phase=preflightError?"paused":
+      failure.kind==="http_response"?"planning_response_failed":"planning_outcome_unknown";
+     const saved=await persistRecovery(taskBudget,phase);
+     if(saved&&phase==="paused"&&taskBudget.stagedActions===0)cleanNoActionPausedBudget=taskBudget;
+    }
+    refreshState(preflightError
+     ?"स्थानीय Context Validation विफल; कोई Windows Action नहीं चला और Provider को Request नहीं भेजी गई।"
+     :"AI planning interrupted. No Windows tool executed or automatic paid retry.");
+    return {ok:false,error:preflightError
+     ?"Context सीमा जाँच विफल। AI Provider या Windows पर कोई Action नहीं भेजा गया।"
+     :"AI planning "+(failure.status?"HTTP "+failure.status:"request outcome uncertain")+
+      ": "+redactNativeError(error)+
+      " No Windows action was executed by this request. A new paid request requires your explicit action and remaining budget."};
    }finally{
     sending=false;
     refreshState();
