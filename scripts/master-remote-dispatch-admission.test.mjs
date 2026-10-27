@@ -17,7 +17,9 @@ test("remote running receipt failure cannot purchase a Master model call",()=>{
 });
 test("mobile approval receipt must reach server before exposing a remote high-risk request",()=>{
  const src=ui.slice(ui.indexOf("async function stageProposal"),ui.indexOf("async function executePendingProposal"));
- assert.match(src,/if\(!\(await sendRemoteReceipt\("requires_approval", \{approvalId,approvalExpiresAt\}\)\)\)\{/);
+ assert.match(src,/if\(!\(await sendRemoteReceipt\("requires_approval", \{approvalId,approvalExpiresAt,approvalAction\}\)\)\)\{/);
+ assert.match(src,/const approvalAction=remoteApprovalDisclosure\(pendingAction,proposal\)/);
+ assert.match(src,/if\(!approvalAction\|\|approvalAction\.id!==preparedId\)/);
  assert.match(src,/await denyStaleAction\(preparedId\);/);
  assert.ok(src.indexOf('if(!(await sendRemoteReceipt("requires_approval"')<src.indexOf('remoteApproval = {id:approvalId'));
 });
