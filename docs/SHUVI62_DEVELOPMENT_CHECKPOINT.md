@@ -78,3 +78,6 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - Starting HEAD `543d1a154adc8c67e12577bc85b67b70a75ca7ec`, 3/3 exact CI Run `40475232227` verified SUCCESS before modifications.
 - BUG-004: Windows-directed polite Hindi/Roman Hindi commands route to the configured Master, not selected Chat, while tutorial/ability questions without direct second-person task command remain chat. No tool auto-approval or capability escalation. Extended native-model-routing tests.
 - New commit exact HEAD CI and real Hindi Windows acceptance remain PENDING.
+
+## Increment 12 — BUG-009 native mobile message parity
+- Verified base 0b6685c latest exact CI 40514826452 3/3 PASS. Matched remote_agent Rust text validator to canonical web contract for multiline CR/LF/TAB and UTF-16 length bounds, protecting 2500-unit limit for surrogate-pair emoji. Auth, TTL, native staged approval unchanged. CI pending.

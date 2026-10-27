@@ -101,8 +101,12 @@ impl RemoteMessage {
           && id(&self.owner_id) && id(&self.device_id) && id(&self.thread_id)
           && id(&self.message_id) && id(&self.task_id)
           && self.sequence > 0 && !self.text.trim().is_empty()
-          && self.text.chars().count() <= 2500
-          && !self.text.chars().any(char::is_control)
+          // Mirror JS String.length: UTF-16 units, not Unicode scalar count.
+          && self.text.encode_utf16().count() <= 2500
+          // Match remote-command-contract.mjs: tabs/newlines/CR allowed
+          // for multi-line owner commands, but no other control bytes.
+          && !self.text.chars().any(|c|matches!(c,'\u{0000}'..='\u{0008}'|
+              '\u{000b}'|'\u{000c}'|'\u{000e}'..='\u{001f}'|'\u{007f}'))
           && self.issued_at <= now.saturating_add(30_000)
           && self.expires_at > now && self.expires_at > self.issued_at
           && self.expires_at - self.issued_at <= 300_000
@@ -197,4 +201,24 @@ mod tests {
         m.text="\0danger".into();
         assert!(!m.valid(150_000));
     }
+}
+
+#[cfg(test)]
+mod remote_message_parity_tests {
+ use super::*;
+ fn sample(text:&str)->RemoteMessage{
+  RemoteMessage{protocol:REMOTE_PROTOCOL.into(),kind:"user_message".into(),
+   owner_id:"o".repeat(32),device_id:"d".repeat(32),
+   thread_id:"t".repeat(32),message_id:"m".repeat(32),task_id:"q".repeat(32),
+   sequence:1,issued_at:1000,expires_at:300_000,mode:"task".into(),text:text.into()}
+ }
+ #[test]
+ fn mobile_multiline_and_utf16_bounds_match_js_contract(){
+  assert!(sample("Open Premiere\nImport videos\r\nEdit timeline\tExport").valid(2000));
+  assert!(!sample("Open\u{0007}Premiere").valid(2000));
+  assert!(!sample("A\u{007f}B").valid(2000));
+  assert!(sample(&"🎬".repeat(1250)).valid(2000));
+  assert!(!sample(&"🎬".repeat(1251)).valid(2000));
+  assert!(!sample(" \n\t ").valid(2000));
+ }
 }

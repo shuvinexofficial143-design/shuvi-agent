@@ -85,3 +85,11 @@ test("approval is bound to exactly one live task and one-use identifier",()=>{
  assert.equal(validateApprovalBinding(request,receipt("running",3),context).error,"no_pending_approval");
  assert.equal(validateTaskReceipt(receipt("requires_approval",3)).error,"approval_requires_binding_and_expiry");
 });
+
+test("BUG-009: JS remote command validation allows bounded multiline and measures UTF-16 units",()=>{
+ const multi="Open Premiere\nImport videos\r\nEdit timeline\tExport";
+ assert.equal(validateRemoteMessage({...message(),text:multi},ctx()).ok,true);
+ assert.equal(validateRemoteMessage({...message(),text:"A\\u0007B".replace("\\\\u0007","\\u0007")},ctx()).ok,false);
+ assert.equal(validateRemoteMessage({...message(),text:"🎬".repeat(1250)},ctx()).ok,true);
+ assert.equal(validateRemoteMessage({...message(),text:"🎬".repeat(1251)},ctx()).error,"invalid_text");
+});

@@ -15,7 +15,7 @@
 | BUG-005 | Medium | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | Provider errors | Pending | Unknown | PENDING |
 | BUG-006 | High | NOT REVALIDATED | Browser continuity | Pending | Unknown | PENDING |
 | BUG-008 | High | NOT REVALIDATED | Remote task queue | Pending | Unknown | PENDING |
-| BUG-009 | High | NOT REVALIDATED | Mobile/Rust batch schema | Pending | Unknown | PENDING |
+| BUG-009 | High | FIXED IN CODE (Increment 12; new CI and Windows E2E pending) | Mobile/Rust batch schema | Pending | Unknown | PENDING |
 | BUG-010 | High | NOT REVALIDATED | Recovery journal | Pending | Unknown | PENDING |
 | BUG-011 | Medium | NOT REVALIDATED | Worker state | Pending | Unknown | PENDING |
 | BUG-012 | High | NOT REVALIDATED | Premiere export journal | Pending | Unknown | PENDING |
@@ -100,3 +100,6 @@
 ## SHUVI 62 Increment 10 (2026-10-27)
 - BUG-004 native intent routing: add polite Devanagari and Roman Hindi imperative markers and second-person Hindi capability-to-act requests. Informational 'how-to'/tutorial questions remain Chat even when an app/action verb appears later in the sentence. `chooseNativeRoute` still uses selected Master for all Windows actions, preserving exact provider and model; this classifier never grants Rust permission or automatically executes tools.
 - New unit regression covers Premiere/Blender/Photoshop/Audition/Notepad, explicit polite instructions, and non-action queries. Source-only fix; exact HEAD CI pending. Real owner Windows Hindi phrasing/voice E2E pending.
+
+## Shuvi62 Increment 12 — Remote multi-line payload parity
+- Latest base HEAD 0b6685c exact CI 40514826452 Frontend/Rust/Windows Installer ALL PASS. Native remote-message validator now permits only the same tab/newline/CR as web contract and uses UTF-16 units for 2500 length. C0/BEL/DEL rejected, empty whitespace rejected, expiry/auth/replay unchanged. Added Rust+JS regression coverage; new exact-head CI and Windows mobile E2E pending.
