@@ -17,7 +17,7 @@ test("native execution and post-audit planning errors are distinct phases",()=>{
  assert.match(denialBranch,/No automatic replay/);
  assert.match(denialBranch,/return;/);
  assert.match(src,/if\(unknownBudget\)await persistRecovery\(unknownBudget,"outcome_unknown",current\.action\.id\)/);
- assert.match(src,/const recoveryPrepared=await prepareAuditedUiReadRecovery\(current,message\)/);
+ assert.match(src,/const recoveryPrepared=rustDiagnosis\?\.kind===\"worker_failure\"&&[\s\S]*?await prepareAuditedUiReadRecovery\(current,message\)/);
 });
 test("UI recovery prepared action has nonempty bounded matching native ID",()=>{
  assert.match(src,/!next\.id\.trim\(\)\|\|next\.id\.length>128\|\|next\.kind!=="ui_windows"/);
