@@ -17,12 +17,14 @@ test("native approval is mounted beside the current Chat composer, never only in
   assert.match(css,/chat-panel>\.shuvi-native-approval:not\(\[hidden\]\)/);
   assert.match(css,/chat-panel>\.shuvi-native-approval\[hidden\]\{display:none!important\}/);
 });
-test("recovery Audit, owner completion and abandonment controls stay immediately above composer",()=>{
+test("normal Chat keeps compact recovery status; advanced audit controls stay collapsed in agent details",()=>{
  assert.match(ts,/composerParent\.insertBefore\(recoveryPanel,chatForm\)/);
- assert.match(ts,/recoveryPanel\.append\(recoveryNotice,recoveryCheck,recoveryRetry,recoveryOwnerDone,recoveryDismiss\)/);
+ assert.match(ts,/recoveryPanel\.append\(recoveryNotice,recoveryRetry\)/);
+ assert.match(ts,/advancedRecovery\.append\(field\("summary","Advanced recovery/);
+ assert.match(ts,/goalStatus,advancedRecovery\)/);
  assert.match(css,/chat-panel > \.shuvi-native-recovery-panel/);
  assert.match(css,/:has\(> \.shuvi-native-recovery:not\(\[hidden\]\)\)/);
- assert.doesNotMatch(ts,/panel\.append\([^;]*recoveryCheck,recoveryDismiss\)/);
+ assert.doesNotMatch(ts,/recoveryPanel\.append\([^;]*recoveryCheck/);
  assert.match(css,/max-height:220px;overflow:auto/);
 });
 test("unrecognized model JSON never implies Windows action executed",()=>{
