@@ -259,6 +259,28 @@ pub(crate) fn clear(app:&AppHandle)->Result<(),String>{
     crate::premiere_store::clear_snapshot(&file)
 }
 
+// P0: after the Rust executor has independently verified the exact terminal
+// action and claimed the exclusive desktop lease, retire ONLY that historical
+// task/revision. Archive before clearing. This cannot alter a newer journal.
+pub(crate) fn retire_audited_superseded(app:&AppHandle,task:&str,revision:u64,
+ action:&str)->Result<(),String>{
+ let _guard=RECOVERY_LOCK.lock().map_err(|_|"Native recovery lock unavailable.")?;
+ let file=path(app)?;
+ let bytes=crate::read_file_bytes_bounded(&file,MAX_BYTES,"native recovery journal")?;
+ validate_bytes(&bytes)?;
+ let old:NativeRecoveryRecord=serde_json::from_slice(&bytes)
+  .map_err(|_|"Native recovery journal unreadable.")?;
+ if old.version!=2||old.task_id.as_deref()!=Some(task)||
+   old.revision!=Some(revision)||old.action_id.as_deref()!=Some(action)||
+   !matches!(old.phase.as_str(),"executing"|"outcome_unknown"|"audit_verified"|
+    "paused"|"native_denied"|"awaiting_approval"|"planning_response_failed"|
+    "planning_outcome_unknown"|"readback_reserved"){
+  return Err("Native supersession task/revision/action/phase mismatch; journal kept.".into());
+ }
+ archive_recovery_before_clear(&file)?;
+ crate::premiere_store::clear_snapshot(&file)
+}
+
 // Unlike owner abandonment, automatic retirement may only delete an exact
 // matched terminal revision. A delayed WebView call cannot clear a newer task.
 fn retire_verified_record(file:&Path,task_id:&str,revision:u64)->Result<(),String>{
