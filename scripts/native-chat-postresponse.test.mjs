@@ -178,7 +178,7 @@ test("native Windows task refuses to call a paid provider when recovery storage 
  const transport=await mount(mock.invoke,null);
  const result=await transport.send("Open Notepad","journal-missing",0);
  assert.equal(result.ok,false);
- assert.match(result.error,/previous Windows task/);
+ assert.match(result.error,/पुराना Windows Action|previous Windows task/);
  assert.equal(mock.calls.includes("chat"),false);
  assert.equal(mock.calls.includes("prepare_tool"),false);
 });
@@ -197,7 +197,7 @@ test("second native submission cannot cross a paused asynchronous Rust checkpoin
  await saveEntered;
  const secondTask=await transport.send("Open Notepad","concurrent-second",0);
  assert.equal(secondTask.ok,false);
- assert.match(secondTask.error,/already running/);
+ assert.match(secondTask.error,/अभी चल रहा है|already running/);
  assert.equal(mock.calls.filter(c=>c==="chat").length,0);
  releaseWrite();
  const outcome=await firstTask;
