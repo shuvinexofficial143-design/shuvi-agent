@@ -2059,6 +2059,66 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }catch{mobileStatus.textContent="Disconnect outcome unknown. Verify in Windows Credential Manager.";}
   finally{mobileDisconnect.disabled=false;}
  });
+ // Safely replace a dormant old task when owner sends a NEW command.
+ // Never infer completion or replay an old action from its journal.
+ const autoSupersede=async():Promise<boolean>=>{
+  if(recoveryCheckpointFailed||activeNativeActionId)return false;
+  const local=inspectNativeRecoveryStore(recoveryStorage);
+  let rust:unknown;
+  try{rust=await invoke<unknown>("load_native_recovery");}catch{return false;}
+  const paired=assessNativeRecoveryPair(local,rust);
+  if(paired.reason==="no_previous_task"&&!pending){recoveryAcknowledged=true;return true;}
+  if(paired.reason==="matched_verified_completion")return retireVerifiedPair();
+  if(paired.reason!=="matched_previous_task"||local.record?.version!==2||
+    !local.record.taskId||!Number.isSafeInteger(local.record.revision))return false;
+  const old=local.record;
+  if(old.phase==="executing"||old.phase==="outcome_unknown")return false;
+  if(old.stagedActions>0){
+   if(old.phase==="awaiting_approval"&&pending?.action.id===old.actionId){
+    try{await invoke<void>("deny_action",{actionId:pending.action.id});}catch{return false;}
+    clearPending();
+   }else{
+    if(!old.actionId)return false;
+    try{
+     const [receipt,trail]=await Promise.all([
+      invoke<unknown>("action_audit_receipt",{actionId:old.actionId}),
+      invoke<unknown>("audit_log",{limit:200})
+     ]);
+     const verdict=reconcileNativeActionAudit(old.actionId,receipt,trail);
+     if(!["executed_audited","denied_audited"].includes(verdict.kind))return false;
+    }catch{return false;}
+   }
+  }else if(pending)return false;
+  try{
+   for(const x of projectScopes.values())await invoke<void>("revoke_task_project_scopes",{taskId:x.taskId});
+   for(const x of premiereScopes.values())await invoke<void>("revoke_premiere_read_scope",{taskId:x.taskId});
+   for(const x of inspectScopes.values())await invoke<void>("revoke_task_inspection_scopes",{taskId:x.taskId});
+   for(const x of editScopes.values())await invoke<void>("revoke_task_edit_scopes",{taskId:x.taskId});
+   // Keep inspectable old evidence; independent Rust action audit is retained.
+   const key="shuvi.native.superseded.v1",raw=recoveryStorage?.getItem(key);
+   const history=raw?JSON.parse(raw):[];
+   if(!Array.isArray(history)||history.length>=100||!recoveryStorage)return false;
+   history.push({taskId:old.taskId,revision:old.revision,phase:old.phase,
+    actionId:old.actionId,stagedActions:old.stagedActions,
+    modelRequests:old.modelRequests,supersededAt:Date.now()});
+   recoveryStorage.setItem(key,JSON.stringify(history));
+   await invoke<void>("clear_native_recovery");
+   if(!clearNativeRecovery(recoveryStorage))throw Error("Local recovery journal split");
+  }catch{recoveryCheckpointFailed=true;recoveryAcknowledged=false;return false;}
+  rustRecovery=null;pausedPlanning=null;completedVerifiedBudget=null;cleanNoActionPausedBudget=null;
+  taskBudgets.clear();taskGoalRoots.clear();taskStates.clear();taskEvidence.clear();
+  browserLaunchProofs.clear();systemLaunchProofs.clear();pendingSearchProofs.clear();
+  verifiedWindows.clear();observedWindows.clear();observedControls.clear();
+  pendingUiReadback.clear();pendingContinuity.clear();confirmedContinuity.clear();
+  projectScopes.clear();premiereScopes.clear();inspectScopes.clear();editScopes.clear();
+  autoProjectActionId=null;scopedProjectActionId=null;autoPremiereId=null;
+  scopedPremiereId=null;autoInspectActionId=null;scopedInspectActionId=null;autoEditActionId=null;
+  recoveryAcknowledged=true;recoveryRetry.hidden=true;recoveryNotice.hidden=true;
+  recoveryCheck.hidden=true;recoveryDismiss.hidden=true;recoveryOwnerDone.hidden=true;
+  taskStatus.textContent="पुराना Task सुरक्षित रूप से रोका गया।";
+  goalStatus.textContent="पुराने Action को दोबारा नहीं चलाया गया।";
+  return true;
+ };
  void load();
  void refreshMobile();
  return {
@@ -2091,9 +2151,19 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      ?resolveMasterObjective(retainedGoal,text,true)
      :extendTaskClarification(retainedGoal,text,clarification);
    }
-   if(pending)return {ok:false,error:"First approve or deny the existing Windows action."};
-   if(sending)return {ok:false,error:"A native request is already running."};
+   if(sending)return {ok:false,error:"पिछला Native Action अभी चल रहा है। नया Command सुरक्षित रूप से शुरू नहीं हुआ।"};
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
+   if(route.role!=="chat"&&!waitingForChoice){
+    // Serialize reconciliation with admission; no concurrent paid submission.
+    sending=true;let readyForNew=false;
+    try{readyForNew=await autoSupersede();}finally{sending=false;}
+    if(!readyForNew){
+     recoveryNotice.textContent="पुराने Action का सुरक्षित Audit पूरा नहीं हुआ। कोई Action दोबारा नहीं चलाया गया।";
+     recoveryNotice.hidden=false;refreshState();
+     return {ok:false,error:"पुराना Windows Action अभी अनिश्चित या चल रहा है। नया Task अभी सुरक्षित नहीं है।"};
+    }
+   }
+   if(pending)return {ok:false,error:"Native approval is still unresolved."};
    const pausedClarificationBudget=waitingForChoice?taskBudgets.get(threadId):null;
    const pausedClarificationRecord=pausedClarificationBudget?readNativeRecovery(recoveryStorage):null;
    const canContinueOriginalClarification=Boolean(pausedClarificationBudget&&pausedClarificationRecord&&
