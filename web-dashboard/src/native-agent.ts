@@ -2276,6 +2276,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        orchestration_context:firstStepGuidance,...(ticket?{task_ai_ticket:ticket}:{})}
     });
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
+    // Never use a new Premiere process as the FIRST action for an editing
+    // command. A mistaken model proposal is rewritten to fresh read-only
+    // OS window observation; the user must still approve the proposed read.
+    const premiereEditRequest=/\b(?:premiere|premire|premier)\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective)&&
+     /\b(?:edit|editing|trim|cut|timeline|import|export|render|save|project)\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
+    const premiereOpenOnly=/\b(?:open|launch|start|kholo|khol|kholdo|kholna)\b|खोलो|ओपन/iu.test(effectiveObjective)&&
+     !premiereEditRequest;
+    if(route.role!=="chat"&&premiereEditRequest&&!premiereOpenOnly&&
+       response.tool_proposal?.tool==="premiere_launch")
+     response.tool_proposal={tool:"ui_windows",arguments:{}};
     const originalScope=response.tool_proposal?
      admitDashboardMasterProposal(effectiveObjective,response.tool_proposal):null;
     const originalTarget=response.tool_proposal?
