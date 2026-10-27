@@ -49,7 +49,7 @@ const executionVerb=/\b(?:open|launch|start|create|make|build|edit|render|export
 // classifier does NOT approve or execute anything; Rust permission is final.
 const hindiPoliteImperative=/(?:खोल\s*(?:दीजिए|दिजिए|दो|देना|दें)|खोलकर\s*(?:दिखा(?:इए|एँ|दो|दीजिए)|रख)|खोलिए|बना\s*(?:दीजिए|दो|देना|दें)|बनाकर\s*(?:दिखा(?:इए|दो|दीजिए)|दे(?:ना|दो))|कर\s*(?:दीजिए|दिजिए|दो|देना|दें)|दिखा\s*(?:दीजिए|दो|देना|दें)|दिखाइए|लगा\s*(?:दीजिए|दो|देना)|हटा\s*(?:दीजिए|दो|देना)|चला\s*(?:दीजिए|दो|देना)|चलाइए|लिख\s*(?:दीजिए|दो|देना)|लिखिए|भेज\s*(?:दीजिए|दो|देना)|भेजिए|चुनिए|बदलिए|सहेजिए|निकालिए|पेस्ट\s*(?:दीजिए|दो)|खोजिए|ढूँढिए|ढूंढिए)/iu;
 const romanPoliteImperative=/\b(?:khol\s*(?:do|de|dena|dijiye|kar|ke)|bana\s*(?:do|de|dena|dijiye)|kar\s*(?:do|de|dena|dijiye)|kr\s*(?:do|de|dena)|dikha\s*(?:do|dena|dijiye)|laga\s*(?:do|dena)|hata\s*(?:do|dena)|save\s*kar\s*(?:do|dena)|bhej\s*(?:do|dena))\b/iu;
-const hindiDirectQuestion=/^क्या\s+(?:आप|तुम|शुवि|shuvi)\b?/iu;
+const hindiDirectQuestion=/^क्या\s+(?:आप|तुम|शुवि|shuvi)(?:\s|$)/iu;
 const actionCapabilityRoot=/(?:खोल|बना|चल|लगा|हटा|एडिट|एक्सपोर्ट|इम्पोर्ट|रेंडर|सेव|टाइप|क्लिक|लिख|भेज|डाउनलोड|इंस्टॉल|सेलेक्ट|कॉपी|पेस्ट|create|open|edit|export|render|save|launch|start)/iu;
 const secondPersonCapability=/(?:सकते|सकती|सकोगे|पाएँगे|पाओगे|सकेंगे)\s*(?:हो|हैं|क्या|\?)?\s*[?.।]?$/iu;
 const howToQuestion=/(?:कैसे\s*(?:कर|करूँ|करें|करते|बनाऊँ|बनाएं|खोलूँ|खोलें|होता)|किस\s+तरह|क्या\s+(?:है|होता\s+है)|\bhow\s+to\b|\bsteps\s+to\b|(?:बनाने|खोलने|करने|एडिट\s+करने)\s+का\s+तरीका|समझाइए|बताइए|सिखाइए)/iu;
