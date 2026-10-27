@@ -19,3 +19,7 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - Verified previous exact HEAD 3ac5d57f5236597e49474c30ff9664d415d5ddca CI 40344509868 three named jobs SUCCESS.
 - New code: BUG-018 fail-closed RAM/identity supervision (Remotion, project task and manual shell), BUG-027 manual screenshot directory junction/symlink guard and post-capture recheck. Tests: scripts/runtime-memory-safety.test.mjs, scripts/shuvi39-vision-directory-guard.test.mjs, scripts/shuvi62-ram-monitor-regression.test.mjs. New changes await independent exact-HEAD CI; no real Windows Premiere/Blender/screenshot runtime test performed.
 - Important safety: identity-checked kill can fail when observation/lock unavailable, so no success claim and no assertion that OS child was killed. Existing bounded subprocess deadlines apply. BUG-026/029 remain OPEN.
+
+## Increment 02 CI follow-up (2026-10-27)
+- Source HEAD 5964c891 CI 40452664753 frontend revealed 2 stale source-assertion tests: scripts/managed-process-identity.test.mjs and scripts/manual-shell-memory.test.mjs still demanded unsafe 'while ... unwrap_or(false)' monitoring.
+- Updated both to verify typed identity Result handling, fail-closed RAM-monitor error path, and no false success. Rust/installer results were pending at this note. No extra permissions or process killing added in this follow-up.

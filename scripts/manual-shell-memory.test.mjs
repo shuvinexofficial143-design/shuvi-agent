@@ -29,11 +29,13 @@ test("manual shell is stopped if tracking registration fails",()=>{
 test("manual shell watchdog fails closed above the 4 GB RAM ceiling",()=>{
   const start=rust.indexOf("ToolAction::PowerShell { command } =>");
   const block=rust.slice(start,start+7000);
-  assert.match(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
+  assert.match(block,/match managed_process_identity_matches\(state, child_pid\)/);
+  assert.match(block,/monitor_failed\.store\(true, Ordering::Release\)/);
+  assert.doesNotMatch(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
   assert.match(block,/current_runtime_status\(state\)/);
   assert.match(block,/status\.over_hard_limit/);
   assert.match(block,/Duration::from_millis\(250\)/);
-  assert.match(block,/output\.status\.success\(\) && !exceeded_hard_limit/);
+  assert.match(block,/output\.status\.success\(\) && !exceeded_hard_limit && !lost_supervision/);
   assert.match(block,/4 GB hard RAM ceiling/);
 });
 

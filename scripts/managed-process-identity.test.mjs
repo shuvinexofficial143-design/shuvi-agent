@@ -69,7 +69,10 @@ test("RAM watchdogs stop only the exact registered process instance",()=>{
     const start=rust.indexOf(arm);
     const next=rust.indexOf("\n        ToolAction::",start+arm.length);
     const block=rust.slice(start,next<0?rust.length:next);
-    assert.match(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
+    assert.match(block,/match managed_process_identity_matches\(state, child_pid\)/);
+    assert.match(block,/monitor_failed\.store\(true, Ordering::Release\)/);
+    assert.match(block,/terminate_registered_process_tree\(state, child_pid\)/);
+    assert.doesNotMatch(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
     assert.match(block,/terminate_registered_process_tree\(state, child_pid\)/);
     assert.doesNotMatch(block,/while process_is_alive\(child_pid\)/);
   }
