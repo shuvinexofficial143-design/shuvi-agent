@@ -72,8 +72,12 @@ fn read_at(path:&Path)->Result<Queue,String>{
   let q:Queue=serde_json::from_slice(&bytes).map_err(|_|"Command queue JSON invalid.")?;
   valid(&q)?;Ok(q)
  };
- if path.exists(){read(path).or_else(|e|if backup.exists(){read(&backup)}else{Err(e)})}
- else{read(&backup)}
+ // Queue claims are one-shot side-effect boundaries. A backup may still
+ // contain a pre-claim "queued" state: falling back could buy another AI
+ // request or duplicate a Premiere mutation after a partial disk write.
+ // Corrupt/missing primary with a backup is quarantined, NEVER replayed.
+ if !path.exists(){return Err("Native command queue primary missing; old backup cannot authorize replay.".into());}
+ read(path)
 }
 fn store(path:&Path,q:&Queue)->Result<(),String>{
  valid(q)?;
@@ -165,6 +169,15 @@ mod tests{
   assert!(finish_at(&p,&b.id).is_err());
   finish_at(&p,&a.id).unwrap();
   assert_eq!(first_at(&p).unwrap().unwrap().id,b.id);cleanup(&p);
+ }
+ #[test]
+ fn corrupt_primary_never_resurrects_older_queued_backup(){
+  let p=file();let item=add_at(&p,"restart_1",0,"Premiere edit",100).unwrap();
+  claim_at(&p,&item.id).unwrap();
+  // A corrupt latest claim MUST NOT restore backup's earlier "queued" state.
+  fs::write(&p,b"corrupt").unwrap();
+  assert!(first_at(&p).is_err());
+  cleanup(&p);
  }
  #[test]
  fn rejection_preserves_queue_and_never_stages_native_action(){
