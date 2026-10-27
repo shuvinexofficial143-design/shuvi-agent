@@ -35,3 +35,17 @@ test("UI sends fresh Native Task only ticket and offers read-only unpriced recei
  assert.ok(ui.includes('Show task AI request ledger'));
  assert.ok(ui.includes('USD billed: UNKNOWN'));
 });
+
+test("BUG-028: paid task receipts have per-task journals and permanent create-new anti-replay markers",()=>{
+ assert.match(rust,/fn reserve_scoped_at\(/);
+ assert.match(rust,/fn complete_scoped_at\(/);
+ assert.match(rust,/fn read_scoped_at\(/);
+ assert.match(rust,/native-task-ai-tasks/);
+ assert.match(rust,/native-task-ai-requests/);
+ assert.match(rust,/opts\.create_new\(true\)\.write\(true\)/);
+ assert.match(rust,/file\.sync_all\(\)/);
+ assert.match(rust,/Existing legacy AI task\/request must not be reissued/);
+ assert.match(rust,/legacy_256_rows_do_not_block_new_owner_tasks_and_are_never_truncated/);
+ assert.match(rust,/corrupted_request_marker_or_redirected_shard_fails_without_paid_dispatch/);
+ assert.match(rust,/complete_scoped_at\(root,id,usage,ok\)/);
+});

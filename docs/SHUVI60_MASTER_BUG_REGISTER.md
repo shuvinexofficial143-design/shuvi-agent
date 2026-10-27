@@ -34,7 +34,7 @@
 | BUG-025 | High | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | `.github/workflows/ci.yml`, `scripts/run-attested.mjs` | Dashboard test/CI parity pending | Unknown | PENDING |
 | BUG-026 | High / P0 | MITIGATED IN CODE (Increment 03; not closed, CI/Windows pending) | Screenshot overlay privacy | Pending | Unknown | PENDING |
 | BUG-027 | Medium | FIXED IN CODE (Increment 02; CI pending) | Screenshot directory safety | Pending | Unknown | PENDING |
-| BUG-028 | High | NOT REVALIDATED | Native paid AI ledger | Pending | Unknown | PENDING |
+| BUG-028 | High | FIXED IN CODE (Increment 08 per-task durable journals; new CI & Windows E2E pending) | Native paid AI ledger | Pending | Unknown | PENDING |
 | BUG-029 | High / P0 | PARTIALLY FIXED IN CODE (Increment 07: combined Remotion and one Premiere frame metered; multi-call loops OPEN) | Cross-route paid AI budget | Pending | Unknown | PENDING |
 
 **Latest confirmed open from source before this increment:** BUG-002, BUG-007, BUG-016, BUG-025. Historical BUG-001 verified. Remaining historical 24 must not be misreported as closed or live-open without latest source revalidation.
@@ -86,3 +86,8 @@
 
 ## Shuvi62 Increment 07 budget boundary follow-up
 - Any paid provider tool with Rust-prepared DAG/step or task_id must match *executing* recovery action UUID, task UUID and unexpired context; missing/mismatched record denies before provider dispatch. Independent manual tools with no task metadata remain separately consented. This is source code change pending new exact-HEAD CI and owner Windows E2E.
+
+## Shuvi62 Increment 08 — BUG-028 capacity and replay
+- Historical `native-task-ai-ledger.jsonl` remains immutable and is checked before any fresh task reservation. Fresh, explicitly owner-issued UUIDs use independent bounded journal files (`native-task-ai-tasks/<task>.jsonl`) and permanent `create_new`+`sync_all` request replay markers (`native-task-ai-requests/<request>.ref`), with exact task binding on completion. Legacy task IDs cannot restart spending in a new shard. No file deletion/truncation to regain paid authority; corrupt markers, unexpected shard entries, path redirection and incomplete reservations fail closed.
+- Unit regression simulates historical 256-row ledger, verifies fresh tasks still reserve/complete while legacy bytes remain identical, duplicate/unknown outcomes blocked, and marker corruption fail-closed. Total disk use/number of task journal files grows with real work and still needs operational retention policy preserving tombstones. No live owner Windows E2E; new exact-HEAD CI pending.
+- Previous HEAD 5c225862 CI Run 40471385950 Frontend PASS and Rust/Installer still in progress at beginning of Increment 08.

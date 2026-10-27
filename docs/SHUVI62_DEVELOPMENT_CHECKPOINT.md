@@ -56,3 +56,8 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 
 ## Increment 07 budget boundary hardening
 - Task-linked provider routes without exact current Rust recovery action/owner task identity no longer fall back to unmetered manual execution. Source assertion regression added; protects fail-closed quota guarantee for stale/missing checkpoints. Exact new HEAD CI pending.
+
+## Increment 08 — Native Task AI Ledger sharding
+- Previous 5c225862 CI 40471385950 Frontend PASS; Rust and Windows Installer in progress when checked.
+- BUG-028: Preserve full legacy ledger audit; new task UUIDs get separate <=32-row journals; permanent create_new synced per-request markers route completions and prevent same request-ID replay across tasks/restarts. Corrupt marker/task storage fails closed. Legacy 256 rows no longer form a global lifetime cap. No cleanup/truncation, no arbitrary grant restoration or USD cap.
+- Full exact-HEAD CI required; Windows/Premiere/provider E2E remains PENDING.
