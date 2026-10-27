@@ -27,10 +27,10 @@
 | BUG-018 | High / P0 | FIXED IN CODE (Increment 02; CI pending) | RAM watchdog | Pending | Unknown | PENDING |
 | BUG-019 | Medium | NOT REVALIDATED | Memory polling | Pending | Unknown | PENDING |
 | BUG-020 | High / P0 | FIXED IN CODE (Increment 05; CI & mobile E2E pending) | Mobile approval summary | Pending | Unknown | PENDING |
-| BUG-021 | Medium | NOT REVALIDATED | Mobile status refresh | Pending | Unknown | PENDING |
-| BUG-022 | Medium | NOT REVALIDATED | Remote dashboard copy | Pending | Unknown | PENDING |
-| BUG-023 | Medium | NOT REVALIDATED | Readiness API metadata | Pending | Unknown | PENDING |
-| BUG-024 | Medium | NOT REVALIDATED | Mobile expiry status | Pending | Unknown | PENDING |
+| BUG-021 | Medium | FIXED IN CODE (Increment 06; new CI pending) | Mobile status refresh | Pending | Unknown | PENDING |
+| BUG-022 | Medium | FIXED IN CODE (Increment 06; new CI pending) | Remote dashboard copy | Pending | Unknown | PENDING |
+| BUG-023 | Medium | FIXED IN CODE (Increment 06; new CI pending) | Readiness API metadata | Pending | Unknown | PENDING |
+| BUG-024 | Medium | FIXED IN CODE (Increment 06; new CI pending) | Mobile expiry status | Pending | Unknown | PENDING |
 | BUG-025 | High | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | `.github/workflows/ci.yml`, `scripts/run-attested.mjs` | Dashboard test/CI parity pending | Unknown | PENDING |
 | BUG-026 | High / P0 | MITIGATED IN CODE (Increment 03; not closed, CI/Windows pending) | Screenshot overlay privacy | Pending | Unknown | PENDING |
 | BUG-027 | Medium | FIXED IN CODE (Increment 02; CI pending) | Screenshot directory safety | Pending | Unknown | PENDING |
@@ -70,3 +70,11 @@
 - BUG-020: Authenticated native agent must publish bounded Rust-prepared action disclosure (UUID, kind, risk, summary, specific target) in requires_approval receipt. Mobile renders exact fields as text before Approve once. Server validates full disclosure; decision binds exact action UUID, task, approval, owner/device, expiry and replay. Windows consumer matches exact action UUID before executing.
 - Missing/malformed data or unrepresentable target refuses mobile approval. PowerShell command bodies are not sent to cloud and cannot be mobile-approved under this contract; use local permission UI.
 - Prior d626a9cd exact CI 40455539267: Frontend/Rust PASS; Windows Installer in progress when checked. New exact-head CI/owner-phone Windows E2E unverified. BUG-029 multi-call metering still pending.
+
+## Shuvi62 Increment 06 (2026-10-27)
+- Base HEAD d62de7ed1ae8b0f9f62c4a91724e5b07da4a63e7 Run 40458275042: exact Frontend/Rust/Installer all SUCCESS (verified).
+- BUG-021 mobile browser client: authenticated status polling every 4.5s visible, 20s hidden, capped exponential backoff, visibility resume; session-epoch guard and abort in-flight GET requests at disconnect. No Windows actions or model requests from status poll.
+- BUG-024 server now derives `expired_not_delivered` in authenticated describe/list while preserving immutable native `received` receipt; mobile renders expiry without offering phantom Stop; agent still never polls expired messages; a legitimately admitted late task remains eligible for stop.
+- BUG-023: source-implemented cloud queue, CAS, authenticated outbound relay report `source_implemented_configuration_unverified` unless strict server-only remote auth + Supabase setting shapes are present, then `configured_unverified`; never live-verified.
+- BUG-022: public website notice now distinguishes unreachable localhost read-only bridge from separate cloud mobile relay; avoids false native-connected claims.
+- Exact new HEAD CI and real owner Windows/mobile E2E remain PENDING; BUG-029 multi-call Vision/Creative metering and BUG-026 compositor acceptance still open.

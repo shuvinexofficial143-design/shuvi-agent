@@ -1,10 +1,12 @@
 type Feature={
-  id:string;name:string;status:"source_ready"|"configured_unverified"|"blocked"|"not_implemented"|"live_test_pending";
+  id:string;name:string;status:"source_ready"|"configured_unverified"|"blocked"|"not_implemented"|"live_test_pending"|"source_implemented_configuration_unverified";
   next:string
 };
 type Readiness={
   mode:string;readyForDirectRemoteExecution:boolean;
   cloudAIConfigurationReady:boolean;cloudAIReplyVerified:boolean;
+  remoteRelayConfigurationPresent?:boolean;remoteAgentLiveVerified?:boolean;
+  remoteOwnerApprovalLiveVerified?:boolean;missingRemoteSettings?:string[];
   computerConnected:boolean;missingCloudSettings:string[];features:Feature[];
   noProviderRequestsMade:boolean
 };
@@ -58,7 +60,8 @@ export function mountReadinessPanel():void {
         state.dataset.status=feature.status;
         const labels:Record<Feature["status"],string>={
           source_ready:"Source ready",configured_unverified:"Configured — unverified",
-          blocked:"Blocked",not_implemented:"Not implemented",live_test_pending:"Live test pending"
+          blocked:"Blocked",not_implemented:"Not implemented",live_test_pending:"Live test pending",
+          source_implemented_configuration_unverified:"Source implemented — setup unverified"
         };
         state.textContent=labels[feature.status]??"Unknown";
         heading.append(el("strong","",feature.name),state);
@@ -68,12 +71,16 @@ export function mountReadinessPanel():void {
       summary.textContent=data.readyForDirectRemoteExecution
         ? "Remote actions can be tested only after the live native permission gate is verified."
         : "NOT READY for direct Windows execution. Browser previews are not running workers.";
-      blockers.textContent=data.missingCloudSettings.length
+      const chatInfo=data.missingCloudSettings.length
         ? "Online Chat configuration pending: "+data.missingCloudSettings.join(" · ")+
           ". Names only; never put credential values in the browser."
         : data.cloudAIReplyVerified
           ? "Cloud chat reply verified by live provider test."
           : "Online Chat configuration is present, but a real AI response has NOT been verified.";
+      const remoteInfo=data.remoteRelayConfigurationPresent
+        ? "Remote relay settings appear present; Windows agent and owner approval are NOT live verified."
+        : "Remote relay source is implemented, but setup/live connectivity are unverified.";
+      blockers.textContent=chatInfo+" "+remoteInfo;
     }catch(error) {
       rows.replaceChildren();
       summary.textContent="Preflight unavailable — do not start a paid/runtime acceptance test.";

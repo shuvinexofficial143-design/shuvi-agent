@@ -43,3 +43,8 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - Base d626a9cd35bfdf8481392f2910b302888795c495. Existing Rust CI passed for base; installer unconfirmed at staging.
 - Contract, coordinator, mobile and Windows consumer bind approval decision to exact prepared action UUID and disclose tool/risk/target/summary. Missing target fails closed; no command text transmitted.
 - New regression tests for malformed/mismatched metadata and mobile renderer. Real mobile/owner Windows acceptance is PENDING; new exact-head CI PENDING.
+
+## Increment 06 — Remote lifecycle and truthful readiness
+- Verified base HEAD d62de7ed CI 40458275042 3/3 success.
+- Fixed in code BUG-021/022/023/024: 4.5s authenticated mobile status poll, visibility/background bounded refresh and disconnect cancellation; derived task expiry without fake native receipt; truthful configured-vs-source readiness; public local/cloud bridge message distinction.
+- Existing native consent and exact Action UUID remain required. Regression tests added. New commit exact-HEAD CI pending; no live owner device E2E claimed.

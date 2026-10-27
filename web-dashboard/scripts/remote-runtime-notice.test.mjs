@@ -24,8 +24,9 @@ test("public Vercel origin does not accept or retain native pairing code", () =>
 
 test("remote runtime labels are honest and keep pairing local", () => {
   const notice = src("remote-runtime-notice.ts");
-  assert.match(notice, /Remote relay not configured/);
-  assert.match(notice, /Remote control is not enabled/);
+  assert.match(notice, /Cloud relay status requires authenticated pairing/);
+  assert.match(notice, /Separate authenticated cloud remote tasks/);
+  assert.match(notice, /Local read-only bridge pairing is unavailable/);
   assert.doesNotMatch(notice, /Telegram/);
   assert.match(notice, /Shuvi Desktop on Windows/);
   assert.match(notice, /\[data-action="connect-local"\]/);

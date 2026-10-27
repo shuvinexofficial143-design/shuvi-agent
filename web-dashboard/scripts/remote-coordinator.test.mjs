@@ -160,3 +160,31 @@ test("agent heartbeat is only set by authenticated agent poll",async()=>{
  await c.poll(agent);
  assert.equal((await c.describe(user)).value.agentConnected,true);
 });
+
+test("BUG-024: describe labels expired unacknowledged command without forging native terminal receipt",async()=>{
+ const c=setup();await c.admit(user,command());
+ assert.equal((await c.describe(user)).value.tasks[0].delivery,"awaiting_agent");
+ now+=121000;
+ try{
+  const before=(await c.describe(user)).value.tasks[0];
+  assert.equal(before.status,"received");
+  assert.equal(before.delivery,"expired_not_delivered");
+  assert.equal((await c.list(user)).value[0].delivery,"expired_not_delivered");
+  assert.equal((await c.requestCancel(user,E)).error,"command_expired_not_delivered");
+  assert.equal((await c.poll(agent)).value.messages.length,0);
+  const after=(await c.describe(user)).value.tasks[0];
+  assert.equal(after.revision,1,"expiry is a derived display state, not a fabricated native receipt");
+  assert.equal(after.status,"received");
+ }finally{now-=121000;}
+});
+test("BUG-024: acknowledged Windows task is not labelled undelivered after command TTL",async()=>{
+ const c=setup();await c.admit(user,command());
+ await c.recordReceipt(agent,receipt("admitted",2));
+ now+=121000;
+ try{
+  const t=(await c.describe(user)).value.tasks[0];
+  assert.equal(t.status,"admitted");
+  assert.equal(t.delivery,"native_receipt_recorded");
+  assert.equal((await c.requestCancel(user,E)).ok,true,"acknowledged task may need real native stop");
+ }finally{now-=121000;}
+});

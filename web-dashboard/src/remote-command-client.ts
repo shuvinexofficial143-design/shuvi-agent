@@ -7,7 +7,8 @@ import {REMOTE_PROTOCOL} from "./remote-command-contract.mjs";
 type Result<T>={ok:boolean;value?:T;error?:string};
 type Status={ownerId:string;deviceId:string;lastSequence:number;
  agentConnected:boolean;lastAgentPollAt:number;
- tasks:Array<{taskId:string;status:string;cancelRequested?:boolean;
+ tasks:Array<{taskId:string;status:string;expiresAt:number;
+  delivery?:"expired_not_delivered"|"awaiting_agent"|"native_receipt_recorded";cancelRequested?:boolean;
   approvalId?:string;approvalExpiresAt?:number;
   approvalAction?:{id:string;tool:string;risk:string;summary:string;target:string}}>};
 export type RemoteChatTransport={
@@ -55,8 +56,35 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
  let identity:Status|null=null;
  let updating=false;
  let sending=false;
+ // BUG-021: bounded, authenticated status polling; never model calls.
+ // Faster while visible, slower in background, with failure backoff.
+ const VISIBLE_POLL_MS=4500, HIDDEN_POLL_MS=20000, MAX_BACKOFF_MS=30000;
+ let refreshTimer:ReturnType<typeof setTimeout>|null=null;
+ let refreshFailures=0;
+ let connectionEpoch=0;
+ const outstanding=new Set<AbortController>();
+ function stopRefresh(){
+  if(refreshTimer!==null){window.clearTimeout(refreshTimer);refreshTimer=null;}
+ }
+ function scheduleRefresh(){
+  stopRefresh();
+  if(!key)return;
+  const background=document.visibilityState==="hidden";
+  const delay=background?HIDDEN_POLL_MS:
+   Math.min(MAX_BACKOFF_MS,VISIBLE_POLL_MS*(2**Math.min(refreshFailures,3)));
+  refreshTimer=window.setTimeout(()=>{
+   refreshTimer=null;
+   if(!key)return;
+   void reload().finally(()=>{if(key)scheduleRefresh();});
+  },delay);
+ }
 
  function disconnectNow(){
+  // Cancel timers and in-flight fetches BEFORE dropping session identity.
+  // A late old connection reply cannot resurrect the status/approval UI.
+  connectionEpoch++;stopRefresh();
+  for(const controller of outstanding)controller.abort();
+  outstanding.clear();refreshFailures=0;updating=false;
   key="";identity=null;code.value="";
   connect.disabled=false;disconnect.disabled=true;refresh.disabled=true;
   state.textContent="Disconnected · local drafts only";
@@ -64,6 +92,7 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
  }
  async function exchange(method:"GET"|"POST",body?:unknown):Promise<Result<Status>>{
   const ctrl=new AbortController();
+  outstanding.add(ctrl);
   const timer=window.setTimeout(()=>ctrl.abort(),9000);
   try{
    const res=await fetch("/api/remote-command",{
@@ -80,7 +109,7 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
    if(res.status===401){disconnectNow();return {ok:false,error:"Invalid remote code"};}
    return {ok:res.ok&&reply.ok===true,value:reply.value,error:reply.error};
   }catch{return {ok:false,error:"Remote server unreachable or not configured"};}
-  finally{window.clearTimeout(timer);}
+  finally{window.clearTimeout(timer);outstanding.delete(ctrl);}
  }
  async function decide(task:{taskId:string;approvalId?:string;approvalAction?:{id:string}},choice:"approve"|"deny") {
   if(!identity||!task.approvalId||!task.approvalAction?.id)return;
@@ -110,9 +139,16 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
   for(const t of status.tasks.slice(-8).reverse()){
    const item=node("div");
    item.className="shuvi-remote-task-item";
-   item.append(node("small",String(t.taskId).slice(0,8)+" · "+String(t.status).slice(0,40)+
+   const expiredUnadmitted=t.status==="received"&&
+     (t.delivery==="expired_not_delivered"||
+       (Number.isSafeInteger(t.expiresAt)&&t.expiresAt<=Date.now()));
+   const displayed=expiredUnadmitted
+     ?"Expired · no Windows agent admission confirmed"
+     :String(t.status).slice(0,40);
+   item.append(node("small",String(t.taskId).slice(0,8)+" · "+displayed+
       (t.cancelRequested?" · cancel requested":"")));
-   const active=["received","admitted","running","requires_approval"].includes(t.status);
+   const active=!expiredUnadmitted&&
+     ["received","admitted","running","requires_approval"].includes(t.status);
    if(t.status==="requires_approval" && t.approvalId &&
       Number.isSafeInteger(t.approvalExpiresAt) &&
       t.approvalExpiresAt!>Date.now() && !t.cancelRequested){
@@ -147,10 +183,13 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
  }
  async function reload(){
   if(!key||updating)return false;
+  const epoch=connectionEpoch;
   updating=true;
   try {
    const info=await exchange("GET");
+   if(epoch!==connectionEpoch||!key)return false;
    if(!info.ok||!info.value) {
+    refreshFailures=Math.min(refreshFailures+1,4);
     state.textContent="Remote status unavailable — Windows execution not confirmed";
     return false;
    }
@@ -158,13 +197,21 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
    if(typeof x.ownerId!=="string"||typeof x.deviceId!=="string"||
       !Number.isSafeInteger(x.lastSequence)||!Array.isArray(x.tasks))return false;
    identity=x;
+   refreshFailures=0;
    state.textContent=x.agentConnected
      ? "Windows Agent contacted relay recently · task execution requires audit"
      : "Cloud authenticated · Windows Agent offline or not polling";
    showTasks(x);
    return true;
-  }finally{updating=false;}
+  }finally{if(epoch===connectionEpoch)updating=false;}
  }
+ document.addEventListener("visibilitychange",()=>{
+  if(!key)return;
+  stopRefresh();
+  if(document.visibilityState==="visible"){
+   void reload().finally(()=>{if(key)scheduleRefresh();});
+  }else scheduleRefresh();
+ });
  connect.addEventListener("click",async()=>{
   if(!/^[a-fA-F0-9]{64}$/.test(code.value)) {
    state.textContent="Enter your 64-character secure pairing code";
@@ -174,9 +221,13 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
   const ok=await reload();
   if(!ok){disconnectNow();state.textContent="Could not authenticate/configure remote relay";return;}
   disconnect.disabled=false;refresh.disabled=false;onChange();
+  scheduleRefresh();
  });
  disconnect.addEventListener("click",disconnectNow);
- refresh.addEventListener("click",()=>{void reload();});
+ refresh.addEventListener("click",()=>{
+  stopRefresh();
+  void reload().finally(()=>{if(key)scheduleRefresh();});
+ });
  return {
   connected:()=>Boolean(key&&identity),
   async send(text,threadId){

@@ -41,12 +41,19 @@ function stateFrom(value) {
     throw new Error("Invalid durable remote-task journal; refuse to operate");
   return clone(value);
 }
-function taskView(task) {
+function taskView(task,now) {
   const r=task.receipt;
+  // BUG-024: a command that was never acknowledged by the native agent
+  // stops being deliverable at TTL. Preserve the immutable actual native
+  // receipt (received) for audit; derive a separate owner-facing state.
+  const delivery=r.status==="received"
+    ?task.command.expiresAt<=now?"expired_not_delivered":"awaiting_agent"
+    :"native_receipt_recorded";
   return {
     taskId:task.command.taskId, threadId:task.command.threadId,
     messageId:task.command.messageId, status:r.status,
     revision:r.revision, expiresAt:task.command.expiresAt,
+    delivery,
     approvalId:r.status==="requires_approval" ? r.approvalId : undefined,
     approvalExpiresAt:r.status==="requires_approval" ? r.approvalExpiresAt : undefined,
     approvalAction:r.status==="requires_approval" ? clone(r.approvalAction) : undefined,
@@ -100,7 +107,7 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
       state.lastSequence=command.sequence;
       state.seenTaskIds.push(command.taskId);
       state.seenMessageIds.push(command.messageId);
-      return ok(taskView(state.tasks.at(-1)));
+      return ok(taskView(state.tasks.at(-1),now));
     });
   }
   /** At-least-once delivery: native agent must independently deduplicate taskId. */
@@ -144,7 +151,7 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
       // No native execution permission is granted by any receipt.
       task.receipt=clone(receipt);
       if (receipt.status!=="requires_approval") task.approvalDecision=null;
-      return ok(taskView(task));
+      return ok(taskView(task,now));
     });
   }
   /** This only journals approval intent. Native policy + crypto verification
@@ -171,11 +178,13 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
   }
   /** Cancellation is a request, never a fabricated 'stopped' receipt. */
   async function requestCancel(actor,taskId) {
-    return transact(actor,"user",(state)=>{
+    return transact(actor,"user",(state,now)=>{
       if (!validId(taskId)) return fail("invalid_task_id");
       const task=state.tasks.find(t=>t.command.taskId===taskId);
       if (!task) return fail("unknown_task");
       if (isTerminal(task.receipt.status)) return fail("terminal_task");
+      if(task.receipt.status==="received"&&task.command.expiresAt<=now)
+        return fail("command_expired_not_delivered");
       task.cancelRequested=true;
       return ok({taskId,cancelRequested:true,status:task.receipt.status});
     });
@@ -186,15 +195,12 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
       agentConnected:Number.isSafeInteger(state.lastAgentPollAt) &&
         state.lastAgentPollAt>0 && now-state.lastAgentPollAt<20_000,
       lastAgentPollAt:Number.isSafeInteger(state.lastAgentPollAt) ? state.lastAgentPollAt : 0,
-      tasks:state.tasks.slice(-25).map(taskView)
+      tasks:state.tasks.slice(-25).map(t=>taskView(t,now))
     }));
   }
   async function list(actor) {
     return transact(actor,"user",(state,now)=>ok(state.tasks.map(t=>({
-      ...taskView(t),
-      delivery:t.receipt.status==="received"
-        ? (t.command.expiresAt<=now ? "expired_not_delivered" : "awaiting_agent")
-        : "native_receipt_recorded"
+      ...taskView(t,now)
     }))));
   }
   return Object.freeze({admit,poll,recordReceipt,decide,requestCancel,list,describe});

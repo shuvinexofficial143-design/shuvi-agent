@@ -29,8 +29,10 @@ test("Default preflight NEVER claims cloud model or Windows runtime ready",()=>{
   assert.equal(ready.computerConnected,false);
   assert.equal(ready.cloudAIReplyVerified,false);
   assert.ok(ready.missingCloudSettings.includes("SHUVI_AI_CALLS_ENABLED"));
-  assert.equal(ready.features.find(x=>x.id==="master").status,"not_implemented");
-  assert.equal(ready.features.find(x=>x.id==="native_bridge").status,"not_implemented");
+  assert.equal(ready.features.find(x=>x.id==="master").status,"source_implemented_configuration_unverified");
+  assert.equal(ready.features.find(x=>x.id==="native_bridge").status,"source_implemented_configuration_unverified");
+  assert.equal(ready.remoteRelayConfigurationPresent,false);
+  assert.equal(ready.remoteAgentLiveVerified,false);
 });
 
 test("Configured model is flagged UNVERIFIED, never described as live success",()=>{
@@ -118,4 +120,32 @@ test("Preflight dashboard and specialist response UI are mounted",()=>{
   assert.match(ui,/Run preflight/);
   assert.match(styles,/max-width:700px/);
   assert.match(chat,/Shuvi \$\{role\} · \$\{tier\}/);
+});
+
+test("BUG-023: source-implemented remote relay remains unverified even with all server config fields",()=>{
+ const remote={...env,
+  SHUVI_REMOTE_OWNER_ID:"o".repeat(32),SHUVI_REMOTE_DEVICE_ID:"d".repeat(32),
+  SHUVI_REMOTE_OWNER_KEY_SHA256:"a".repeat(64),SHUVI_REMOTE_AGENT_KEY_SHA256:"b".repeat(64),
+  SHUVI_REMOTE_DB_URL:"https://shuvi-test.supabase.co/",
+  SHUVI_REMOTE_DB_SERVICE_KEY:"x".repeat(48)
+ };
+ const good=evaluateReadiness(remote);
+ assert.equal(good.remoteRelayConfigurationPresent,true);
+ assert.equal(good.remoteAgentLiveVerified,false);
+ assert.equal(good.remoteOwnerApprovalLiveVerified,false);
+ assert.equal(good.readyForDirectRemoteExecution,false);
+ assert.equal(good.computerConnected,false);
+ for(const f of good.features.filter(x=>["cloud_queue","native_bridge"].includes(x.id)))
+  assert.equal(f.status,"configured_unverified");
+ assert.equal(good.missingRemoteSettings.length,0);
+ for(const bad of [
+   {...remote,SHUVI_REMOTE_DB_URL:"http://localhost:54321/"},
+   {...remote,SHUVI_REMOTE_DB_URL:"https://bad.example.com/"},
+   {...remote,SHUVI_REMOTE_OWNER_KEY_SHA256:"not-a-hash"},
+   {...remote,SHUVI_REMOTE_DB_SERVICE_KEY:"x"}
+ ]){
+  const result=evaluateReadiness(bad);
+  assert.equal(result.remoteRelayConfigurationPresent,false);
+  assert.equal(result.features.find(x=>x.id==="native_bridge").status,"source_implemented_configuration_unverified");
+ }
 });

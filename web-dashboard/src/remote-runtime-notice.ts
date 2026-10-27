@@ -25,18 +25,19 @@ export function mountRemoteRuntimeNotice(): void {
   if (detail) {
     detail.textContent = "This Vercel website is not linked to your Windows computer. " +
       "The localhost read-only bridge can only be paired from the local Windows dashboard at " +
-      "http://127.0.0.1:1423. Remote web control " +
-      "requires a separate authenticated relay that is not available yet.";
+      "http://127.0.0.1:1423. The separate Windows Remote Control panel can use " +
+      "an authenticated outbound cloud relay IF the server and Windows agent are configured. " +
+      "Cloud login alone never verifies a Windows action.";
   }
 
   const status = document.getElementById("bridgeConnectionState");
-  if (status) status.textContent = "Remote connection not configured";
+  if (status) status.textContent = "Local bridge unavailable here · cloud relay status in Windows Remote Control";
   const sidebar = document.getElementById("sidebarRuntimeState");
-  if (sidebar) sidebar.textContent = "Remote not connected";
+  if (sidebar) sidebar.textContent = "Local bridge unavailable · cloud relay not verified";
   const badge = document.getElementById("dashboardRuntimeBadge");
   if (badge) badge.textContent = "Not linked";
   const agentState = document.getElementById("dashboardRuntimeState");
-  if (agentState) agentState.textContent = "Remote relay not configured";
+  if (agentState) agentState.textContent = "Cloud relay status requires authenticated pairing";
   const topbar = document.getElementById("webRuntimeTopbar");
   if (topbar) topbar.textContent = " Web runtime not linked";
 
@@ -51,8 +52,9 @@ export function mountRemoteRuntimeNotice(): void {
     notice.id = "remoteRuntimeNotice";
     notice.className = "runtime-readonly-warning";
     notice.setAttribute("role", "note");
-    notice.textContent = "Remote control is not enabled on this website. " +
-      "Remote desktop pairing and permissions remain inside Shuvi Desktop on Windows.";
+    notice.textContent = "Local read-only bridge pairing is unavailable on this public website. " +
+      "Separate authenticated cloud remote tasks can be queued through Windows Remote Control " +
+      "when configured. Exact Windows execution and permissions remain in Shuvi Desktop on Windows.";
     panel.querySelector(".settings-heading")?.insertAdjacentElement("afterend", notice);
   }
 }

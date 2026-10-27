@@ -19,3 +19,20 @@ test("browser does not persist remote code or claim native execution",()=>{
  assert.match(ui,/Windows execution NOT yet confirmed/);
  assert.match(ui,/cloud/i);
 });
+
+test("BUG-021: client polls bounded authenticated status and cancels stale transport on disconnect",()=>{
+ assert.match(ui,/VISIBLE_POLL_MS=4500, HIDDEN_POLL_MS=20000, MAX_BACKOFF_MS=30000/);
+ assert.match(ui,/window\.setTimeout\(\(\)=>\{/);
+ assert.match(ui,/document\.addEventListener\("visibilitychange"/);
+ assert.match(ui,/connectionEpoch\+\+/);
+ assert.match(ui,/for\(const controller of outstanding\)controller\.abort\(\)/);
+ assert.match(ui,/if\(epoch!==connectionEpoch\|\|!key\)return false/);
+ assert.match(ui,/Math\.min\(MAX_BACKOFF_MS/);
+ assert.doesNotMatch(ui,/setInterval\(/);
+});
+test("BUG-024: mobile does not offer stop to an expired unacknowledged command",()=>{
+ assert.match(ui,/t\.delivery==="expired_not_delivered"/);
+ assert.match(ui,/Expired · no Windows agent admission confirmed/);
+ assert.match(ui,/const active=!expiredUnadmitted&&/);
+ assert.match(ui,/Number\.isSafeInteger\(t\.expiresAt\)&&t\.expiresAt<=Date\.now\(\)/);
+});
