@@ -38,7 +38,7 @@ test("manual Allow once is still required before any native execute command",()=
   const src=ts.slice(ts.indexOf("async function decide("),ts.indexOf("approve.addEventListener("));
   assert.match(src,/if\(!allowed\)/);
   assert.match(src,/invoke<ActionResult>\("execute_action"/);
-  assert.match(src,/audit_log/);
+  assert.match(src,/action_audit_trace/);
 });
 const entry=fileURLToPath(new URL("../web-dashboard/src/native-agent.ts",import.meta.url));
 const {outputFiles}=await build({
