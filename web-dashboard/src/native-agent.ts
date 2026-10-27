@@ -2108,6 +2108,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }catch{return false;}
    }
   }else if(pending)return false;
+  let guardedRetired=false;
   try{
    for(const x of projectScopes.values())await invoke<void>("revoke_task_project_scopes",{taskId:x.taskId});
    for(const x of premiereScopes.values())await invoke<void>("revoke_premiere_read_scope",{taskId:x.taskId});
@@ -2126,9 +2127,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      taskId:old.taskId,revision:old.revision,actionId:old.actionId
     });
     if(retired!==true)throw Error("Exact Rust native action was not safely retired");
+    guardedRetired=true;
    }else await invoke<void>("clear_native_recovery");
    if(!clearNativeRecovery(recoveryStorage))throw Error("Local recovery journal split");
-  }catch{recoveryCheckpointFailed=true;recoveryAcknowledged=false;return false;}
+  }catch{
+   // An still-running/unknown worker is a WAIT condition, not a corrupt
+   // checkpoint latch. A genuinely half-cleared pair remains fail-closed.
+   if(guardedOld&&!guardedRetired)return false;
+   recoveryCheckpointFailed=true;recoveryAcknowledged=false;return false;
+  }
   rustRecovery=null;pausedPlanning=null;completedVerifiedBudget=null;cleanNoActionPausedBudget=null;
   taskBudgets.clear();taskGoalRoots.clear();taskStates.clear();taskEvidence.clear();
   browserLaunchProofs.clear();systemLaunchProofs.clear();pendingSearchProofs.clear();
