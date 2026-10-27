@@ -44,7 +44,7 @@ test("native first turn and verified follow-up both receive goal contract withou
  assert.match(source,/masterGoalContext\(task\.objective\)/);
  assert.match(source,/invoke<Pending>\("prepare_tool"/);
  assert.match(source,/invoke<ActionResult>\("execute_action"/);
- assert.match(source,/r\.action_id===current\.action\.id/);
+ assert.match(source,/\"action_audit_trace\",\{actionId:current\.action\.id\}/);
 });
 
 test("app clarification preserves exact earlier goal without merging unrelated commands",()=>{
