@@ -46,10 +46,17 @@ async function mount(invoke, storage = undefined) {
   return transport;
 }
 function nativeInvoke(chatResult, prepareFails) {
-  const calls = [];
-  const invoke = async (command) => {
+  const calls = [],queue=[];
+  const invoke = async (command,params={}) => {
     calls.push(command);
     switch (command) {
+      case "enqueue_native_command": {
+       const item={id:"00000000-0000-4000-8000-"+String(queue.length+1).padStart(12,"0"),
+        text:params.text,threadId:params.threadId,promptIndex:params.promptIndex,phase:"queued"};
+       queue.push(item);return item;
+      }
+      case "peek_native_command": return queue[0]??null;
+      case "native_worker_status":return {state:"idle",actionId:null};
       case "runtime_status": return { shuvi_memory_mb: 45, managed_children_count: 0 };
       case "save_native_recovery": return;
       case "load_native_recovery": return null;
@@ -63,7 +70,7 @@ function nativeInvoke(chatResult, prepareFails) {
       default: throw Error("Unexpected command: " + command);
     }
   };
-  return { invoke, calls };
+  return { invoke, calls, queue };
 }
 
 test("successful paid AI reply remains acknowledged when tool prepare fails", async () => {
@@ -177,8 +184,9 @@ test("native Windows task refuses to call a paid provider when recovery storage 
  const mock=nativeInvoke({content:"Should not dispatch",tool_proposal:null},false);
  const transport=await mount(mock.invoke,null);
  const result=await transport.send("Open Notepad","journal-missing",0);
- assert.equal(result.ok,false);
- assert.match(result.error,/पुराना Windows Action|previous Windows task/);
+ assert.equal(result.ok,true,"new command is admitted to Rust queue, not run");
+ assert.equal(mock.queue.length,1);
+ assert.match(result.reply,/Queue में दर्ज/);
  assert.equal(mock.calls.includes("chat"),false);
  assert.equal(mock.calls.includes("prepare_tool"),false);
 });
@@ -196,8 +204,9 @@ test("second native submission cannot cross a paused asynchronous Rust checkpoin
  const firstTask=transport.send("Open Notepad","concurrent-first",0);
  await saveEntered;
  const secondTask=await transport.send("Open Notepad","concurrent-second",0);
- assert.equal(secondTask.ok,false);
- assert.match(secondTask.error,/अभी चल रहा है|already running/);
+ assert.equal(secondTask.ok,true,"concurrent new command admitted to Rust queue");
+ assert.equal(mock.queue.length,1);
+ assert.match(secondTask.reply,/Queue में दर्ज/);
  assert.equal(mock.calls.filter(c=>c==="chat").length,0);
  releaseWrite();
  const outcome=await firstTask;
