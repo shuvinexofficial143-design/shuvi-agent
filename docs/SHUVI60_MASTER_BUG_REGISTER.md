@@ -83,3 +83,6 @@
 - Previous base HEAD df4bb10f74f13d754f8b7c6bf9fa34a3ed641474 Run 40466162018 exact Frontend/Rust/Windows Installer **3/3 CI SUCCESS**.
 - BUG-029 follow-up: `MotionGraphicsReviewRemotionFrames` is one combined provider call for several approved images; now debits one durable native AI quota/ledger reservation, including generated multi-frame system+user prompt bytes, with exact action UUID reconciliation in owner UI. One-image `PremiereReviewFrames` similarly admitted and accounted as one call. `PremiereReviewFrames` with >1 image, review-session loops, and finishing vision loops stay blocked for native paid tasks rather than overrun owner budget.
 - Does not claim a USD spending cap, live provider invoices, full multi-call support, or Windows E2E. New HEAD CI pending.
+
+## Shuvi62 Increment 07 budget boundary follow-up
+- Any paid provider tool with Rust-prepared DAG/step or task_id must match *executing* recovery action UUID, task UUID and unexpired context; missing/mismatched record denies before provider dispatch. Independent manual tools with no task metadata remain separately consented. This is source code change pending new exact-HEAD CI and owner Windows E2E.

@@ -59,3 +59,17 @@ test("BUG-029: Premiere review supports ONE paid frame, not a silent N-frame bud
  assert.match(ui,/"premiere_review_frames"/);
  assert.match(fn,/ToolAction::PremiereReviewSessionNext\{\.\.\}/);
 });
+
+test("BUG-029: missing or mismatched Rust recovery never downgrades task-linked paid action to free manual provider call",()=>{
+ const src=rust.slice(rust.indexOf("async fn execute_action("),rust.indexOf("async fn execute_powershell("));
+ assert.match(src,/let metered=native_single_metered_action\(&prepared\.action\)\?/);
+ assert.match(src,/if let Some\(\(provider,model,bytes\)\)=metered/);
+ assert.match(src,/prepared\.task_step_id\.is_some\(\)\|\|/);
+ assert.match(src,/prepared\.task_graph\.is_some\(\)\|\|task_id\.is_some\(\)/);
+ assert.match(src,/task_id\.as_deref\(\)\.is_some_and\(\|passed\|passed!=task\)/);
+ assert.match(src,/Native task AI recovery does not match prepared task\/action; paid request refused/);
+ assert.ok(src.indexOf("let metered=native_single_metered_action")<
+    src.indexOf("native_worker_job::begin(&app,&action_id"));
+ assert.ok(src.indexOf("Native task AI recovery does not match prepared task/action")<
+    src.indexOf("execute_tool_with_action_id("));
+});

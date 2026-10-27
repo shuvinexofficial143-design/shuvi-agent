@@ -22382,10 +22382,14 @@ async fn execute_action(
                 record.action_id.as_deref()==Some(action_id.as_str()) &&
                 now_ms()<record.expires_at);
             let mut paid_reserved=false;
-            if let Some(record)=owned_task {
-                if let Some((provider,model,bytes))=native_single_metered_action(&prepared.action)? {
+            let metered=native_single_metered_action(&prepared.action)?;
+            if let Some((provider,model,bytes))=metered {
+                if let Some(record)=owned_task {
                     let task=record.task_id.as_deref()
                         .ok_or("Owner native task identity missing; no paid provider request.")?;
+                    if task_id.as_deref().is_some_and(|passed|passed!=task) {
+                        return Err("Paid action task identity differs from owner recovery; provider request refused.".into());
+                    }
                     let index=record.model_requests.checked_add(1)
                         .ok_or("Owner paid request index overflow.")?;
                     {
@@ -22393,17 +22397,20 @@ async fn execute_action(
                             .map_err(|_|"Native task AI quota unavailable; provider request refused.")?;
                         quotas.reserve_context(task,index,bytes,now_ms())?;
                     }
-                    // Use the exact Rust-prepared action UUID as the charge ID.
-                    // A duplicate/unfinished ledger prevents a second charge.
+                    // The exact approved UUID is the durable paid request ID;
+                    // failed/unknown network calls can never be replayed free.
                     native_task_ai_ledger::reserve(&app,task,&action_id,index,provider,model)?;
                     paid_reserved=true;
-                }
-            } else if recovery.as_ref().is_some_and(|record|
-                record.action_id.as_deref()==Some(action_id.as_str())) {
-                // A stale, invalid or unverified task checkpoint never turns
-                // a paid action into an unmetered manual provider request.
-                if native_single_metered_action(&prepared.action)?.is_some(){
-                    return Err("Native task AI recovery is not executing this action; paid request refused.".into());
+                } else if prepared.task_step_id.is_some()||
+                    prepared.task_graph.is_some()||task_id.is_some()||
+                    recovery.as_ref().is_some_and(|record|
+                        record.action_id.as_deref()==Some(action_id.as_str())) {
+                    // Any task-linked AI tool requires an exact executing
+                    // checkpoint. Missing, expired or mismatched identity is
+                    // NEVER a free/manual paid provider request. Separately
+                    // prepared manual tools without task metadata remain
+                    // independently owner-approved and unmetered by task cap.
+                    return Err("Native task AI recovery does not match prepared task/action; paid request refused.".into());
                 }
             }
             // Publish the durable, action-bound worker record BEFORE any tool

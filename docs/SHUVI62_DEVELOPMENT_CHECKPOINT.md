@@ -53,3 +53,6 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - Confirmed previous df4bb10f exact CI 40466162018 three jobs success. Verified `MotionGraphicsReviewRemotionFrames` executes exactly one `analyze_png_frames_with_provider` call despite multiple frames; `PremiereReviewFrames` makes one request per frame.
 - Shared Rust request quota/ledger now admits combined Remotion multi-frame review as one paid request and Premiere `seconds.len()==1`; refuses Premiere multi-frame and paid loops. UI exact action UUID usage reconciliation covers these routes. Regression source tests added.
 - New HEAD CI and owner Windows/paid-provider E2E pending. Not a billing cap; no automatic paid retry.
+
+## Increment 07 budget boundary hardening
+- Task-linked provider routes without exact current Rust recovery action/owner task identity no longer fall back to unmetered manual execution. Source assertion regression added; protects fail-closed quota guarantee for stale/missing checkpoints. Exact new HEAD CI pending.
