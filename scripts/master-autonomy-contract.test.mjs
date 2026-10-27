@@ -81,7 +81,7 @@ test('Both first and audited-result Master proposals call the same hard gate bef
   assert.match(ui,/const scope=admitDashboardMasterProposal\(effectiveObjective,response\.tool_proposal\)/);
   assert.match(ui,/if\(!scope\.ok\)/g);
   assert.match(ui,/masterAutonomyGuidance\(task\.objective\)/);
-  assert.match(ui,/masterAutonomyGuidance\(effectiveObjective\)/);
+  assert.match(ui,/new TextEncoder\(\)\.encode\(guidance\)\.byteLength>2900/);
 });
 test('Circular model launch arguments do not escape admission handler',()=>{
   const args={path:'C:/Blender/blender.exe'};args.itself=args;
