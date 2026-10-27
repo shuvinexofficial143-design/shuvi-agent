@@ -2279,10 +2279,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     // Never use a new Premiere process as the FIRST action for an editing
     // command. A mistaken model proposal is rewritten to fresh read-only
     // OS window observation; the user must still approve the proposed read.
+    const premiereAlreadyOpen=/\b(?:already\s+(?:open|running)|currently\s+open)\b|पहले से खुल|खुला हुआ|खुला है|खुल चुका/iu.test(effectiveObjective);
     const premiereEditRequest=/\b(?:premiere|premire|premier)\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective)&&
-     /\b(?:edit|editing|trim|cut|timeline|import|export|render|save|project)\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
-    const premiereOpenOnly=/\b(?:open|launch|start|kholo|khol|kholdo|kholna)\b|खोलो|ओपन/iu.test(effectiveObjective);
-    if(route.role!=="chat"&&premiereEditRequest&&!premiereOpenOnly&&
+     (/\b(?:edit|editing|trim|cut|timeline|import|export|render)\b|एडिट|कटिंग|टाइमलाइन|इम्पोर्ट|एक्सपोर्ट/iu.test(effectiveObjective)||premiereAlreadyOpen);
+    const premiereOpenOnly=/\b(?:open|launch|start|kholo|khol|kholdo|kholna)\b|खोलो|खोलकर|खोलना|खोलें|ओपन/iu.test(effectiveObjective);
+    if(route.role!=="chat"&&premiereEditRequest&&(!premiereOpenOnly||premiereAlreadyOpen)&&
        response.tool_proposal?.tool==="premiere_launch")
      response.tool_proposal={tool:"ui_windows",arguments:{}};
     const originalScope=response.tool_proposal?
