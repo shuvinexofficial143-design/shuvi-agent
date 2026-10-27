@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false,terminalNowRef=null,queueStore=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null,uuidPreparedIds=false,simulateRustJournal=false,chatFailures=null,retryAuditReceipt=false,budgetActions=8,paidRequestLimit=4,strictRustQuota=false,terminalNowRef=null,queueStore=null,workerStatusRef=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const issuedRustAiQuota=new Map();
  const durableQueue=queueStore??[];let queueSeq=durableQueue.length;let queuePulse=null;
@@ -247,7 +247,9 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    }):[]);
    return rows.filter(e=>e.action_id===params.actionId);
   }
-  if(name==="native_worker_status")return {state:"idle",durableJobPhase:null,durableJobActionId:null};
+  if(name==="native_worker_status")return workerStatusRef?.current??
+   {state:"idle",actionId:null,durableJobPhase:null,durableJobActionId:null};
+  if(name==="cancel_running_action")return true;
   if(name==="audit_log"&&recoveryTrail)return recoveryTrail;
   if(name==="audit_log")return auditOk?staged.map(s=>{
    const failed=(softFailedRead||failFind)&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
