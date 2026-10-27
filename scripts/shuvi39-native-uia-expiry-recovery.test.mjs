@@ -48,7 +48,7 @@ test("Dashboard expiry classification is immediately audit-gated and cannot auto
  const catchStart=src.indexOf("if(message.includes(\"Prepared action expired before execution\"))");
  const helper=src.indexOf("auditedNativeUiaExpiry(",catchStart);
  const stop=src.indexOf('haltTask(current.threadId,journalOk?"approval_expired"',helper);
- const replay=src.indexOf('const recoveryPrepared=await prepareAuditedUiReadRecovery',helper);
+ const replay=src.indexOf('await prepareAuditedUiReadRecovery(current,message)',helper);
  assert.ok(catchStart>=0&&helper>catchStart&&stop>helper&&replay>stop);
  assert.match(src.slice(catchStart,replay),/"audit_log",\{limit:200\}/);
  assert.match(src.slice(stop,replay),/return;/);
