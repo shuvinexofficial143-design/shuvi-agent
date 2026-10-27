@@ -2150,16 +2150,65 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   goalStatus.textContent="पुराने Action को दोबारा नहीं चलाया गया।";
   return true;
  };
- void load();
- void refreshMobile();
- return {
-  kind:"native",
+
+ // P0: Rust queue admission carries no desktop permission. A claimed
+ // submission is never replayed on restart (paid/provider ambiguity).
+ type Queued={id:string;text:string;threadId:string;promptIndex:number;phase:"queued"|"claimed"};
+ let queuePumpBusy=false,claimedQueueId:string|null=null;
+ let queueDispatch:((text:string,thread:string,index:number,id:string)=>Promise<{ok:boolean;error?:string;reply?:string}>)|null=null;
+ const queueStops=new Set<string>();
+ async function queueNew(text:string,threadId:string,promptIndex:number){
+  try{
+   const item=await invoke<Queued>("enqueue_native_command",{text,threadId,promptIndex});
+   if(item?.phase!=="queued"||!item.id)throw Error("Rust queue admission not verified");
+   const msg="नया Windows Command Rust की Durable Queue में दर्ज है ("+item.id.slice(0,8)+
+    ")। पहले का Worker Safe Drain होने पर नया Task शुरू होगा; पुराना Edit Replay नहीं होगा।";
+   recoveryNotice.textContent=msg;recoveryNotice.hidden=false;showActionFeedback(msg);refreshState(msg);
+   void pumpQueue();
+   return {ok:true,reply:msg};
+  }catch(e){return {ok:false,error:"Durable Queue में Command सुरक्षित नहीं हुआ: "+redactNativeError(e)};}
+ }
+ async function pumpQueue(){
+  if(queuePumpBusy||sending||!ready||!queueDispatch)return;
+  queuePumpBusy=true;
+  try{
+   const item=await invoke<Queued|null>("peek_native_command");
+   if(!item)return;
+   if(item.phase==="claimed"){refreshState("Queued "+item.id.slice(0,8)+
+    " पहले Dispatch हुआ था; परिणाम की समीक्षा के बिना Replay नहीं होगा।");return;}
+   if(item.phase!=="queued")return;
+   const route=chooseNativeRoute(item.text,team?.current());
+   if(!route.ok||route.role==="chat"){refreshState("Queued Windows Command की routing बदल गई; दोबारा नहीं भेजा।");return;}
+   if(!await autoSupersede()){
+    const worker=await invoke<{state:string;actionId:string|null}>("native_worker_status").catch(()=>null);
+    if(worker?.state==="native_action_in_flight"&&worker.actionId&&!queueStops.has(worker.actionId)){
+     queueStops.add(worker.actionId);ownerStopRequestedIds.add(worker.actionId);
+     // A cancellation REQUEST is never worker termination proof.
+     void invoke<boolean>("cancel_running_action",{actionId:worker.actionId}).catch(()=>{});
+    }
+    refreshState("Queued "+item.id.slice(0,8)+": पुराना Native Worker अभी Verified Idle नहीं है। दो Premiere Edits साथ नहीं चलेंगे।");
+    return;
+   }
+   const claimed=await invoke<Queued>("claim_native_command",{id:item.id});
+   if(claimed.id!==item.id||claimed.phase!=="claimed")throw Error("Native queue claim identity mismatch");
+   claimedQueueId=item.id;
+   const result=await queueDispatch(item.text,item.threadId,item.promptIndex,item.id);
+   if(result.ok){
+    await invoke<void>("finish_native_command",{id:item.id});
+    refreshState("Queued "+item.id.slice(0,8)+" नया Task सुरक्षित रूप से शुरू हुआ।");
+   }else refreshState("Queued "+item.id.slice(0,8)+" submission अनिश्चित; claimed record रखा है, Replay नहीं।");
+  }catch(e){refreshState("Native Queue रुकी: "+redactNativeError(e)+"। पुराने Actions नहीं दोहराए गए।");}
+  finally{claimedQueueId=null;queuePumpBusy=false;}
+ }
+ const transport={
+  kind:"native" as const,
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
   clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);browserLaunchProofs.delete(threadId);systemLaunchProofs.delete(threadId);pendingSearchProofs.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);observedControls.delete(threadId);pendingUiReadback.delete(threadId);pendingContinuity.delete(threadId);confirmedContinuity.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();browserLaunchProofs.clear();systemLaunchProofs.clear();pendingSearchProofs.clear();verifiedWindows.clear();observedWindows.clear();observedControls.clear();pendingUiReadback.clear();pendingContinuity.clear();confirmedContinuity.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  async send(text,threadId,promptIndex=0){
+  async send(text:string,threadId:string,promptIndex=0,queuedId?:string){
+   const fromQueue=Boolean(queuedId&&queuedId===claimedQueueId);
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
    // computer task. Do not downgrade "Premiere Pro" to ordinary Chat after
@@ -2182,16 +2231,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      ?resolveMasterObjective(retainedGoal,text,true)
      :extendTaskClarification(retainedGoal,text,clarification);
    }
-   if(sending)return {ok:false,error:"पिछला Native Action अभी चल रहा है। नया Command सुरक्षित रूप से शुरू नहीं हुआ।"};
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
+   if(sending&&route.role!=="chat"&&!waitingForChoice&&!fromQueue)return queueNew(text,threadId,promptIndex);
+   if(sending)return {ok:false,error:"Native Action अभी Busy है।"};
    if(route.role!=="chat"&&!waitingForChoice){
     // Serialize reconciliation with admission; no concurrent paid submission.
     sending=true;let readyForNew=false;
     try{readyForNew=await autoSupersede();}finally{sending=false;}
     if(!readyForNew){
-     recoveryNotice.textContent="पुराने Action का सुरक्षित Audit पूरा नहीं हुआ। कोई Action दोबारा नहीं चलाया गया।";
-     recoveryNotice.hidden=false;refreshState();
-     return {ok:false,error:"पुराना Windows Action अभी अनिश्चित या चल रहा है। नया Task अभी सुरक्षित नहीं है।"};
+     if(fromQueue)return {ok:false,error:"Rust Worker अभी Safe Dispatch के लिए तैयार नहीं है।"};
+     return queueNew(text,threadId,promptIndex);
     }
    }
    if(pending)return {ok:false,error:"Native approval is still unresolved."};
@@ -2470,4 +2519,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }
   }
  };
+ queueDispatch=(text,thread,index,id)=>transport.send(text,thread,index,id);
+ void load().then(()=>{void pumpQueue();});
+ void refreshMobile();
+ if(typeof window.setInterval==="function")window.setInterval(()=>{void pumpQueue();},2500);
+ return transport;
 }
