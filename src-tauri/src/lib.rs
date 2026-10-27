@@ -9400,6 +9400,36 @@ fn read_action_audit_receipt(
     }
     Ok(matched)
 }
+
+/* P0: exact per-action diagnostics. The global audit_log tail may drop a
+ * valid terminal receipt under heavy UIA/premiere activity. Scan both current
+ * and rotated logs for only this UUID; never turn a missing/duplicate terminal
+ * into verified execution or authorize a replay. */
+fn read_action_audit_trace(app:&AppHandle,action_id:&str)->Result<Vec<AuditEntry>,String>{
+    Uuid::parse_str(action_id).map_err(|_|"Invalid action UUID for native audit trace.")?;
+    let _guard=audit_io_lock().lock()
+        .map_err(|_|"Audit trace I/O state unavailable.".to_string())?;
+    let path=audit_path(app)?;
+    let rotated=path.with_extension("jsonl.1");
+    let mut trace=Vec::new();
+    for candidate in [&rotated,&path]{
+        if !candidate.exists(){continue;}
+        let file=OpenOptions::new().read(true).open(candidate)
+            .map_err(|error|format!("Could not open exact native audit: {error}"))?;
+        for line in BufReader::new(file).lines(){
+            let line=line.map_err(|error|format!("Could not scan exact native audit: {error}"))?;
+            let Ok(entry)=serde_json::from_str::<AuditEntry>(&line) else {continue;};
+            if entry.action_id.as_deref()==Some(action_id)&&matches!(
+                entry.event.as_str(),"prepared"|"approved"|"executed"|
+                "failed"|"denied"|"outcome_unknown"){
+                if trace.len()>=64{return Err("Too many records for one exact native action UUID.".into());}
+                trace.push(entry);
+            }
+        }
+    }
+    Ok(trace)
+}
+
 fn premiere_checkpoint_from_audit(entry:&AuditEntry)->Option<&str>{
     entry.detail.split(" | ").find_map(|token|token.strip_prefix("premiere_checkpoint="))
         .filter(|path|!path.trim().is_empty()&&path.len()<=32768&&!path.contains('|'))
@@ -22892,6 +22922,11 @@ fn action_audit_receipt(action_id:String,app:AppHandle)->Result<Option<AuditEntr
 }
 
 #[tauri::command]
+fn action_audit_trace(action_id:String,app:AppHandle)->Result<Vec<AuditEntry>,String>{
+    read_action_audit_trace(&app,&action_id)
+}
+
+#[tauri::command]
 fn record_agent_event(
     event: String,
     tool: Option<String>,
@@ -23347,6 +23382,7 @@ pub fn run() {
             execute_powershell,
             audit_log,
             action_audit_receipt,
+            action_audit_trace,
             record_agent_event,
             set_workspace,
             get_workspace,
