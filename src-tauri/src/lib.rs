@@ -38,6 +38,7 @@ mod native_premiere_project_sha;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
+mod native_command_queue;
 
 mod premiere_execution;
 mod premiere_store;
@@ -23453,6 +23454,10 @@ pub fn run() {
             native_recovery::save_native_recovery,
             native_recovery::load_native_recovery,
             native_recovery::clear_native_recovery,
+            native_command_queue::enqueue_native_command,
+            native_command_queue::peek_native_command,
+            native_command_queue::claim_native_command,
+            native_command_queue::finish_native_command,
             native_recovery::retire_verified_native_recovery,
             premiere_bridge_start,
             premiere_bridge_status,
