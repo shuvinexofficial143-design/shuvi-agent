@@ -10,7 +10,7 @@
 | BUG-001 | Medium | Historical CI Verified; preserve | `web-dashboard/src/native-human-progress.mjs`, `scripts/native-master-followup.test.mjs` | Existing Hindi progress tests | Historical PASS | Not required for literal assertion; Premiere flow pending |
 | BUG-002 | High | FIXED IN CODE (pending new HEAD CI) | `src-tauri/src/lib.rs` UIA resolver, 8 execution callsites | `scripts/shuvi60-bug002-bug007.test.mjs` + existing UIA tests | Pending | PENDING |
 | BUG-007 | High / P0 Privacy | FIXED IN CODE (pending new HEAD CI) | `src-tauri/src/lib.rs` browser DOM read | `scripts/shuvi60-bug002-bug007.test.mjs` + existing browser tests | Pending | PENDING |
-| BUG-003 | High | NOT REVALIDATED | Native audit outcomes | Pending | Unknown | PENDING |
+| BUG-003 | High | FIXED IN CODE (Increment 09; exact-HEAD CI and owner Windows E2E pending) | Native audit outcomes | Pending | Unknown | PENDING |
 | BUG-004 | High | NOT REVALIDATED | AI intent routing | Pending | Unknown | PENDING |
 | BUG-005 | Medium | FIXED IN CODE (Shuvi62, exact-HEAD CI pending) | Provider errors | Pending | Unknown | PENDING |
 | BUG-006 | High | NOT REVALIDATED | Browser continuity | Pending | Unknown | PENDING |
@@ -91,3 +91,8 @@
 - Historical `native-task-ai-ledger.jsonl` remains immutable and is checked before any fresh task reservation. Fresh, explicitly owner-issued UUIDs use independent bounded journal files (`native-task-ai-tasks/<task>.jsonl`) and permanent `create_new`+`sync_all` request replay markers (`native-task-ai-requests/<request>.ref`), with exact task binding on completion. Legacy task IDs cannot restart spending in a new shard. No file deletion/truncation to regain paid authority; corrupt markers, unexpected shard entries, path redirection and incomplete reservations fail closed.
 - Unit regression simulates historical 256-row ledger, verifies fresh tasks still reserve/complete while legacy bytes remain identical, duplicate/unknown outcomes blocked, and marker corruption fail-closed. Total disk use/number of task journal files grows with real work and still needs operational retention policy preserving tombstones. No live owner Windows E2E; new exact-HEAD CI pending.
 - Previous HEAD 5c225862 CI Run 40471385950 Frontend PASS and Rust/Installer still in progress at beginning of Increment 08.
+
+## Shuvi 62 Increment 09 — BUG-003 uncertain native action outcomes
+- Previous HEAD e585a73b42cb214125af36ca7bef16bb49174da3 Run 40472927562 showed Frontend and Rust PASS, Windows Installer pending at source verification.
+- Explicit external helper timeout/unknown errors now produce `outcome_unknown` audit event (success false), `native_worker_job.phase="outcome_unknown"` with `audit_success=None`. Do not run generic failed reconciliation, scheduler finish or worker-history release in unknown branch. Exact UUID/tool requires owner process/audit review before another action. Legacy confirmed errors retain `failed` with bool false.
+- Rust state and Node source regressions cover UNKNOWN vs FAILED and owner review, no automatic retry; actual OS timeout E2E remains unverified. Source-level classifier may require expansion to typed results for all external providers: do not call this a complete real-world fix until Windows E2E.

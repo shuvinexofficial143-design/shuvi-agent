@@ -9106,6 +9106,20 @@ fn native_single_metered_action(action:&ToolAction)
     Ok(Some((provider.provider.as_str(),provider.model.as_str(),bytes)))
 }
 
+// BUG-003: external helper/process timeouts and unresolved side effects
+// cannot be labelled a *confirmed* failed mutation. Classify by explicit
+// uncertainty from the bounded external operation, not by error presence.
+fn native_external_outcome_unknown(error:&str)->bool{
+    let text=error.to_ascii_lowercase();
+    text.contains("outcome of any external action is unknown")||
+    text.contains("external action outcome is unknown")||
+    text.contains("outcome unknown")||
+    text.contains("outcome is unknown")||
+    text.contains("timed out")||
+    text.contains("timeout waiting for external")||
+    text.contains("readback unconfirmed")
+}
+
 fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
     match tool {
         "powershell" => format!(
@@ -22791,6 +22805,7 @@ async fn execute_action(
             Ok(result)
         }
         Err(error) => {
+            let uncertain=native_external_outcome_unknown(&error);
             if premiere_read_scope_id.is_some(){
                 if let Ok(mut scopes)=state.premiere_read_scopes.lock(){
                     scopes.revoke_action(&action_id);
@@ -22813,13 +22828,23 @@ async fn execute_action(
                 &app,
                 &AuditEntry {
                     timestamp_ms: now_ms(),
-                    event: "failed".into(),
+                    event: if uncertain{"outcome_unknown"}else{"failed"}.into(),
                     tool,
                     detail: audit_detail,
                     success: false,
                     action_id: Some(action_id.clone()),
                 },
             )?;
+            if uncertain {
+                // Keep native_worker_job, OS process claim, worker history and
+                // scheduler step unresolved. Nothing is released, audited as
+                // failure or auto-retried. Owner must inspect the exact UUID
+                // and reconcile it through the existing authorized flow.
+                native_worker_job::record_outcome_unknown(&app,&action_id,now_ms())?;
+                return Err(format!(
+                    "Native action outcome UNKNOWN; do not retry automatically. Inspect exact action UUID and host readback first. {error}"
+                ));
+            }
             native_worker_job::audit(&app,&action_id,false,now_ms())?;
             if let Some(scope)=task_scope_id.as_deref(){
                 let task=task_id.as_deref().ok_or("Native read task UUID missing at failure.")?;

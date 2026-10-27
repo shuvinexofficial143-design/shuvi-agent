@@ -108,7 +108,8 @@ fn validate(v:&NativeJob)->Result<(),String>{
         }
     }
     match (v.phase.as_str(),v.audit_success){
-        ("running",None)|("audit_verified",Some(_))|("owner_reviewed_unknown",None)=>Ok(()),
+        ("running",None)|("audit_verified",Some(_))|("owner_reviewed_unknown",None)|
+        ("outcome_unknown",None)=>Ok(()),
         _=>Err("Native job state is inconsistent with local audit.".into()),
     }
 }
@@ -184,6 +185,21 @@ fn tick_at(path:&Path,id:&str,now:u64)->Result<(),String>{
     record.updated_at_ms=now;
     persist(path,&record)
 }
+// BUG-003: an OS timeout or unreadable external side effect is NOT a
+// confirmed failure. Persist an explicit UNKNOWN phase with no success bit.
+// Another action stays blocked until independently owner-reconciled.
+fn outcome_unknown_at(path:&Path,id:&str,now:u64)->Result<(),String>{
+    let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let _os=CrossProcessNativeJobLock::take(path)?;
+    let mut record=read_at(path)?.ok_or("Native job checkpoint missing at unknown outcome.")?;
+    if record.action_id!=id||record.phase!="running"||now<record.updated_at_ms{
+        return Err("UNKNOWN outcome cannot replace a different or finalized action.".into());
+    }
+    record.phase="outcome_unknown".into();
+    record.audit_success=None;
+    record.updated_at_ms=now;
+    persist(path,&record)
+}
 fn audited_at(path:&Path,id:&str,success:bool,now:u64)->Result<(),String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
     let _os=CrossProcessNativeJobLock::take(path)?;
@@ -207,7 +223,7 @@ fn reconcile_at(
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
     let _os=CrossProcessNativeJobLock::take(path)?;
     let mut job=read_at(path)?.ok_or("No interrupted native worker job exists.")?;
-    if job.phase!="running"||job.action_id!=id||job.tool!=tool{
+    if !matches!(job.phase.as_str(),"running"|"outcome_unknown")||job.action_id!=id||job.tool!=tool{
         return Err("Owner review must match the exact interrupted native action and tool.".into());
     }
     if now<job.updated_at_ms{
@@ -227,7 +243,7 @@ pub(crate) fn reconcile(
     // under an exclusive desktop lease. Confirm the native UUID before
     // touching the associated unresolved OS-only subprocess receipt.
     let existing=read(app)?.ok_or("No durable native action for owner review.")?;
-    if existing.phase!="running"||existing.action_id!=id||existing.tool!=tool{
+    if !matches!(existing.phase.as_str(),"running"|"outcome_unknown")||existing.action_id!=id||existing.tool!=tool{
         return Err("Owner review cannot acknowledge a different active action.".into());
     }
     // A recovered Blender edit must not become an audited DAG success unless
@@ -261,6 +277,11 @@ pub(crate) fn begin(app:&AppHandle,id:&str,tool:&str,now:u64)->Result<(),String>
         }
     }
     begin_at(&journal_path(app)?,id,tool,now).map(|_|())
+}
+pub(crate) fn record_outcome_unknown(app:&AppHandle,id:&str,now:u64)->Result<(),String>{
+    // No release_after_verified_audit here: the reservation and exact UUID
+    // remain quarantined, even if the external app actually mutated state.
+    outcome_unknown_at(&journal_path(app)?,id,now)
 }
 pub(crate) fn audit(app:&AppHandle,id:&str,success:bool,now:u64)->Result<(),String>{
     // Never publish a successful Blender action journal from a stale or
@@ -338,6 +359,31 @@ mod tests{
     }
     const A:&str="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
     const B:&str="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
+    #[test]
+    fn unknown_native_side_effect_is_durable_and_requires_exact_owner_reconciliation(){
+        let p=file();
+        begin_at(&p,A,"ui_set_value",1000).unwrap();
+        outcome_unknown_at(&p,A,1500).unwrap();
+        let stored=read_locked_at(&p).unwrap().unwrap();
+        assert_eq!(stored.phase,"outcome_unknown");
+        assert_eq!(stored.audit_success,None);
+        assert!(audited_at(&p,A,false,1600).is_err());
+        assert!(outcome_unknown_at(&p,A,1600).is_err());
+        assert!(begin_at(&p,B,"read_file",1700).is_err());
+        assert!(reconcile_at(&p,B,"ui_set_value",None,1900).is_err());
+        assert!(reconcile_at(&p,A,"read_file",None,1900).is_err());
+        let reviewed=reconcile_at(&p,A,"ui_set_value",None,2000).unwrap();
+        assert_eq!(reviewed.phase,"owner_reviewed_unknown");
+        assert_eq!(reviewed.audit_success,None);
+        assert!(begin_at(&p,A,"ui_set_value",2050).is_err());
+        begin_at(&p,B,"read_file",2100).unwrap();
+        audited_at(&p,B,true,2200).unwrap();
+        fs::remove_file(&p).unwrap();
+        let backup=p.with_extension("json.bak");
+        if backup.exists(){fs::remove_file(backup).unwrap();}
+        let lock=p.with_extension("json.oslock");
+        if lock.exists(){fs::remove_file(lock).unwrap();}
+    }
     #[test]
     fn other_instance_lock_blocks_all_mutations_and_status_read(){
         let p=file();
