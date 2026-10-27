@@ -409,7 +409,7 @@ test("restart after AI 503 preserves audited Windows identity but never blindly 
  assert.equal(restarted.recoveryRetry.hidden,true,"volatile continuation is never recovered as execution authority");
  assert.equal(restarted.rustState()?.actionId,latest.actionId);
  const blocked=await restarted.transport.send("Open Notepad","after-restart",0);
- assert.equal(blocked.ok,false,"unresolved prior paid planning request needs owner review");
+ assert.equal(blocked.ok,true,"unresolved prior paid planning request needs owner review");
  assert.equal(restarted.chatInputs.length,0);
  assert.equal(restarted.calls.filter(x=>x.name==="execute_action").length,0);
 });
@@ -1240,8 +1240,9 @@ test("restart with an uncertain action blocks new desktop work until explicit ow
  assert.equal(s.recoveryCheck.hidden,false);
  assert.equal(s.recoveryDismiss.hidden,false);
  const blocked=await s.transport.send("Open Premiere Pro","new-unsafe-task",0);
- assert.equal(blocked.ok,false);
- assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
+ assert.match(blocked.reply,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
  assert.equal(s.calls.some(c=>c.name==="chat"||c.name==="prepare_tool"),false);
  await s.recoveryCheck.listeners.get("click")();
  assert.match(s.recoveryNotice.textContent,/Rust Audit confirms a successful action/);
@@ -1280,8 +1281,9 @@ test("unknown outcome in the same session blocks a second paid task until owner 
  assert.equal(s.recoveryDismiss.hidden,false);
  assert.equal(s.recoveryCheck.hidden,false);
  const blocked=await s.transport.send("Open Premiere Pro","second-task",0);
- assert.equal(blocked.ok,false);
- assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
+ assert.match(blocked.reply,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  await s.recoveryDismiss.listeners.get("click")();
@@ -1299,7 +1301,8 @@ test("Rust recovery alone blocks new tasks even when WebView storage was lost",a
  await until(()=>s.transport.connected(),"native IPC and Rust checkpoint");
  assert.equal(s.recoveryDismiss.hidden,false);
  const blocked=await s.transport.send("Open Premiere Pro","lost-local",0);
- assert.equal(blocked.ok,false);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
  assert.equal(s.chatInputs.length,0);
  assert.match(s.recoveryNotice.textContent,/पुराने Action का सुरक्षित Audit|Rust has recovery evidence but WebView has no matching record/);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
@@ -1316,8 +1319,9 @@ test("a Rust-only paused checkpoint requires owner acknowledgement even without 
  const s=setup({rustRecord,simulateRustJournal:true});
  await until(()=>s.transport.connected(),"native Rust paused checkpoint");
  const blocked=await s.transport.send("Open Premiere Pro","old-paused-task",0);
- assert.equal(blocked.ok,false);
- assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
+ assert.match(blocked.reply,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.recoveryDismiss.hidden,false);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
@@ -1374,7 +1378,7 @@ test("failed Rust recovery save cannot be followed by a second Windows paid requ
  assert.equal(failed.ok,false);
  const next=await s.transport.send("Open Premiere Pro","next-task-must-block",0);
  assert.equal(next.ok,false);
- assert.match(next.error,/पुराना Windows Action|previous Windows task/);
+ assert.match(next.error,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.recoveryDismiss.hidden,false);
@@ -1408,14 +1412,15 @@ test("failure to retire no-action checkpoint blocks any later paid or native dis
  await until(()=>s.transport.connected(),"native ready");
  await s.transport.send("Inspect possible app","no-action-terminal",0);
  const blocked=await s.transport.send("Launch Premiere Pro","new-task-blocked-by-disk",0);
- assert.equal(blocked.ok,false);
- assert.match(blocked.error,/पुराना Windows Action|could not be retired/);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
+ assert.match(blocked.reply,/Durable Queue|Queue में दर्ज|पुराना Windows Action|could not be retired/);
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.staged.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  const stillBlocked=await s.transport.send("Open Photoshop","new-task-blocked-again",0);
  assert.equal(stillBlocked.ok,false);
- assert.match(stillBlocked.error,/पुराना Windows Action|previous Windows task/);
+ assert.match(stillBlocked.error,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
 });
 
 test("acted-on or uncertain tasks never qualify for no-action rollover",async()=>{
@@ -1427,7 +1432,8 @@ test("acted-on or uncertain tasks never qualify for no-action rollover",async()=
  await until(()=>s.approval.hidden===true&&s.allow.disabled===false,"audited task finished");
  const prior=s.chatInputs.length;
  const blocked=await s.transport.send("Open Photoshop instead","new-after-acted",0);
- assert.equal(blocked.ok,false);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
  assert.equal(s.chatInputs.length,prior,"old Windows task cannot be silently erased");
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
@@ -1473,8 +1479,9 @@ test("failed WebView removal after Rust acknowledgement keeps Windows requests b
  assert.match(s.recoveryNotice.textContent,/New Windows tasks remain blocked/);
  const before=s.chatInputs.length;
  const blocked=await s.transport.send("Open Photoshop","cannot-reuse-partial-clear",0);
- assert.equal(blocked.ok,false);
- assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
+ assert.match(blocked.reply,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,before);
 });
 
@@ -1511,8 +1518,9 @@ test("divergent v2 WebView and Rust recovery revisions never replay paid or Wind
  await until(()=>s.transport.connected(),"native IPC and both recovery checkpoints");
  assert.match(s.recoveryNotice.textContent,/WebView and Rust recovery records disagree/);
  const blocked=await s.transport.send("Open Premiere Pro","restart-conflict",0);
- assert.equal(blocked.ok,false);
- assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
+ assert.match(blocked.reply,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
  assert.equal(s.calls.filter(c=>c.name==="save_native_recovery").length,0);
@@ -1526,8 +1534,9 @@ test("unreadable WebView recovery blocks new Windows tasks without paid model di
  await until(()=>s.transport.connected(),"native IPC");
  assert.match(s.recoveryNotice.textContent,/WebView recovery evidence is invalid or unavailable/);
  const blocked=await s.transport.send("Open Premiere Pro","unreadable-recovery",0);
- assert.equal(blocked.ok,false);
- assert.match(blocked.error,/पुराना Windows Action|previous Windows task/);
+ assert.equal(blocked.ok,true);
+ assert.ok(s.durableQueue.length>=1,"new command is durably accepted, not executed or replayed");
+ assert.match(blocked.reply,/Durable Queue|Queue में दर्ज|पुराना Windows Action|previous Windows task/);
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
 });
