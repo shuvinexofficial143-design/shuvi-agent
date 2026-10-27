@@ -50,7 +50,7 @@ test("Dashboard expiry classification is immediately audit-gated and cannot auto
  const stop=src.indexOf('haltTask(current.threadId,journalOk?"approval_expired"',helper);
  const replay=src.indexOf('await prepareAuditedUiReadRecovery(current,message)',helper);
  assert.ok(catchStart>=0&&helper>catchStart&&stop>helper&&replay>stop);
- assert.match(src.slice(catchStart,replay),/"audit_log",\{limit:200\}/);
+ assert.match(src.slice(catchStart,replay),/"action_audit_trace",\{actionId:current\.action\.id\}/);
  assert.match(src.slice(stop,replay),/return;/);
  assert.match(src,/persistRecovery\(expiryBudget,"native_denied",current.action.id\)/);
 });
