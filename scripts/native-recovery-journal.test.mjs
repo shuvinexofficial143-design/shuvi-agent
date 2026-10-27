@@ -84,7 +84,7 @@ test("installed native execution must fail closed if recovery storage is absent"
 
 test("submission acquires exclusive lock before awaiting Rust recovery disk IO",()=>{
  const source=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
- const send=source.slice(source.indexOf("async send(text,threadId"),source.lastIndexOf("return {ok:true,reply};"));
+ const send=source.slice(source.indexOf("async send(text:string,threadId:string"),source.lastIndexOf("return {ok:true,reply};"));
  const lock=send.indexOf("sending=true;"),save=send.indexOf('await persistRecovery(taskBudget,"model_reserved")');
  assert.ok(lock>=0&&save>lock);
 });
