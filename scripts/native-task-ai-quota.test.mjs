@@ -37,8 +37,8 @@ test("dashboard includes owner limit in the FIRST chat ticket without separate s
  assert.ok(ui.includes('ownerBudget.modelRequests>=(taskAiQuotas.get(ownerBudget)??0)'));
  assert.ok(ui.includes('taskBudget.modelRequests>=(taskAiQuotas.get(taskBudget)??0)'));
  assert.ok(ui.includes('owner_paid_request_quota_exhausted'));
- assert.ok(ui.includes('These are not token, USD spending or verified billing caps.'));
- assert.ok(ui.includes('256 KiB input limit each and 512 KiB cumulative'));
+ assert.ok(ui.includes('Not a token or USD cap.'));
+ assert.ok(ui.includes('256 KiB prompt-text limit and cumulative 512 KiB'));
  const preflight=lib.slice(lib.indexOf("async fn chat("),lib.indexOf("fn native_task_ai_usage("));
  assert.ok(preflight.includes('quotas.reserve_context(&ticket.task_id,ticket.request_index,input_bytes,now_ms())?'));
  assert.ok(preflight.indexOf('quotas.reserve_context(')<preflight.indexOf('native_task_ai_ledger::reserve('));

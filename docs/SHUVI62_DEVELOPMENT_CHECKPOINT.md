@@ -35,3 +35,6 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 - Single billable native-task Vision/Creative/one-frame routes reserve from one Rust quota and durable ledger (action UUID = request UUID), with JS exact ledger reconciliation before recovery checkpoint. Multi-call paid creative/finishing loops refuse execution inside native tasks rather than silently bypassing owner-selected request count.
 - Manual separately approved non-task creative actions retain previous behavior and are outside native task quota. No verified billing/USD limit, no provider usage tokens guaranteed, no automatic replay after ambiguous outcome.
 - New CI & owner Windows E2E PENDING; check exact-head tests first on next.
+
+## Increment 04 CI correction
+- First HEAD `3ddc513773d2d0dd4b93c4dbb7b7295e8df167e6` frontend CI FAIL on three outdated code-expectation assertions. Updated test expectations for new quota UI wording, added paid_action_reserved pending tuple, and target exact Premiere review execution arm instead of preparation arm. Rust/installer outcomes are not presumed successful.

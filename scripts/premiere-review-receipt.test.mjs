@@ -13,8 +13,8 @@ test("Premiere review sessions persist creation time in schema v2",()=>{
 });
 
 test("approved review fixes cannot reuse pre-session audit receipts",()=>{
-  const start=lib.indexOf("ToolAction::PremiereReviewSessionRecordFix");
-  const end=lib.indexOf("ToolAction::PremiereReviewSessionNext",start);
+  const start=lib.indexOf("ToolAction::PremiereReviewSessionRecordFix {session_id,issue_id,target,planner,settings,approved_action_id} =>");
+  const end=lib.indexOf("\n        ToolAction::",start+1);
   const block=lib.slice(start,end);
   assert.match(block,/read_action_audit_receipt\(app,&approved_action_id\)/);
   assert.match(block,/entry\.timestamp_ms >= session\.created_at_ms/);
