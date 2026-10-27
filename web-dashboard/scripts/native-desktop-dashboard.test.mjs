@@ -26,8 +26,8 @@ test("native IPC only runs in the installed Tauri process; browser never receive
  assert.match(adapter,/invoke<Pending>\("prepare_tool"/);
  assert.match(adapter,/invoke<ActionResult>\("execute_action"/);
  assert.match(adapter,/invoke<void>\("deny_action"/);
- assert.match(adapter,/const matched=receipts\.find/);
- assert.match(adapter,/r\.action_id===current\.action\.id/);
+ assert.match(adapter,/const matched=diagnosis\.kind===\"verified\"/);
+ assert.match(adapter,/\"action_audit_trace\",\{actionId:current\.action\.id\}/);
  assert.doesNotMatch(adapter,/http:\/\/127\.0\.0\.1|fetch\(/);
  assert.match(main,/nativeChat \? null : mountRemoteCommandClient/);
 });
