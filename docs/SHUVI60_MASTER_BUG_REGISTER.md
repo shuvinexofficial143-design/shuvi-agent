@@ -26,7 +26,7 @@
 | BUG-017 | Medium | NOT REVALIDATED | Background SHA jobs | Pending | Unknown | PENDING |
 | BUG-018 | High / P0 | FIXED IN CODE (Increment 02; CI pending) | RAM watchdog | Pending | Unknown | PENDING |
 | BUG-019 | Medium | NOT REVALIDATED | Memory polling | Pending | Unknown | PENDING |
-| BUG-020 | High / P0 | NOT REVALIDATED | Mobile approval summary | Pending | Unknown | PENDING |
+| BUG-020 | High / P0 | FIXED IN CODE (Increment 05; CI & mobile E2E pending) | Mobile approval summary | Pending | Unknown | PENDING |
 | BUG-021 | Medium | NOT REVALIDATED | Mobile status refresh | Pending | Unknown | PENDING |
 | BUG-022 | Medium | NOT REVALIDATED | Remote dashboard copy | Pending | Unknown | PENDING |
 | BUG-023 | Medium | NOT REVALIDATED | Readiness API metadata | Pending | Unknown | PENDING |
@@ -65,3 +65,8 @@
 - BUG-029 code: Rust task-bound `inspect_screen`, single-call motion generation/correction/review and Premiere frame inspection now reserve original owner quota + durable per-request ledger under exact action UUID, before provider call. Uses same 2/4/8/16 quota and 256 KiB prompt cap; no automatic replay. Task multi-frame/finishing review remains fail-closed until per-call metering. Manual separately owner-approved non-task tools are independent.
 - Frontend verifies exact action UUID/task ID/index ledger receipt then spends one local native model request before recovery can advance; unknown receipt halts. Provider token usage/verified dollar caps are *not* claimed. Exact new CI and real owner Windows tests PENDING.
 - Prior HEAD 505e315 exact CI 40453995626 had Frontend PASS, Rust/Installer IN PROGRESS at beginning of this increment. Do not infer full CI success.
+
+## Shuvi 62 Increment 05 (2026-10-27)
+- BUG-020: Authenticated native agent must publish bounded Rust-prepared action disclosure (UUID, kind, risk, summary, specific target) in requires_approval receipt. Mobile renders exact fields as text before Approve once. Server validates full disclosure; decision binds exact action UUID, task, approval, owner/device, expiry and replay. Windows consumer matches exact action UUID before executing.
+- Missing/malformed data or unrepresentable target refuses mobile approval. PowerShell command bodies are not sent to cloud and cannot be mobile-approved under this contract; use local permission UI.
+- Prior d626a9cd exact CI 40455539267: Frontend/Rust PASS; Windows Installer in progress when checked. New exact-head CI/owner-phone Windows E2E unverified. BUG-029 multi-call metering still pending.

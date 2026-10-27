@@ -38,3 +38,8 @@ Owner continuation: on each next inspect GitHub HEAD and CI, fix verified bugs o
 
 ## Increment 04 CI correction
 - First HEAD `3ddc513773d2d0dd4b93c4dbb7b7295e8df167e6` frontend CI FAIL on three outdated code-expectation assertions. Updated test expectations for new quota UI wording, added paid_action_reserved pending tuple, and target exact Premiere review execution arm instead of preparation arm. Rust/installer outcomes are not presumed successful.
+
+## Increment 05 — BUG-020 informed remote approval
+- Base d626a9cd35bfdf8481392f2910b302888795c495. Existing Rust CI passed for base; installer unconfirmed at staging.
+- Contract, coordinator, mobile and Windows consumer bind approval decision to exact prepared action UUID and disclose tool/risk/target/summary. Missing target fails closed; no command text transmitted.
+- New regression tests for malformed/mismatched metadata and mobile renderer. Real mobile/owner Windows acceptance is PENDING; new exact-head CI PENDING.

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
+import {remoteApprovalDisclosure} from "./remote-approval-disclosure.mjs";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
 import {validateMasterPlan,validateMasterAction,assessMasterGoalDelivery} from "./master-autonomy-graph.mjs";
 import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext,reservedGoalEvidenceBudget} from "./native-worker-model-routing.mjs";
@@ -119,7 +120,7 @@ type RemoteActiveTask = {
 };
 type RemoteInbox = {
  messages:RemoteInboundMessage[];
- decisions:Array<{taskId:string;approvalId:string;decision:string}>;
+ decisions:Array<{taskId:string;approvalId:string;actionId:string;decision:string}>;
  pending:Array<{taskId:string;request:string}>;
 };
 let remoteAgentEnabled = false;
@@ -2221,8 +2222,14 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     if (remoteTask) {
       const approvalId = crypto.randomUUID();
       const approvalExpiresAt = Date.now() + 90_000;
+      const approvalAction=remoteApprovalDisclosure(pendingAction,proposal);
+      if(!approvalAction||approvalAction.id!==preparedId){
+        await denyStaleAction(preparedId);
+        await stopAgentForSafety("Exact mobile Tool, Target, Risk and prepared Action ID not available. No native execution authorized.");
+        return;
+      }
       try {
-        if(!(await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt}))){
+        if(!(await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt,approvalAction}))){
           await denyStaleAction(preparedId);
           return;
         }
@@ -4116,7 +4123,7 @@ async function tickRemoteAgent():Promise<void>{
       if(a){
         const expired=Date.now()>=a.expiresAt;
         const d=expired?null:inbox.decisions.find(x=>
-          x.taskId===t.message.taskId&&x.approvalId===a.id);
+          x.taskId===t.message.taskId&&x.approvalId===a.id&&x.actionId===a.actionId);
         if(expired||d?.decision==="deny"){
           cancelRequested=true;
           revokeTaskScope(activePermissionScope);

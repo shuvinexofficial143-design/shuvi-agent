@@ -49,6 +49,7 @@ function taskView(task) {
     revision:r.revision, expiresAt:task.command.expiresAt,
     approvalId:r.status==="requires_approval" ? r.approvalId : undefined,
     approvalExpiresAt:r.status==="requires_approval" ? r.approvalExpiresAt : undefined,
+    approvalAction:r.status==="requires_approval" ? clone(r.approvalAction) : undefined,
     cancelRequested:task.cancelRequested===true
   };
 }
@@ -136,6 +137,7 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
       if (task.receipt.status==="requires_approval" && receipt.status==="running") {
         const approved=task.approvalDecision?.decision==="approve" &&
           task.approvalDecision.approvalId===task.receipt.approvalId &&
+          task.approvalDecision.actionId===task.receipt.approvalAction.id &&
           now<task.receipt.approvalExpiresAt;
         if (!approved) return fail("missing_live_task_approval");
       }
@@ -161,7 +163,8 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
       task.approvalDecision={
         protocol:REMOTE_PROTOCOL,type:"approval_decision",
         ownerId:actor.ownerId,deviceId:actor.deviceId,taskId:decision.taskId,
-        approvalId:decision.approvalId,decision:valid.value,decidedAt:now
+        approvalId:decision.approvalId,actionId:decision.actionId,
+        decision:valid.value,decidedAt:now
       };
       return ok({taskId:decision.taskId,decision:valid.value,queuedForAgent:true});
     });

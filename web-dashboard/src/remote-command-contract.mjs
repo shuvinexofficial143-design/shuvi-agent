@@ -17,6 +17,12 @@ const time = value => Number.isSafeInteger(value) && value > 0;
 const positive = value => Number.isSafeInteger(value) && value > 0;
 const scopes = ["ownerId", "deviceId", "threadId", "messageId", "taskId"];
 const statuses = new Set(["received","admitted","running","requires_approval","succeeded","failed","stopped","outcome_unknown"]);
+const safeText=(s,max)=>typeof s==="string"&&s.trim()===s&&s.length>0&&s.length<=max&&
+ !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/u.test(s);
+export function validRemoteApprovalAction(a){
+ return record(a)&&id(a.id)&&typeof a.tool==="string"&&/^[a-z][a-z0-9_]{1,69}$/.test(a.tool)&&
+ ["low","medium","high"].includes(a.risk)&&safeText(a.summary,240)&&safeText(a.target,320);
+}
 const transitions = Object.freeze({
   received: ["admitted","failed","stopped","outcome_unknown"],
   admitted: ["running","requires_approval","failed","stopped","outcome_unknown"],
@@ -78,10 +84,13 @@ export function validateTaskReceipt(receipt) {
   if (receipt.status === "succeeded" &&
       (!record(receipt.evidence) || receipt.evidence.kind !== "native_audit" || !id(receipt.evidence.id)))
     return fail("success_requires_native_evidence");
-  if (receipt.status === "requires_approval" &&
-      (!id(receipt.approvalId) || !time(receipt.approvalExpiresAt) ||
-       receipt.approvalExpiresAt <= receipt.occurredAt))
-    return fail("approval_requires_binding_and_expiry");
+  if (receipt.status === "requires_approval") {
+    if(!id(receipt.approvalId)||!time(receipt.approvalExpiresAt)||
+       receipt.approvalExpiresAt<=receipt.occurredAt)
+      return fail("approval_requires_binding_and_expiry");
+    if(!validRemoteApprovalAction(receipt.approvalAction))
+      return fail("approval_requires_action_disclosure");
+  }
   return ok(receipt);
 }
 
@@ -107,11 +116,12 @@ export function validateReceiptTransition(previous, incoming) {
 export function validateApprovalBinding(decision, pending, context) {
   if (!record(decision) || !record(context) || !validateTaskReceipt(pending).ok ||
       pending.status !== "requires_approval") return fail("no_pending_approval");
-  if (!id(decision.approvalId) || !id(decision.taskId) || !id(decision.ownerId) ||
+  if (!id(decision.approvalId) || !id(decision.actionId) || !id(decision.taskId) || !id(decision.ownerId) ||
       !id(decision.deviceId) || (decision.decision !== "approve" && decision.decision !== "deny") ||
       !time(context.now) || !(context.consumedApprovalIds instanceof Set))
     return fail("invalid_approval_request");
-  if (decision.approvalId !== pending.approvalId || decision.taskId !== pending.taskId ||
+  if (decision.approvalId !== pending.approvalId || decision.actionId !== pending.approvalAction.id ||
+      decision.taskId !== pending.taskId ||
       decision.ownerId !== pending.ownerId || decision.deviceId !== pending.deviceId ||
       context.ownerId !== pending.ownerId || context.deviceId !== pending.deviceId)
     return fail("approval_binding_mismatch");

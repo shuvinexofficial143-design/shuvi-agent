@@ -16,6 +16,8 @@ const ctx = () => ({
   ownerId:A,deviceId:B,now,lastSequence:3,
   seenMessageIds:new Set(),seenTaskIds:new Set()
 });
+const action={id:"z".repeat(32),tool:"ui_click",risk:"medium",
+ summary:"Click observed control",target:"window: Adobe Premiere Pro"};
 const receipt = (status, revision, extras={}) => ({
   protocol:REMOTE_PROTOCOL,type:"task_receipt",ownerId:A,deviceId:B,
   threadId:C,messageId:D,taskId:E,revision,occurredAt:now+revision*100,
@@ -71,11 +73,13 @@ test("success cannot be declared without native audit evidence",()=>{
  assert.equal(validateReceiptTransition(done,receipt("running",5)).error,"forbidden_state_transition");
 });
 test("approval is bound to exactly one live task and one-use identifier",()=>{
- const pending=receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+30000});
- const request={approvalId:F,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
+ const pending=receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+30000,approvalAction:action});
+ const request={approvalId:F,actionId:action.id,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
  const context={ownerId:A,deviceId:B,now,consumedApprovalIds:new Set()};
  assert.equal(validateApprovalBinding(request,pending,context).ok,true);
  assert.equal(validateApprovalBinding({...request,taskId:C},pending,context).error,"approval_binding_mismatch");
+ assert.equal(validateApprovalBinding({...request,actionId:F},pending,context).error,"approval_binding_mismatch");
+ assert.equal(validateTaskReceipt({...pending,approvalAction:undefined}).error,"approval_requires_action_disclosure");
  assert.equal(validateApprovalBinding(request,pending,{...context,now:now+30000}).error,"approval_expired");
  assert.equal(validateApprovalBinding(request,pending,{...context,consumedApprovalIds:new Set([F])}).error,"approval_replay");
  assert.equal(validateApprovalBinding(request,receipt("running",3),context).error,"no_pending_approval");

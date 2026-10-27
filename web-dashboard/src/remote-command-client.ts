@@ -8,7 +8,8 @@ type Result<T>={ok:boolean;value?:T;error?:string};
 type Status={ownerId:string;deviceId:string;lastSequence:number;
  agentConnected:boolean;lastAgentPollAt:number;
  tasks:Array<{taskId:string;status:string;cancelRequested?:boolean;
-  approvalId?:string;approvalExpiresAt?:number}>};
+  approvalId?:string;approvalExpiresAt?:number;
+  approvalAction?:{id:string;tool:string;risk:string;summary:string;target:string}}>};
 export type RemoteChatTransport={
  connected():boolean;
  send(text:string,threadId:string):Promise<{ok:boolean;error?:string}>;
@@ -81,11 +82,11 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
   }catch{return {ok:false,error:"Remote server unreachable or not configured"};}
   finally{window.clearTimeout(timer);}
  }
- async function decide(task:{taskId:string;approvalId?:string},choice:"approve"|"deny") {
-  if(!identity||!task.approvalId)return;
+ async function decide(task:{taskId:string;approvalId?:string;approvalAction?:{id:string}},choice:"approve"|"deny") {
+  if(!identity||!task.approvalId||!task.approvalAction?.id)return;
   const decision={
    ownerId:identity.ownerId,deviceId:identity.deviceId,
-   taskId:task.taskId,approvalId:task.approvalId,decision:choice
+   taskId:task.taskId,approvalId:task.approvalId,actionId:task.approvalAction.id,decision:choice
   };
   const answer=await exchange("POST",{operation:"decide",decision});
   if(!answer.ok)state.textContent="Approval rejected or expired; no Windows tool was authorized";
@@ -115,6 +116,20 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
    if(t.status==="requires_approval" && t.approvalId &&
       Number.isSafeInteger(t.approvalExpiresAt) &&
       t.approvalExpiresAt!>Date.now() && !t.cancelRequested){
+     const a=t.approvalAction;
+     const safe=(v:unknown,max:number)=>typeof v==="string"&&v.trim()===v&&
+       v.length>0&&v.length<=max&&!/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/u.test(v);
+     if(!a||!safe(a.id,96)||!safe(a.tool,70)||
+       !["low","medium","high"].includes(a.risk)||
+       !safe(a.summary,240)||!safe(a.target,320)){
+       item.append(node("p","Exact Windows action disclosure unavailable. Approval disabled; deny on Windows."));
+       tasks.append(item);continue;
+     }
+     // Render ONLY text nodes, never provider-supplied HTML.
+     item.append(node("p","Tool: "+a.tool+" · Risk: "+a.risk));
+     item.append(node("p","Target: "+a.target));
+     item.append(node("p","Action: "+a.summary));
+     item.append(node("small","Prepared action "+a.id.slice(0,8)));
      const approve=node("button","Approve once") as HTMLButtonElement;
      const deny=node("button","Deny") as HTMLButtonElement;
      approve.type=deny.type="button";

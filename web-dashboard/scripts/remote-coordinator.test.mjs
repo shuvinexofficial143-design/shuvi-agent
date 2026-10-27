@@ -19,6 +19,8 @@ const command=()=>({
   threadId:C,messageId:D,taskId:E,sequence:1,issuedAt:now-1000,
   expiresAt:now+120000,mode:"task",text:"Open Notepad"
 });
+const approvalAction={id:"z".repeat(32),tool:"ui_click",risk:"medium",
+ summary:"Click observed control",target:"window: Adobe Premiere Pro"};
 const receipt=(status,revision,extras={})=>({
  protocol:REMOTE_PROTOCOL,type:"task_receipt",ownerId:A,deviceId:B,
  threadId:C,messageId:D,taskId:E,revision,occurredAt:now,status,...extras
@@ -88,9 +90,9 @@ test("approval intent is once-only, expires, and stays tied to one task",async()
  const c=setup();
  await c.admit(user,command());
  await c.recordReceipt(agent,receipt("admitted",2));
- const pending=receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+30000});
+ const pending=receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+30000,approvalAction});
  assert.equal((await c.recordReceipt(agent,pending)).ok,true);
- const d={approvalId:F,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
+ const d={approvalId:F,actionId:approvalAction.id,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
  assert.equal((await c.decide(user,{...d,taskId:C})).error,"unknown_task");
  assert.equal((await c.decide(user,d)).ok,true);
  assert.equal((await c.decide(user,d)).error,"approval_replay");
@@ -123,8 +125,8 @@ test("expired command remains recorded but is NEVER polled to execute",async()=>
 test("invalid approval expiry and denial remain non-executing intent",async()=>{
  const c=setup();await c.admit(user,command());
  await c.recordReceipt(agent,receipt("admitted",2));
- await c.recordReceipt(agent,receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+5000}));
- const d={approvalId:F,taskId:E,ownerId:A,deviceId:B,decision:"deny"};
+ await c.recordReceipt(agent,receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+5000,approvalAction}));
+ const d={approvalId:F,actionId:approvalAction.id,taskId:E,ownerId:A,deviceId:B,decision:"deny"};
  assert.equal((await c.decide(user,d)).value.decision,"deny");
  assert.equal((await c.poll(agent)).value.decisions[0].decision,"deny");
 });
@@ -133,17 +135,17 @@ test("native resume receipt is blocked until this task has explicit live approva
  const c=setup();
  await c.admit(user,command());
  await c.recordReceipt(agent,receipt("admitted",2));
- await c.recordReceipt(agent,receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+30000}));
+ await c.recordReceipt(agent,receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+30000,approvalAction}));
  assert.equal((await c.recordReceipt(agent,receipt("running",4))).error,"missing_live_task_approval");
- const decision={approvalId:F,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
+ const decision={approvalId:F,actionId:approvalAction.id,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
  assert.equal((await c.decide(user,decision)).ok,true);
  assert.equal((await c.recordReceipt(agent,receipt("running",4))).ok,true);
 });
 test("expired approval is not delivered and cannot resume task",async()=>{
  const c=setup(); await c.admit(user,command());
  await c.recordReceipt(agent,receipt("admitted",2));
- await c.recordReceipt(agent,receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+1000}));
- const decision={approvalId:F,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
+ await c.recordReceipt(agent,receipt("requires_approval",3,{approvalId:F,approvalExpiresAt:now+1000,approvalAction}));
+ const decision={approvalId:F,actionId:approvalAction.id,taskId:E,ownerId:A,deviceId:B,decision:"approve"};
  assert.equal((await c.decide(user,decision)).ok,true);
  now+=1000;
  try {
