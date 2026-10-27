@@ -32,7 +32,7 @@ import {newAuditedWindowObservation,currentObservedWindows} from "./native-windo
 import {newAuditedControlObservation,checkObservedControlTarget} from "./native-ui-control-session.mjs";
 import {needsUiReadback,newPendingUiReadback,checkPendingUiReadback,auditUiReadback,scrubPausedUiReadback} from "./native-ui-readback-session.mjs";
 import {auditedNativeUiaExpiry} from "./native-uia-expiry-recovery.mjs";
-import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
+import {verifiedExecutionReceipt,contradictsFailureReceipt,diagnoseNativeAction} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 import {checkRequestedAppTarget} from "./native-intent-target.mjs";
@@ -1454,11 +1454,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       }
      }
     }
-    // Native Result is not self-attested success: require the exact audited action receipt.
-    const receipts=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("audit_log",{limit:200});
-    const matched=receipts.find(r=>r.action_id===current.action.id &&
-       r.tool===result.tool && r.event==="executed" && r.success===true);
-    const verified=verifiedExecutionReceipt(current.action,result,receipts);
+    // P0-A: global audit tail may omit this UUID under heavy Premiere work.
+    const receipts=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>(
+     "action_audit_trace",{actionId:current.action.id});
+    const worker=await invoke<unknown>("native_worker_status").catch(()=>null);
+    const diagnosis=diagnoseNativeAction(current.action,result,receipts,worker);
+    const matched=diagnosis.kind==="verified";
+    const verified=verifiedExecutionReceipt(current.action,result,receipts)&&matched;
     executionVerified=verified;
     if(verified){
      const verifiedBudget=taskBudgets.get(current.threadId);
@@ -1591,11 +1593,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }else{
      const label=verified
        ? "Native action completed with matching audit. Continuing original task…"
-       : "Action outcome not independently verified. Stopped; inspect native audit before retrying.";
+       : "Windows Action "+current.action.id.slice(0,8)+" ("+current.action.kind+"): "+diagnosis.reason+
+         " आगे कोई Action दोबारा नहीं चलाया गया।";
      // Technical stdout/JSON is not normal Chat content.
      appendReply(current.threadId,current.promptIndex,verified
       ?"पिछला Windows Action जाँच लिया है। अब आपके काम का अगला हिस्सा देख रही हूँ।"
-      :"इस Action का Result Verify नहीं हुआ। मैंने आगे का काम रोक दिया है।");
+      :"Action "+current.action.id.slice(0,8)+" / "+current.action.kind+": "+diagnosis.reason+
+       " आगे का काम रोक दिया है।");
      showActionFeedback(label);
      refreshState(label);
      // An EXACT "Open Premiere" or "Open Notepad" task can close after two separately approved
@@ -1699,6 +1703,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Native action verified. Follow-up planning failed; no automatic retry.");
     refreshState("Master continuation failed; prior native action remains verified.");
    }else{
+    // A throw may occur before dispatch or after native action completion.
+    // Read the durable exact UUID but NEVER replay uncertain external effects.
+    let rustDiagnosis:ReturnType<typeof diagnoseNativeAction>|null=null;
+    try{
+     const trace=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>(
+      "action_audit_trace",{actionId:current.action.id});
+     const worker=await invoke<unknown>("native_worker_status").catch(()=>null);
+     rustDiagnosis=diagnoseNativeAction(current.action,null,trace,worker);
+    }catch{/* Unreadable audit is not evidence of nonexecution. */}
     // The native Rust TTL can DENY an action before ANY execution.
     // The error text alone is untrusted: require exact action UUID/tool and
     // a single native 'denied' receipt with no execution/conflicting audit.
@@ -1735,14 +1748,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      refreshState("Stop requested: no successor action. Inspect Rust Audit.");
      return;
     }
-    const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
+    const recoveryPrepared=rustDiagnosis?.kind==="worker_failure"&&
+     await prepareAuditedUiReadRecovery(current,message);
    if(!recoveryPrepared){
     haltTask(current.threadId,"unknown_outcome");
     updateReply(current.threadId,current.promptIndex,
      (replies.get(current.threadId)?.[current.promptIndex]||"")+
-     "\n\nNative action outcome unknown: "+message+". Do not retry blindly.");
-    showActionFeedback("Native action outcome unknown. Review Activity/Audit before retrying.");
-    refreshState("Native action outcome unknown. Check Activity/Audit.");
+     "\n\nWindows Action "+current.action.id.slice(0,8)+" ("+current.action.kind+"): "+
+     (rustDiagnosis?.reason??"Rust Audit नहीं पढ़ा जा सका; परिणाम UNKNOWN है।")+
+     " "+message+". कोई Blind Retry नहीं किया गया।");
+    showActionFeedback(rustDiagnosis?.reason??"Rust Audit में परिणाम UNKNOWN है।");
+    refreshState("Action "+current.action.id.slice(0,8)+": "+(rustDiagnosis?.reason??"Rust Audit unavailable"));
     }
    }
   }finally{
