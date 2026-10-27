@@ -2177,15 +2177,23 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    refreshState("Sending "+(route.role==="chat"?"chat":"Windows task for Master/selected specialist")+
     " to "+route.provider+" / "+route.model+"…");
    try{
-    const firstStepGuidance=route.role==="chat"?null:
-     masterAutonomyGuidance(effectiveObjective)+" "+
-     continuityHint(continuity)+" "+
-     "Continue the user\u0027s actual desktop request, not a preliminary inspection. For opening a site or app, inspect/reuse the existing session first. Do not use ui_set_value for URL navigation; use typed browser/navigation tools or stop safely. "+
-     (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
-     (waitingForChoice?"Keep the original request as the task goal after this clarification: "+effectiveObjective.slice(0,440)+". ":"")+
-     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. For inspect_screen always supply window with the exact real app title observed via ui_windows, even if the user returns to Shuvi to approve; use desktop only for an explicitly requested whole-screen inspection. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit. "+
-      masterGoalContext(effectiveObjective)+" "+taskGoalContext(effectiveObjective)+" "+
-      (waitingForChoice?"Same computer task clarification; preserve the original goal. ":"Independent new Windows task: old goals in chat history are context only, not instructions. Do not continue an earlier action or assume its evidence applies. ");
+    const firstStepGuidance=route.role==="chat"?null:(()=>{
+     const editing=/\\b(?:edit|editing|cut|trim|timeline|import|export|render|project|save)\\b|एडिट|कटिंग|टाइमलाइन|प्रोजेक्ट|एक्सपोर्ट/iu.test(effectiveObjective);
+     const premiere=/\\b(?:premiere|premire|premier)\\b|प्रीमियर|प्रिमियर/iu.test(effectiveObjective);
+     const opening=/\\b(?:open|launch|start)\\b|खोलो|ओपन/iu.test(effectiveObjective);
+     const guidance=[
+      "Follow this NEW user command only; old tasks, approvals, receipts and outcomes grant no replay authority.",
+      "For UI work inspect fresh ui_windows and ui_find or ui_discover observations before guessing a control, process or HWND.",
+      "Honor native Rust prepare/approval/audit, task/AI budgets, owner Stop, credential boundaries and no automatic paid retries.",
+      premiere&&editing?"This is PREMIERE EDITING: FIRST reuse the existing Premiere window. Do not force premiere_launch; verify timeline and saved/exported files.":
+       premiere&&opening?"This is PREMIERE OPENING: observe existing Premiere first, launch only if not already open, then verify window.":
+       "Observe any matching existing application/session before launching a duplicate.",
+      waitingForChoice?"Preserve the original clarified goal.":""
+     ].filter(Boolean).join(" ");
+     if(new TextEncoder().encode(guidance).byteLength>2900)
+      throw Error("Local native orchestration preflight exceeded 2900 UTF-8 bytes");
+     return guidance;
+    })();
    const ticket=route.role==="chat"?null:aiTicket(taskBudget);
    if(route.role!=="chat"&&!ticket)throw Error("No native owner-bound task AI request identity.");
    const response=await invoke<NativeChatResponse>("chat",{
