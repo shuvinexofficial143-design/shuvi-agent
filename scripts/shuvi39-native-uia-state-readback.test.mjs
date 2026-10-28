@@ -19,7 +19,13 @@ test("SetValue verifies the exact approved value using ValuePattern.Current, not
  assert.ok(invoke>=0&&read>invoke&&mismatch>read);
  assert.match(source,/\[System\.StringComparison\]::Ordinal/);
  assert.match(source,/throw 'UIA ValuePattern readback differs/);
- assert.match(source,/Value state verified on element/);
+ // Success is now a bounded OS/readback witness rather than a label-only
+ // human message. The edited text/value itself is never exported.
+ for (const field of ["ObservedWindowHwnd","ObservedWindowPid",
+   "ObservedWindowProcessStartTicks","AutomationId","VerifiedValue = $true"])
+   assert.ok(source.includes(field),field);
+ assert.match(source,/ConvertTo-Json -Compress/);
+ assert.doesNotMatch(source,/['"]Value state verified on element/);
 });
 test("Toggle checks a real before and after state transition",()=>{
  const source=arm("UiToggle");

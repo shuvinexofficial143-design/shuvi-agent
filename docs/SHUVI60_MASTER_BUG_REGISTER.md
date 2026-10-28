@@ -103,3 +103,9 @@
 
 ## Shuvi62 Increment 12 — Remote multi-line payload parity
 - Latest base HEAD 0b6685c exact CI 40514826452 Frontend/Rust/Windows Installer ALL PASS. Native remote-message validator now permits only the same tab/newline/CR as web contract and uses UTF-16 units for 2500 length. C0/BEL/DEL rejected, empty whitespace rejected, expiry/auth/replay unchanged. Added Rust+JS regression coverage; new exact-head CI and Windows mobile E2E pending.
+
+## Shuvi64 Increment 01 — One-Approval scoped ValuePattern readback
+- Base HEAD `1ce144cdc46001271bc9b5c1805185c3ca50f418`, Run 40630679033: Frontend/Rust/Windows Installer all PASS.
+- Confirmed additional P0 runtime source mismatch: `UiSetValue` produced text on success while `Store::verify_native_read_output` demanded structured OS-root JSON. Under scoped one-approval this could reject a genuinely verified write. Code fixed in `src-tauri/src/lib.rs` and `src-tauri/src/native_task_authorization.rs` with bounded OS-root/AutomationId/VerifiedValue witness and Rust audit latch. No edited text is emitted. Another edit still requires separately audited exact-control read.
+- Initial Shuvi64 commit `12b4d8c` Run 40634428939: Frontend FAILED one stale source assertion expecting old human-readable message (`scripts/shuvi39-native-uia-state-readback.test.mjs`). Regression test now checks structured verified witness instead; Rust and NSIS statuses on this run are not asserted here.
+- This follow-up HEAD exact CI PENDING. Real Windows Premiere E2E PENDING. Entire-task mutation approval, multi-control editing and automatic vision are NOT implemented by this fix; preserve UNKNOWN safety and owner readback boundaries. Do not label historical 29 bug IDs all closed.
