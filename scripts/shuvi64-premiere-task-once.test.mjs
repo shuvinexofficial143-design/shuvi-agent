@@ -29,7 +29,7 @@ test("Premiere timeline inventory and verified playhead continue without another
  }
  assert.match(auth,/fn premiere_verified_playhead_and_readonly_inventory_share_owner_grant/);
  assert.match(lib,/ToolAction::PremiereSetPlayhead\{\.\.\}=\>/);
- assert.match(lib,/position_verified:verified/);
+ assert.match(lib,/"position_verified":verified/);
  assert.match(ui,/Number\.isFinite\(seconds\)/);
  assert.match(auth,/fn premiere_bridge_prepared\(/);
  assert.doesNotMatch(ui,/PREMIERE_SCOPED_TOOLS=.*premiere_export_sequence/);

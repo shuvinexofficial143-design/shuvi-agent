@@ -47,8 +47,12 @@ test("playhead movement and vision review require exact native position readback
   assert.match(playhead,/getPlayerPosition\(\)/);
   assert.match(playhead,/Math\.abs\(observedSeconds-seconds\) <= 0\.001/);
   assert.match(playhead,/verificationStatus: verified \? "verified_readback" : "accepted_unverified"/);
-  const directStart=rust.lastIndexOf("ToolAction::PremiereSetPlayhead");
+  // Bind to the actual executor arm rather than a later permission-scoped
+  // dispatch match. Both code paths mention the same typed ToolAction.
+  const executorMarker="ToolAction::PremiereSetPlayhead { seconds } => {";
+  const directStart=rust.indexOf(executorMarker);
   const directEnd=rust.indexOf("\n        ToolAction::PremiereInspectFrame",directStart);
+  assert.ok(directStart>=0 && directEnd>directStart,"Premiere playhead executor missing");
   const direct=rust.slice(directStart,directEnd);
   assert.match(direct,/verified_readback/);
   assert.match(direct,/success: verified/);
