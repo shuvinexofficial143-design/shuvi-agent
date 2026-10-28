@@ -1260,7 +1260,8 @@ test("restart with an uncertain action blocks new desktop work until explicit ow
  await s.recoveryDismiss.listeners.get("click")();
  const accepted=await s.transport.send("Open Premiere Pro","new-safe-task",0);
  assert.equal(accepted.ok,true);
- assert.equal(s.staged.length,1);
+ assert.equal(s.durableQueue.length,2,"new intent cannot overtake first queued command");
+ assert.equal(s.staged.length,0,"queued admission is not Windows execution");
  assert.equal(s.calls.some(c=>c.name==="execute_action"),false);
 });
 test("contradictory recovery audit stays unknown and cannot itself start a Windows action",async()=>{
@@ -1298,7 +1299,8 @@ test("unknown outcome in the same session blocks a second paid task until owner 
  await s.recoveryDismiss.listeners.get("click")();
  const allowed=await s.transport.send("Open Premiere Pro","new-owner-approved-task",0);
  assert.equal(allowed.ok,true);
- assert.equal(s.chatInputs.length,2);
+ assert.equal(s.durableQueue.length,2,"second task remains behind first queued request");
+ assert.equal(s.chatInputs.length,1,"UNKNOWN predecessor never triggers second paid call");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });
 
@@ -1319,7 +1321,8 @@ test("Rust recovery alone blocks new tasks even when WebView storage was lost",a
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
  const allowed=await s.transport.send("Open Premiere Pro","new-owner-task",0);
  assert.equal(allowed.ok,true);
- assert.equal(s.staged.length,1);
+ assert.equal(s.durableQueue.length,2,"new task cannot overtake earlier queued task");
+ assert.equal(s.staged.length,0,"no Windows dispatch just by enqueuing");
 });
 test("a Rust-only paused checkpoint requires owner acknowledgement even without an executing action",async()=>{
  const now=Date.now();
@@ -1338,7 +1341,8 @@ test("a Rust-only paused checkpoint requires owner acknowledgement even without 
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
  const allowed=await s.transport.send("Open Premiere Pro","after-paused-review",0);
  assert.equal(allowed.ok,true);
- assert.equal(s.chatInputs.length,1);
+ assert.equal(s.durableQueue.length,2,"queued task order remains stable");
+ assert.equal(s.chatInputs.length,0,"queue admission is not a paid AI call");
 });
 test("Rust snapshot failure prevents a paid model request and any prepared Windows action",async()=>{
  const s=setup({rustFailPhase:"model_reserved"});
