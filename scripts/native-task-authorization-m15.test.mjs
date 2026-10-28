@@ -30,7 +30,7 @@ test("M1.5 no second edit until separately audited same-control readback",()=>{
  assert.match(kernel,/if action\.tool!="ui_find"\|\|action\.control_id\.as_deref\(\)!=Some\(control\)/);
  assert.match(kernel,/Post-edit inspection needs exactly one control/);
  assert.match(kernel,/Post-edit UIA control changed or was not observed/);
- assert.match(kernel,/g\.awaiting_readback=g\.scope\.exact_controls\.first\(\)\.cloned\(\)/);
+ assert.match(kernel,/g\.awaiting_readback=g\.pending\.as_ref\(\)\.and_then\(\|p\|p\.control_id\.clone\(\)\)/);
  assert.match(kernel,/fn bounded_native_value_edits_require_exact_control_and_new_inspection/);
  assert.match(ui,/readScope\.window===nativeUiTaskWindow\(proposal\)/);
  assert.match(ui,/readScope\.control===null/);

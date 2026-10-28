@@ -16,5 +16,5 @@ test("scoped UIA value evidence is structured after OS-bound readback",()=>{
 test("Rust task scope must require value witness before audit, and block repeat edit",()=>{
  for(const term of ["confirmed_value_edit","VerifiedValue","Scoped ValuePattern success requires Rust-verified OS readback.",
  "fn scoped_value_success_requires_exact_rust_verified_native_readback",
- "g.awaiting_readback=g.scope.exact_controls.first().cloned()"])assert.ok(auth.includes(term),term);
+ "g.awaiting_readback=g.pending.as_ref().and_then(|p|p.control_id.clone())"])assert.ok(auth.includes(term),term);
 });

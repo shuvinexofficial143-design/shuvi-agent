@@ -388,7 +388,8 @@ impl Store {
             }
             if g.read_root.is_none(){g.read_root=Some(root.clone());}
         }
-        if g.scope.tools.iter().any(|t|t=="ui_click")&&risk==Risk::UiMutation {
+        if g.scope.exact_controls.is_empty()&&
+           g.scope.tools.iter().any(|t|t=="ui_click")&&risk==Risk::UiMutation {
             let root=action.native_root.as_ref()
                 .ok_or("Scoped UIA mutation has no Rust OS process identity.")?;
             if g.read_root.as_ref().is_some_and(|old|old!=root){
@@ -710,6 +711,44 @@ mod tests {
         s.revoke(&task);
         assert!(s.reserve_prepared(&permit,&different,127).is_err());
         assert!(!s.can_resume_without_owner(&task));
+    }
+    #[test]
+    fn premiere_read_vision_bridge_continuity_is_tied_to_same_rust_grant(){
+        let mut owner=scope();owner.applications=vec!["Adobe Premiere Pro".into()];
+        owner.exact_controls.clear();owner.exact_files.clear();
+        owner.tools=vec!["ui_click".into(),"ui_find".into(),
+            "inspect_screen".into(),"premiere_context".into()];
+        owner.risks=vec![Risk::ReadOnly,Risk::UiMutation];
+        let task=owner.task_id.clone();let mut s=Store::default();
+        let permit=s.issue(owner,100).unwrap();
+        let read=action(&task,"ui_find","Adobe Premiere Pro",None);
+        s.reserve_prepared(&permit,&read,101).unwrap();
+        let observed=serde_json::json!([{
+            "ObservedWindowHwnd":42,"ObservedWindowPid":24,
+            "ObservedWindowProcessStartTicks":"8675309","AutomationId":"Save"
+        }]).to_string();
+        s.verify_native_read_output(&task,&permit,&read.action_id,
+            "ui_find",&observed,102).unwrap();
+        s.record_audit(&task,&permit,&read.action_id,"ui_find",
+            Outcome::AuditedSuccess,103).unwrap();
+        let mut vision=action(&task,"inspect_screen","Adobe Premiere Pro",None);
+        vision.native_root=Some(NativeReadRoot{hwnd:42,pid:24,
+            start_ticks:"8675309".into()});
+        s.reserve_prepared(&permit,&vision,104).unwrap();
+        s.record_audit(&task,&permit,&vision.action_id,"inspect_screen",
+            Outcome::AuditedSuccess,105).unwrap();
+        let bridge=s.premiere_bridge_prepared(&task,&permit,&id(),
+            "premiere_context",&crate::ToolAction::PremiereContext).unwrap();
+        s.reserve_prepared(&permit,&bridge,106).unwrap();
+        s.record_audit(&task,&permit,&bridge.action_id,"premiere_context",
+            Outcome::AuditedSuccess,107).unwrap();
+        let mut foreign=action(&task,"inspect_screen","Adobe Premiere Pro",None);
+        foreign.native_root=Some(NativeReadRoot{hwnd:42,pid:25,
+            start_ticks:"8675309".into()});
+        assert!(s.reserve_prepared(&permit,&foreign,108).is_err());
+        s.revoke(&task);
+        assert!(s.reserve_prepared(&permit,&action(&task,"ui_find",
+            "Adobe Premiere Pro",None),109).is_err());
     }
     fn journal(action:&PreparedAction,phase:&str,success:Option<bool>,now:u64)
         ->crate::native_worker_job::NativeJob{
