@@ -27,12 +27,15 @@ fn risk_for(tool:&str)->Option<Risk>{
     match tool {
         "ui_windows"|"ui_discover"|"ui_find"|"list_processes"|
         "read_file"|"list_directory"|"search_text"|
-        "premiere_bridge_status"|"premiere_context"|"inspect_screen"|
+        "premiere_bridge_status"|"premiere_context"|"premiere_timeline"|
+        "premiere_list_items"|"premiere_project_tree"|
+        "premiere_timeline_capabilities"|"inspect_screen"|
         "browser_page_state"|"browser_dom_read"|"git_status"|"git_diff" =>
             Some(Risk::ReadOnly),
         "premiere_launch"|"launch_app"|"browser_start"|"browser_navigate"|
         "ui_click"|"ui_set_value"|"ui_send_keys"|"ui_toggle"|
-        "ui_focus"|"ui_scroll"|"ui_expand_collapse" =>
+        "ui_focus"|"ui_scroll"|"ui_expand_collapse"|
+        "premiere_set_playhead" =>
             Some(Risk::UiMutation),
         "write_file"|"replace_text"=>Some(Risk::FileEdit),
         // No shell, registry, deletion, publish, external message, financial
@@ -336,15 +339,24 @@ impl Store {
     }
     pub(crate) fn premiere_bridge_prepared(&self,task:&str,scope:&str,
         action_id:&str,tool:&str,action:&crate::ToolAction)->Result<PreparedAction,String>{
+        // These are exact, typed UXP read operations, plus one bounded
+        // non-destructive timeline position update with host readback.
+        // No project/media/timeline write, save, render, or export inherits
+        // this native task permission.
         let eligible=matches!((tool,action),
           ("premiere_context",crate::ToolAction::PremiereContext)|
-          ("premiere_bridge_status",crate::ToolAction::PremiereBridgeStatus));
+          ("premiere_bridge_status",crate::ToolAction::PremiereBridgeStatus)|
+          ("premiere_timeline",crate::ToolAction::PremiereTimeline)|
+          ("premiere_list_items",crate::ToolAction::PremiereListItems)|
+          ("premiere_project_tree",crate::ToolAction::PremiereProjectTree)|
+          ("premiere_timeline_capabilities",crate::ToolAction::PremiereTimelineCapabilities)|
+          ("premiere_set_playhead",crate::ToolAction::PremiereSetPlayhead{..}));
         let g=self.active.get(task).filter(|g|g.scope_id==scope&&
             g.scope.tools.iter().any(|x|x=="ui_click"))
             .ok_or("No Premiere task consent for this bridge read.")?;
         if !eligible||!valid_uuid(action_id)||g.read_root.is_none()||
             g.scope.applications.len()!=1{
-            return Err("Bridge inspection needs earlier real Premiere window verification.".into());
+            return Err("Premiere bridge action needs earlier real Premiere window verification.".into());
         }
         Ok(PreparedAction{task_id:task.into(),action_id:action_id.into(),
             tool:tool.into(),application:g.scope.applications[0].clone(),
@@ -389,7 +401,8 @@ impl Store {
             if g.read_root.is_none(){g.read_root=Some(root.clone());}
         }
         if g.scope.exact_controls.is_empty()&&
-           g.scope.tools.iter().any(|t|t=="ui_click")&&risk==Risk::UiMutation {
+           g.scope.tools.iter().any(|t|t=="ui_click")&&risk==Risk::UiMutation&&
+           action.tool.starts_with("ui_") {
             let root=action.native_root.as_ref()
                 .ok_or("Scoped UIA mutation has no Rust OS process identity.")?;
             if g.read_root.as_ref().is_some_and(|old|old!=root){
@@ -749,6 +762,72 @@ mod tests {
         s.revoke(&task);
         assert!(s.reserve_prepared(&permit,&action(&task,"ui_find",
             "Adobe Premiere Pro",None),109).is_err());
+    }
+    #[test]
+    fn premiere_verified_playhead_and_readonly_inventory_share_owner_grant(){
+        let mut owner=scope();
+        owner.applications=vec!["Adobe Premiere Pro".into()];
+        owner.exact_files.clear();owner.exact_controls.clear();
+        owner.tools=vec!["ui_find".into(),"ui_click".into(),
+            "premiere_context".into(),"premiere_timeline".into(),
+            "premiere_list_items".into(),"premiere_project_tree".into(),
+            "premiere_timeline_capabilities".into(),
+            "premiere_set_playhead".into()];
+        owner.risks=vec![Risk::ReadOnly,Risk::UiMutation];
+        owner.max_actions=20;
+        let task=owner.task_id.clone();
+        let mut store=Store::default();
+        let permit=store.issue(owner,100).unwrap();
+        // No independent OS observation: the host cannot be used merely
+        // because the model reports that the Premiere bridge is paired.
+        assert!(store.premiere_bridge_prepared(&task,&permit,&id(),
+            "premiere_context",&crate::ToolAction::PremiereContext).is_err());
+        let read=action(&task,"ui_find","Adobe Premiere Pro",None);
+        store.reserve_prepared(&permit,&read,101).unwrap();
+        let root=serde_json::json!([{
+            "ObservedWindowHwnd":42,"ObservedWindowPid":24,
+            "ObservedWindowProcessStartTicks":"8675309",
+            "AutomationId":"Save"
+        }]).to_string();
+        store.verify_native_read_output(&task,&permit,
+            &read.action_id,"ui_find",&root,102).unwrap();
+        store.record_audit(&task,&permit,&read.action_id,"ui_find",
+            Outcome::AuditedSuccess,103).unwrap();
+        for (i,(tool,act)) in [
+            ("premiere_context",crate::ToolAction::PremiereContext),
+            ("premiere_timeline",crate::ToolAction::PremiereTimeline),
+            ("premiere_list_items",crate::ToolAction::PremiereListItems),
+            ("premiere_project_tree",crate::ToolAction::PremiereProjectTree),
+            ("premiere_timeline_capabilities",crate::ToolAction::PremiereTimelineCapabilities),
+            ("premiere_set_playhead",crate::ToolAction::PremiereSetPlayhead{seconds:10.0}),
+            ("premiere_timeline",crate::ToolAction::PremiereTimeline),
+        ].into_iter().enumerate(){
+            let prepared=store.premiere_bridge_prepared(&task,&permit,&id(),tool,&act).unwrap();
+            store.reserve_prepared(&permit,&prepared,104+2*i as u64).unwrap();
+            store.record_audit(&task,&permit,&prepared.action_id,tool,
+                Outcome::AuditedSuccess,105+2*i as u64).unwrap();
+            assert!(store.reserve_prepared(&permit,&prepared,105+2*i as u64).is_err(),
+                "same UXP action UUID cannot dispatch twice");
+        }
+        for (tool,act) in [
+            ("premiere_trim_clip",crate::ToolAction::PremiereTrimClip{
+                kind:"video".into(),track:0,clip_index:0,
+                start_seconds:Some(0.0),end_seconds:Some(1.0)
+            }),
+            ("premiere_save_project",crate::ToolAction::PremiereSaveProject),
+            ("premiere_create_project",crate::ToolAction::PremiereCreateProject{
+                path:r"C:\test\new.prproj".into()}),
+            ("premiere_export_sequence",crate::ToolAction::PremiereExportSequence{
+                output:r"C:\test\video.mp4".into(),preset:None,queue_to_ame:false,overwrite:false
+            }),
+        ] {
+            assert!(store.premiere_bridge_prepared(&task,&permit,&id(),tool,&act).is_err(),
+                "editing/export must not inherit a read/navigation permission");
+        }
+        store.revoke(&task);
+        assert!(store.premiere_bridge_prepared(&task,&permit,&id(),
+            "premiere_timeline",&crate::ToolAction::PremiereTimeline).is_err());
+        assert!(!store.can_resume_without_owner(&task));
     }
     fn journal(action:&PreparedAction,phase:&str,success:Option<bool>,now:u64)
         ->crate::native_worker_job::NativeJob{

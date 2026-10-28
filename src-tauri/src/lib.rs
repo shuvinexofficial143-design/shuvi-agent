@@ -21907,7 +21907,7 @@ fn confirm_native_premiere_task(scope:&native_task_grant::task_authorization::Ow
         fn MessageBoxW(hwnd:isize,text:*const u16,caption:*const u16,flags:u32)->i32;
     }
     let message=format!(
-        "ONE APPROVAL FOR PREMIERE TASK?\\n\\nTask: {}\\nWindow: {}\\nTools: {}\\nDuration {} minutes, maximum {} actions.\\n\\nAllows app-bound UIA clicks, typing/value edits, scrolling, exact-window vision and read-only Premiere bridge checks. Every action is still OS-bound, audited and subject to Stop. Vision AI cost still uses the independent Rust paid-request budget. Shell, arbitrary mouse coordinates, other apps, file writes, Premiere UXP mutations and export are NOT delegated. Uncertain actions never replay automatically.\\n\\nChoose Yes for this bounded task, No to deny.",
+        "ONE APPROVAL FOR PREMIERE TASK?\\n\\nTask: {}\\nWindow: {}\\nTools: {}\\nDuration {} minutes, maximum {} actions.\\n\\nAllows app-bound UIA clicks, typing/value edits, scrolling, exact-window vision, read-only Premiere bridge/timeline/media inventory, and verified playhead position updates. Every action is still OS-bound, audited and subject to Stop. Vision AI cost still uses the independent Rust paid-request budget. Shell, arbitrary mouse coordinates, other apps, file writes, Premiere UXP mutations and export are NOT delegated. Uncertain actions never replay automatically.\\n\\nChoose Yes for this bounded task, No to deny.",
         objective,scope.applications[0],scope.tools.join(", "),
         scope.valid_for_ms/60_000,scope.max_actions
     );
@@ -21929,7 +21929,9 @@ fn issue_native_premiere_task_scope(
     scope.validate()?;
     let tools:Vec<String>=["ui_find","ui_discover","ui_click","ui_set_value",
         "ui_focus","ui_scroll","ui_toggle","ui_expand_collapse","ui_send_keys",
-        "inspect_screen","premiere_context","premiere_bridge_status"]
+        "inspect_screen","premiere_context","premiere_bridge_status",
+        "premiere_timeline","premiere_list_items","premiere_project_tree",
+        "premiere_timeline_capabilities","premiere_set_playhead"]
         .iter().map(|s|s.to_string()).collect();
     if scope.tools!=tools||scope.applications.len()!=1||
        !scope.applications[0].to_ascii_lowercase().contains("premiere")||
@@ -22504,7 +22506,10 @@ async fn execute_action(
                     ToolAction::InspectScreen{..}=>native_task_grant::task_authorization::
                         premiere_vision_prepared(task,&action_id,&prepared.tool,
                             &prepared.action,prepared.capture_target.as_ref())?,
-                    ToolAction::PremiereContext|ToolAction::PremiereBridgeStatus=>
+                    ToolAction::PremiereContext|ToolAction::PremiereBridgeStatus|
+                    ToolAction::PremiereTimeline|ToolAction::PremiereListItems|
+                    ToolAction::PremiereProjectTree|ToolAction::PremiereTimelineCapabilities|
+                    ToolAction::PremiereSetPlayhead{..}=>
                         state.task_authorizations.lock()
                           .map_err(|_|"Premiere bridge native grant unavailable.")?
                           .premiere_bridge_prepared(task,scope_id,&action_id,

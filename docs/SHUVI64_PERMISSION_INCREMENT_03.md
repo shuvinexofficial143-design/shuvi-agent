@@ -1,0 +1,7 @@
+# Shuvi64 P0 Increment 03 — In-scope Premiere UXP continuity
+- Previous exact-HEAD 687b3a927bac017b29dca4efdb1f6302ab3bff49 Run 40635658517: Frontend PASS, Rust PASS, Windows NSIS Installer PASS (source/CI only, not owner Windows E2E).
+- Reused SAME native_task_authorization::Store and same exclusive Rust prepared-action/worker journal.
+- One Premiere task approval now also permits read-only UXP timeline, root items, project tree and timeline capabilities plus bounded UXP playhead seeking. The playhead tool's existing bridge adapter requires verificationStatus=verified_readback and emits position_verified; failure has no success audit. No new owner permission dialog for those in-scope actions.
+- Native Premiere bridge adapter requires earlier OS-confirmed exact HWND/PID/process start generation. The Rust tool-action discriminant is hardcoded, preventing forged tool strings or generic UXP write methods. UI additionally requires finite, nonnegative playhead seconds within one day; Rust original staging remains authoritative. Within the existing task, every UXP read/playhead action still consumes a new UUID/audited worker.
+- Added Rust sequence test: reject bridge-without-OS-observation, then UIA -> 7 UXP reads/seek across one grant, reject UUID replay, deny Premiere trim/save/create/export, and verify Stop/revoke + no restart resume.
+- No changes to FIFO, unknown job replays, provider quota, unscoped mouse or UIA root attestation. Real owner Premiere editing E2E and actual project/import/export scoped permission still pending.

@@ -20,3 +20,17 @@ test("local owner scope is per-task/per-window and cannot auto-execute unrelated
  assert.doesNotMatch(ui,/PREMIERE_SCOPED_TOOLS=.*pointer_click/);
  assert.match(ui,/!remoteTask&&!cancelRequested/);
 });
+
+test("Premiere timeline inventory and verified playhead continue without another Allow once",()=>{
+ for(const tool of ["premiere_timeline","premiere_list_items","premiere_project_tree",
+  "premiere_timeline_capabilities","premiere_set_playhead"]){
+   assert.ok(ui.includes('"' + tool + '"'),"UI missing "+tool);
+   assert.ok(auth.includes('"' + tool + '"'),"Rust missing "+tool);
+ }
+ assert.match(auth,/fn premiere_verified_playhead_and_readonly_inventory_share_owner_grant/);
+ assert.match(lib,/ToolAction::PremiereSetPlayhead\{\.\.\}=\>/);
+ assert.match(lib,/position_verified:verified/);
+ assert.match(ui,/Number\.isFinite\(seconds\)/);
+ assert.match(auth,/fn premiere_bridge_prepared\(/);
+ assert.doesNotMatch(ui,/PREMIERE_SCOPED_TOOLS=.*premiere_export_sequence/);
+});

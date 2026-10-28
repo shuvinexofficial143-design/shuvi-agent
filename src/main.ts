@@ -158,10 +158,18 @@ const nativeReadGrantIds=new Map<string,string>();
 let nativeUiTaskRead:{taskId:string;scopeId:string;window:string;control:string|null;expires:number;mode?:"premiere"}|null=null;
 const PREMIERE_SCOPED_TOOLS=["ui_find","ui_discover","ui_click","ui_set_value",
   "ui_focus","ui_scroll","ui_toggle","ui_expand_collapse","ui_send_keys",
-  "inspect_screen","premiere_context","premiere_bridge_status"];
+  "inspect_screen","premiere_context","premiere_bridge_status",
+  "premiere_timeline","premiere_list_items","premiere_project_tree",
+  "premiere_timeline_capabilities","premiere_set_playhead"];
 function premiereScopeAllows(p:ToolProposal,w:string):boolean{
  if(!PREMIERE_SCOPED_TOOLS.includes(p.tool))return false;
- if(["premiere_context","premiere_bridge_status"].includes(p.tool))return true;
+ if(["premiere_context","premiere_bridge_status",
+     "premiere_timeline","premiere_list_items",
+     "premiere_project_tree","premiere_timeline_capabilities"].includes(p.tool))return true;
+ if(p.tool==="premiere_set_playhead"){
+   const seconds=p.arguments?.seconds;
+   return typeof seconds==="number"&&Number.isFinite(seconds)&&seconds>=0&&seconds<=86400;
+ }
  if(p.tool==="inspect_screen")return p.arguments?.window===w;
  return p.arguments?.window===w&&(
    p.tool==="ui_discover"||
