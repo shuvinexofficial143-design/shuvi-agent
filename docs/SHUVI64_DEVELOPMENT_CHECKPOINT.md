@@ -1,0 +1,6 @@
+# SHUVI64 — Increment 01 (One-Approval scoped ValuePattern verification)
+Base HEAD: 1ce144cdc46001271bc9b5c1805185c3ca50f418, CI Run #40630679033 (3/3 PASS).
+Source defect: UIA SetValue returned text although Rust task-scope verification required structured process-bound JSON. This could reject a valid scoped edit.
+Fix: after exact ValuePattern equality and rechecking native control, PowerShell returns HWND, PID, process creation ticks, AutomationId, VerifiedValue without the edited value; Rust requires all proof and root identity to agree before recording success. A successful worker journal alone cannot bypass the independent readback. Next SetValue still needs separately audited exact ui_find. Failure/unknown cannot replay.
+Tests: new Rust positive and negative unit fixtures (missing proof, wrong control, changed process/HWND), plus Node source regression. Exact HEAD CI and owner Windows acceptance pending at commit time.
+Scope remains SINGLE control (10 minutes, 12 max actions), not Premiere-wide One-Approval. Premiere creation, import, cutting, title, save, export and artifact verification remain Owner E2E PENDING. No legacy UNKNOWN FIFO, queue, recovery or budget behavior intentionally changed.

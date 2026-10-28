@@ -12332,7 +12332,15 @@ for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
 if (-not $shuviValueVerified) {{
     throw 'UIA ValuePattern readback differs from requested value; outcome requires independent inspection.'
 }}
-'Value state verified on element: ' + $e.Current.Name"#
+# Emit OS evidence only, not the edited text or its ValuePattern contents.
+Assert-ShuviNativeTarget -root $root -element $e
+[PSCustomObject]@{{
+    ObservedWindowHwnd = [int64]$root.Current.NativeWindowHandle
+    ObservedWindowPid = [uint32]$root.Current.ProcessId
+    ObservedWindowProcessStartTicks = $shuviExpectedProcessStartTicks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    AutomationId = [string]$e.Current.AutomationId
+    VerifiedValue = $true
+}} | ConvertTo-Json -Compress"#
             );
 
             let output = run_hidden_powershell(&script)?;

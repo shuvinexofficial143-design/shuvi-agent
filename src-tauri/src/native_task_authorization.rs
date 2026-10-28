@@ -239,6 +239,7 @@ struct Grant {
     read_root:Option<NativeReadRoot>,
     awaiting_readback:Option<String>,
     confirmed_readback:bool,
+    confirmed_value_edit:bool,
     paused:bool,
 }
 #[derive(Default)]
@@ -268,7 +269,7 @@ impl Store {
             scope,scope_id:id.clone(),deadline_ms:expiry,last_observed_ms:now,
             actions:0,requests:0,estimated_ai_micro_usd:0,
             observed_ids:HashSet::new(),pending:None,read_root:None,awaiting_readback:None,
-            confirmed_readback:false,paused:false
+            confirmed_readback:false,confirmed_value_edit:false,paused:false
         });
         Ok(id)
     }
@@ -338,6 +339,7 @@ impl Store {
             }
         }
         g.observed_ids.insert(action.action_id.clone());
+        g.confirmed_value_edit=false;
         g.actions+=1; // unknown or failed dispatch still consumes the action
         g.pending=Some(Pending{id:action.action_id.clone(),tool:action.tool.clone()});
         Ok(())
@@ -365,9 +367,23 @@ impl Store {
         let pending=grant.pending.as_ref()
             .ok_or("Task readback has no awaiting exact native action.")?;
         if pending.id!=action_id||pending.tool!=tool||
-           !matches!(tool,"ui_find"|"ui_discover"){
+           !matches!(tool,"ui_find"|"ui_discover"|"ui_set_value"){
             grant.paused=true;
             return Err("Foreign UIA readback cannot confirm a native task step.".into());
+        }
+        if tool=="ui_set_value" {
+            // Only execute_tool's post-write OS-attested readback may
+            // authorize audit success; WebView/model text is never accepted.
+            let row:Value=serde_json::from_str(stdout)
+                .map_err(|_|"Scoped UIA edit lacks structured OS readback.")?;
+            if !row.is_object()||
+               row.get("VerifiedValue").and_then(Value::as_bool)!=Some(true)||
+               row.get("AutomationId").and_then(Value::as_str)!=
+                   grant.scope.exact_controls.first().map(String::as_str){
+                grant.paused=true;
+                return Err("Scoped UIA edit has no verified exact-control value readback.".into());
+            }
+            grant.confirmed_value_edit=true;
         }
         if let Some(control)=grant.awaiting_readback.as_deref(){
             let json:Value=serde_json::from_str(stdout)
@@ -404,6 +420,10 @@ impl Store {
             return Err("Audit has foreign action UUID or tool.".into());
         }
         if outcome==Outcome::AuditedSuccess&&tool=="ui_set_value"{
+            if !g.confirmed_value_edit {
+                g.paused=true;
+                return Err("Scoped ValuePattern success requires Rust-verified OS readback.".into());
+            }
             g.awaiting_readback=g.scope.exact_controls.first().cloned();
             g.confirmed_readback=false;
         }else if outcome==Outcome::AuditedSuccess&&tool=="ui_find"&&
@@ -416,6 +436,7 @@ impl Store {
             g.confirmed_readback=false;
         }
         g.pending=None;
+        g.confirmed_value_edit=false;
         if outcome!=Outcome::AuditedSuccess {g.paused=true;}
         Ok(())
     }
@@ -683,6 +704,13 @@ mod tests {
         let mut first=action(&task,"ui_set_value","Notepad",None);
         first.control_id=Some("Save".into());first.native_root=Some(native_root.clone());
         store.reserve_prepared(&grant,&first,101).unwrap();
+        let witness=serde_json::json!({
+            "ObservedWindowHwnd":42,"ObservedWindowPid":24,
+            "ObservedWindowProcessStartTicks":"8675309",
+            "AutomationId":"Save","VerifiedValue":true
+        }).to_string();
+        store.verify_native_read_output(&task,&grant,&first.action_id,
+            "ui_set_value",&witness,102).unwrap();
         store.record_audit(&task,&grant,&first.action_id,"ui_set_value",
             Outcome::AuditedSuccess,102).unwrap();
         let mut second=action(&task,"ui_set_value","Notepad",None);
@@ -741,6 +769,61 @@ mod tests {
         assert!(store.reserve_prepared(&id,&self::action(&task,"ui_find","Notepad",None),106).is_err());
     }
 
+    #[test]
+    fn scoped_value_success_requires_exact_rust_verified_native_readback(){
+        let good=serde_json::json!({
+            "ObservedWindowHwnd":42,"ObservedWindowPid":24,
+            "ObservedWindowProcessStartTicks":"8675309",
+            "AutomationId":"Save","VerifiedValue":true
+        });
+        let bad=[
+            serde_json::json!({"message":"text verified"}),
+            serde_json::json!({"ObservedWindowHwnd":42,"ObservedWindowPid":24,
+                "ObservedWindowProcessStartTicks":"8675309","AutomationId":"Save"}),
+            serde_json::json!({"ObservedWindowHwnd":42,"ObservedWindowPid":24,
+                "ObservedWindowProcessStartTicks":"8675309","AutomationId":"Save","VerifiedValue":false}),
+            serde_json::json!({"ObservedWindowHwnd":42,"ObservedWindowPid":24,
+                "ObservedWindowProcessStartTicks":"8675309","AutomationId":"Other","VerifiedValue":true}),
+            serde_json::json!({"ObservedWindowHwnd":43,"ObservedWindowPid":24,
+                "ObservedWindowProcessStartTicks":"8675309","AutomationId":"Save","VerifiedValue":true}),
+            serde_json::json!({"ObservedWindowHwnd":42,"ObservedWindowPid":24,
+                "ObservedWindowProcessStartTicks":"8675310","AutomationId":"Save","VerifiedValue":true})
+        ];
+        for witness in bad {
+            let mut owner=scope();
+            owner.tools=vec!["ui_find".into(),"ui_set_value".into()];
+            owner.risks=vec![Risk::ReadOnly,Risk::UiMutation];
+            owner.exact_files.clear();
+            let task=owner.task_id.clone();
+            let mut store=Store::default();let grant=store.issue(owner,100).unwrap();
+            let write=action(&task,"ui_set_value","Notepad",None);
+            store.reserve_prepared(&grant,&write,101).unwrap();
+            assert!(store.verify_native_read_output(&task,&grant,&write.action_id,
+                "ui_set_value",&witness.to_string(),102).is_err());
+            assert!(store.record_audit(&task,&grant,&write.action_id,
+                "ui_set_value",Outcome::AuditedSuccess,103).is_err());
+        }
+        for verify in [false,true] {
+            let mut owner=scope();
+            owner.tools=vec!["ui_find".into(),"ui_set_value".into()];
+            owner.risks=vec![Risk::ReadOnly,Risk::UiMutation];
+            owner.exact_files.clear();
+            let task=owner.task_id.clone();
+            let mut store=Store::default();let grant=store.issue(owner,100).unwrap();
+            let write=action(&task,"ui_set_value","Notepad",None);
+            store.reserve_prepared(&grant,&write,101).unwrap();
+            if verify {store.verify_native_read_output(&task,&grant,&write.action_id,
+                "ui_set_value",&good.to_string(),102).unwrap();}
+            let audited=store.record_audit(&task,&grant,&write.action_id,
+                "ui_set_value",Outcome::AuditedSuccess,103);
+            assert_eq!(audited.is_ok(),verify);
+            if verify {
+                assert!(store.reserve_prepared(&grant,
+                    &action(&task,"ui_set_value","Notepad",None),104).is_err(),
+                    "another write needs independent exact-control UIA inspection");
+            }
+        }
+    }
     #[test]
     fn one_live_action_clock_reversal_and_bounded_count_fail_closed(){
         let mut s=Store::default();let o=scope();let task=o.task_id.clone();
