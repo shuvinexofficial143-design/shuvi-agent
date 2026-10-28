@@ -99,9 +99,9 @@ fn prune_stale_vision_captures(dir: &Path) -> Result<usize, String> {
 // Neither AI nor WebView may choose HWND, PID or process birth generation.
 #[derive(Debug, Clone)]
 pub(super) struct PreparedCaptureTarget {
-    hwnd: i64,
-    pid: u32,
-    process_start_ticks: i64,
+    pub(super) hwnd: i64,
+    pub(super) pid: u32,
+    pub(super) process_start_ticks: i64,
     title: String,
 }
 const PREPARED_CAPTURE_TTL_MS: u64 = 60_000;

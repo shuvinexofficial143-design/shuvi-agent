@@ -21898,6 +21898,80 @@ fn issue_native_value_task_scope(
     Ok(permit)
 }
 
+
+#[cfg(windows)]
+fn confirm_native_premiere_task(scope:&native_task_grant::task_authorization::OwnerScope,
+    objective:&str)->Result<(),String>{
+    #[link(name="user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(hwnd:isize,text:*const u16,caption:*const u16,flags:u32)->i32;
+    }
+    let message=format!(
+        "ONE APPROVAL FOR PREMIERE TASK?\\n\\nTask: {}\\nWindow: {}\\nTools: {}\\nDuration {} minutes, maximum {} actions.\\n\\nAllows app-bound UIA clicks, typing/value edits, scrolling, exact-window vision and read-only Premiere bridge checks. Every action is still OS-bound, audited and subject to Stop. Vision AI cost still uses the independent Rust paid-request budget. Shell, arbitrary mouse coordinates, other apps, file writes, Premiere UXP mutations and export are NOT delegated. Uncertain actions never replay automatically.\\n\\nChoose Yes for this bounded task, No to deny.",
+        objective,scope.applications[0],scope.tools.join(", "),
+        scope.valid_for_ms/60_000,scope.max_actions
+    );
+    let text:Vec<u16>=message.encode_utf16().chain(std::iter::once(0)).collect();
+    let caption:Vec<u16>="SHUVI — Premiere One-Approval Task"
+        .encode_utf16().chain(std::iter::once(0)).collect();
+    if unsafe{MessageBoxW(0,text.as_ptr(),caption.as_ptr(),0x0000_0134)}==6{Ok(())}
+    else{Err("Owner declined Premiere task consent.".into())}
+}
+#[cfg(not(windows))]
+fn confirm_native_premiere_task(_: &native_task_grant::task_authorization::OwnerScope,
+    _: &str)->Result<(),String>{Err("Requires Windows owner approval.".into())}
+#[tauri::command]
+fn issue_native_premiere_task_scope(
+    scope:native_task_grant::task_authorization::OwnerScope,objective:String,
+    origin_action_id:String,state:State<'_,ActionState>,app:AppHandle
+)->Result<String,String>{
+    use sha2::Digest;
+    scope.validate()?;
+    let tools:Vec<String>=["ui_find","ui_discover","ui_click","ui_set_value",
+        "ui_focus","ui_scroll","ui_toggle","ui_expand_collapse","ui_send_keys",
+        "inspect_screen","premiere_context","premiere_bridge_status"]
+        .iter().map(|s|s.to_string()).collect();
+    if scope.tools!=tools||scope.applications.len()!=1||
+       !scope.applications[0].to_ascii_lowercase().contains("premiere")||
+       !scope.exact_controls.is_empty()||!scope.exact_files.is_empty()||
+       scope.risks!=vec![native_task_grant::task_authorization::Risk::ReadOnly,
+           native_task_grant::task_authorization::Risk::UiMutation]||
+       scope.max_actions>48||scope.valid_for_ms>1_800_000||
+       scope.max_ai_requests!=1||scope.max_estimated_ai_micro_usd.is_some()||
+       objective.is_empty()||objective.len()>2400||
+       scope.owner_consent_id!=origin_action_id||
+       uuid::Uuid::parse_str(&origin_action_id)
+         .map(|u|u.to_string()!=origin_action_id).unwrap_or(true)||
+       format!("{:x}",sha2::Sha256::digest(objective.as_bytes()))!=scope.objective_digest{
+        return Err("Premiere task scope does not match limited owner consent.".into());
+    }
+    let pending=state.pending.lock().map_err(|_|"Native pending actions unavailable.")?;
+    let first=pending.get(&origin_action_id)
+        .ok_or("Owner approval needs a currently prepared Premiere UIA read.")?;
+    if now_ms().saturating_sub(first.created_at_ms)>PENDING_ACTION_TTL_MS||
+        native_task_grant::task_authorization::native_read_target(&first.action)
+          !=Some(scope.applications[0].as_str()){
+        return Err("First prepared Premiere UIA read is missing, foreign or expired.".into());
+    }
+    native_task_edit_scope::owner_checkpoint_allows(
+        native_recovery::load(&app)?.as_ref(),&scope.task_id,
+        &origin_action_id,"awaiting_approval",now_ms())?;
+    confirm_native_premiere_task(&scope,&objective)?;
+    native_task_edit_scope::owner_checkpoint_allows(
+        native_recovery::load(&app)?.as_ref(),&scope.task_id,
+        &origin_action_id,"awaiting_approval",now_ms())?;
+    let mut store=state.task_authorizations.lock()
+        .map_err(|_|"Rust owner task grant unavailable.")?;
+    let task=scope.task_id.clone();
+    let permit=store.issue(scope,now_ms())?;
+    if let Err(err)=append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),event:"premiere_task_owner_scope_issued".into(),
+        tool:"ui_discover".into(),
+        detail:"Windows owner approved a 30 minute, max 48 action exact Premiere UIA/vision/bridge-read task scope.".into(),
+        success:true,action_id:Some(origin_action_id)
+    }){store.revoke(&task);return Err(err)}
+    Ok(permit)
+}
 #[tauri::command]
 fn revoke_native_read_task_scope(
     task_id:String,state:State<'_,ActionState>,app:AppHandle
@@ -22419,6 +22493,22 @@ async fn execute_action(
                         native_task_grant::task_authorization::native_value_prepared(
                             task,&action_id,&prepared.tool,&prepared.action,bound)?
                     },
+                    ToolAction::UiClick{..}|ToolAction::UiFocus{..}|
+                    ToolAction::UiScroll{..}|ToolAction::UiToggle{..}|
+                    ToolAction::UiExpandCollapse{..}|ToolAction::UiSendKeys{..}=>{
+                        let bound=prepared.native_uia_target.as_ref()
+                            .ok_or("Scoped UIA mutation has no OS-prepared control.")?;
+                        native_task_grant::task_authorization::premiere_uia_prepared(
+                            task,&action_id,&prepared.tool,&prepared.action,bound)?
+                    },
+                    ToolAction::InspectScreen{..}=>native_task_grant::task_authorization::
+                        premiere_vision_prepared(task,&action_id,&prepared.tool,
+                            &prepared.action,prepared.capture_target.as_ref())?,
+                    ToolAction::PremiereContext|ToolAction::PremiereBridgeStatus=>
+                        state.task_authorizations.lock()
+                          .map_err(|_|"Premiere bridge native grant unavailable.")?
+                          .premiere_bridge_prepared(task,scope_id,&action_id,
+                            &prepared.tool,&prepared.action)?,
                     _=>native_task_grant::task_authorization::native_read_prepared(
                         task,&action_id,&prepared.tool,&prepared.action)?
                 };
@@ -22771,7 +22861,8 @@ async fn execute_action(
     // The native UIA PowerShell script includes real HWND/PID/process-birth
     // in each row; verify it in Rust before the successful action audit.
     let execution=match execution {
-        Ok(result) if task_scope_id.is_some()&&result.success=>{
+        Ok(result) if task_scope_id.is_some()&&result.success&&
+            matches!(result.tool.as_str(),"ui_find"|"ui_discover"|"ui_set_value")=>{
             match (task_scope_id.as_deref(),task_id.as_deref()){
                 (Some(scope),Some(task))=>state.task_authorizations.lock()
                     .map_err(|_|"Native read task output verification unavailable.")?
@@ -23487,6 +23578,7 @@ pub fn run() {
             revoke_task_read_grants,
             issue_native_read_task_scope,
             issue_native_value_task_scope,
+            issue_native_premiere_task_scope,
             revoke_native_read_task_scope,
             deny_action,
             issue_task_edit_scope,

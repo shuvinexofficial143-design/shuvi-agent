@@ -155,7 +155,19 @@ function renderPremiereProjectProofProgress():void{
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
 // This renderer entry is only a hint; Rust owner-consent is always authoritative.
-let nativeUiTaskRead:{taskId:string;scopeId:string;window:string;control:string|null;expires:number}|null=null;
+let nativeUiTaskRead:{taskId:string;scopeId:string;window:string;control:string|null;expires:number;mode?:"premiere"}|null=null;
+const PREMIERE_SCOPED_TOOLS=["ui_find","ui_discover","ui_click","ui_set_value",
+  "ui_focus","ui_scroll","ui_toggle","ui_expand_collapse","ui_send_keys",
+  "inspect_screen","premiere_context","premiere_bridge_status"];
+function premiereScopeAllows(p:ToolProposal,w:string):boolean{
+ if(!PREMIERE_SCOPED_TOOLS.includes(p.tool))return false;
+ if(["premiere_context","premiere_bridge_status"].includes(p.tool))return true;
+ if(p.tool==="inspect_screen")return p.arguments?.window===w;
+ return p.arguments?.window===w&&(
+   p.tool==="ui_discover"||
+   (typeof p.arguments?.automation_id==="string"&&p.arguments.automation_id.trim()!=="")||
+   (typeof p.arguments?.name==="string"&&p.arguments.name.trim()!==""));
+}
 function nativeUiTaskWindow(p:ToolProposal):string|null{
  if(!["ui_find","ui_discover","ui_set_value"].includes(p.tool))return null;
  const w=p.arguments?.window;
@@ -2195,11 +2207,14 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     const readScope=nativeUiTaskRead;
     if(!remoteTask&&!cancelRequested&&
        readScope&&readScope.taskId===activePermissionScope.taskId&&
-       readScope.expires>Date.now()&&readScope.window===nativeUiTaskWindow(proposal)&&
-       (readScope.control===null
-         ?pendingAction.risk==="low"&&["ui_find","ui_discover"].includes(proposal.tool)
-         :["ui_find","ui_set_value"].includes(proposal.tool)&&
-           proposal.arguments?.automation_id===readScope.control)){
+       readScope.expires>Date.now()&&
+       (readScope.mode==="premiere"
+         ?premiereScopeAllows(proposal,readScope.window)
+         :readScope.window===nativeUiTaskWindow(proposal)&&
+           (readScope.control===null
+             ?pendingAction.risk==="low"&&["ui_find","ui_discover"].includes(proposal.tool)
+             :["ui_find","ui_set_value"].includes(proposal.tool)&&
+               proposal.arguments?.automation_id===readScope.control))){
       await executePendingProposal(proposal,null,readScope.scopeId);
       return;
     }
@@ -2663,6 +2678,12 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     typeof proposal.task_step_id==="string"&&Boolean(uiGraph)&&
     typeof uiOwner==="string"&&uiOwner.length>0&&uiOwner.length<=2400&&
     Boolean(nativeUiTaskWindow(proposal));
+  const offerPremiereTask=!uiRemote&&pendingAction.risk==="low"&&
+    ["ui_find","ui_discover"].includes(proposal.tool)&&
+    typeof proposal.task_step_id==="string"&&Boolean(uiGraph)&&
+    typeof uiOwner==="string"&&uiOwner.length>0&&uiOwner.length<=2400&&
+    typeof proposal.arguments?.window==="string"&&
+    /premiere/i.test(proposal.arguments.window)&&Boolean(nativeUiTaskWindow(proposal));
   const offerUiValueTask=!uiRemote&&pendingAction.risk==="medium"&&
     proposal.tool==="ui_set_value"&&
     typeof proposal.task_step_id==="string"&&Boolean(uiGraph)&&
@@ -2686,6 +2707,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     ...(allowReadGrant ? ['<button id="chatAllowSession"></button>'] : []),
     ...(offerUiTaskRead?['<button id="chatAllowNativeUiTask">Approve Task UI Reads</button>']:[]),
     ...(offerUiValueTask?['<button id="chatAllowNativeValueTask">Approve bounded text edits</button>']:[]),
+    ...(offerPremiereTask?['<button id="chatAllowPremiereTask">Approve Premiere Task Once</button>']:[]),
     '<button id="chatDeny">Deny</button></div>'
   ].join("");
   const chatRisk = chatPermission.querySelector<HTMLElement>(".risk");
@@ -2850,6 +2872,46 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     };
   }
 
+  const premiereButton=chatPermission.querySelector<HTMLButtonElement>("#chatAllowPremiereTask");
+  if(premiereButton){
+    premiereButton.onclick=async()=>{
+      if(!uiCurrent()||!pendingAction||!offerPremiereTask)return;
+      const taskId=uiScope.taskId,firstAction=uiPending.id;
+      const window=proposal.arguments.window as string;
+      premiereButton.disabled=true;
+      let scopeId:string;
+      try{
+        const hash=await crypto.subtle.digest("SHA-256",
+          new TextEncoder().encode(uiOwner as string));
+        const digest=Array.from(new Uint8Array(hash),
+          x=>x.toString(16).padStart(2,"0")).join("");
+        if(!uiCurrent()||pendingAction?.id!==firstAction)return;
+        scopeId=await invoke<string>("issue_native_premiere_task_scope",{
+          scope:{taskId,ownerConsentId:firstAction,objectiveDigest:digest,
+            applications:[window],exactFiles:[],exactControls:[],
+            tools:PREMIERE_SCOPED_TOOLS,risks:["read_only","ui_mutation"],
+            validForMs:1_800_000,maxActions:48,maxAiRequests:1,
+            maxEstimatedAiMicroUsd:null},
+          objective:uiOwner,originActionId:firstAction
+        });
+      }catch{
+        if(uiCurrent()){
+          premiereButton.disabled=false;
+          const reason=chatPermission.querySelector<HTMLElement>(".permission-reason");
+          if(reason)reason.textContent="Rust ने Premiere Task Permission नहीं दी। Allow once या Deny चुनें।";
+        }
+        return;
+      }
+      if(!uiCurrent()||pendingAction?.id!==firstAction||
+         activePermissionScope.taskId!==taskId||cancelRequested){
+        await revokeNativeUiTaskRead(taskId);return;
+      }
+      nativeUiTaskRead={taskId,scopeId,window,control:null,
+        mode:"premiere",expires:Date.now()+1_800_000};
+      el<HTMLButtonElement>("#revokeTaskReadGrants").disabled=false;
+      await executePendingProposal(proposal,null,scopeId);
+    };
+  }
   const deny = chatPermission.querySelector<HTMLButtonElement>("#chatDeny");
   if (deny) {
     deny.onclick = async () => {

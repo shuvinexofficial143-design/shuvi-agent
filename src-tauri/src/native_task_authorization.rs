@@ -27,7 +27,7 @@ fn risk_for(tool:&str)->Option<Risk>{
     match tool {
         "ui_windows"|"ui_discover"|"ui_find"|"list_processes"|
         "read_file"|"list_directory"|"search_text"|
-        "premiere_bridge_status"|"premiere_context"|
+        "premiere_bridge_status"|"premiere_context"|"inspect_screen"|
         "browser_page_state"|"browser_dom_read"|"git_status"|"git_diff" =>
             Some(Risk::ReadOnly),
         "premiere_launch"|"launch_app"|"browser_start"|"browser_navigate"|
@@ -139,6 +139,53 @@ pub(crate) fn native_value_prepared(task:&str,id:&str,tool:&str,
         })
     })
 }
+
+pub(crate) fn premiere_uia_prepared(task:&str,id:&str,tool:&str,
+    action:&crate::ToolAction,
+    bound:&crate::native_uia_window_guard::NativeUiaTarget)->Result<PreparedAction,String>{
+    let (actual,window)=match action{
+        crate::ToolAction::UiClick{window,..}=>("ui_click",window.as_deref()),
+        crate::ToolAction::UiSetValue{window,..}=>("ui_set_value",window.as_deref()),
+        crate::ToolAction::UiFocus{window,..}=>("ui_focus",window.as_deref()),
+        crate::ToolAction::UiScroll{window,..}=>("ui_scroll",window.as_deref()),
+        crate::ToolAction::UiToggle{window,..}=>("ui_toggle",window.as_deref()),
+        crate::ToolAction::UiExpandCollapse{window,..}=>("ui_expand_collapse",window.as_deref()),
+        crate::ToolAction::UiSendKeys{window,..}=>("ui_send_keys",window.as_deref()),
+        _=>return Err("Not a native Premiere UIA mutation.".into())
+    };
+    let window=window.ok_or("Scoped UIA mutation needs named Premiere window.")?;
+    let control=if bound.automation_id.is_empty(){&bound.control_name}
+        else{&bound.automation_id};
+    if tool!=actual||!label(window,100)||
+       !window.to_ascii_lowercase().contains("premiere")||
+       !label(control,180)||control.contains('*')||control.contains('?')||
+       bound.hwnd<=0||bound.pid==0||bound.process_start_ticks<=0||
+       bound.runtime_id.is_empty(){
+        return Err("Native UIA target is not an exact prepared Premiere control.".into());
+    }
+    Ok(PreparedAction{task_id:task.into(),action_id:id.into(),tool:tool.into(),
+        application:window.into(),exact_file:None,control_id:Some(control.clone()),
+        native_root:Some(NativeReadRoot{hwnd:bound.hwnd as u64,pid:bound.pid as u64,
+            start_ticks:bound.process_start_ticks.to_string()})})
+}
+pub(crate) fn premiere_vision_prepared(task:&str,id:&str,tool:&str,
+    action:&crate::ToolAction,
+    target:Option<&crate::target_window_capture::PreparedCaptureTarget>)
+    ->Result<PreparedAction,String>{
+    let window=match action{
+        crate::ToolAction::InspectScreen{window,..} if tool=="inspect_screen"=>window,
+        _=>return Err("Scoped vision is not a native prepared InspectScreen.".into())
+    };
+    let native=target.ok_or("Vision has no OS prepared capture target.")?;
+    if !label(window,100)||!window.to_ascii_lowercase().contains("premiere")||
+        native.hwnd<=0||native.pid==0||native.process_start_ticks<=0{
+        return Err("Vision must target the exact consented Premiere window.".into());
+    }
+    Ok(PreparedAction{task_id:task.into(),action_id:id.into(),tool:tool.into(),
+        application:window.clone(),exact_file:None,control_id:None,
+        native_root:Some(NativeReadRoot{hwnd:native.hwnd as u64,pid:native.pid as u64,
+            start_ticks:native.process_start_ticks.to_string()})})
+}
 impl OwnerScope {
     pub(crate) fn validate(&self)->Result<(),String>{
         if !valid_uuid(&self.task_id)||!valid_uuid(&self.owner_consent_id)||
@@ -168,7 +215,9 @@ impl OwnerScope {
            self.tools.iter().collect::<HashSet<_>>().len()!=self.tools.len()||
            self.risks.iter().collect::<HashSet<_>>().len()!=self.risks.len()||
            self.tools.iter().any(|t|t=="ui_set_value")&&
-              self.exact_controls.len()!=1||
+              self.exact_controls.len()!=1&&
+              !(self.exact_controls.is_empty()&&self.tools.iter().any(|t|t=="ui_click")
+                &&self.applications.len()==1)||
            self.tools.iter().any(|t|matches!(risk_for(t),Some(Risk::FileEdit)))&&
               self.exact_files.is_empty(){
             return Err("Owner task lists are ambiguous, risky or outside typed allowlist.".into());
@@ -190,7 +239,7 @@ pub(crate) struct PreparedAction {
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub(crate) enum Outcome { AuditedSuccess, AuditedFailure, Unknown }
 #[derive(Clone)]
-struct Pending {id:String,tool:String}
+struct Pending {id:String,tool:String,control_id:Option<String>}
 #[derive(Clone,Debug,PartialEq,Eq)]
 struct NativeReadRoot { hwnd:u64,pid:u64,start_ticks:String }
 // Only a real UIA stdout blob from native execute_tool may reach this
@@ -285,6 +334,22 @@ impl Store {
         g.last_observed_ms=now;
         Ok(g)
     }
+    pub(crate) fn premiere_bridge_prepared(&self,task:&str,scope:&str,
+        action_id:&str,tool:&str,action:&crate::ToolAction)->Result<PreparedAction,String>{
+        let eligible=matches!((tool,action),
+          ("premiere_context",crate::ToolAction::PremiereContext)|
+          ("premiere_bridge_status",crate::ToolAction::PremiereBridgeStatus));
+        let g=self.active.get(task).filter(|g|g.scope_id==scope&&
+            g.scope.tools.iter().any(|x|x=="ui_click"))
+            .ok_or("No Premiere task consent for this bridge read.")?;
+        if !eligible||!valid_uuid(action_id)||g.read_root.is_none()||
+            g.scope.applications.len()!=1{
+            return Err("Bridge inspection needs earlier real Premiere window verification.".into());
+        }
+        Ok(PreparedAction{task_id:task.into(),action_id:action_id.into(),
+            tool:tool.into(),application:g.scope.applications[0].clone(),
+            exact_file:None,control_id:None,native_root:None})
+    }
     /// This is only an admission decision and a single-use reservation:
     /// it neither calls a native tool nor claims that the tool ran.
     fn reserve_prepared(&mut self,scope_id:&str,action:&PreparedAction,
@@ -309,7 +374,10 @@ impl Store {
         if action.tool=="ui_set_value" {
             let control=action.control_id.as_deref()
                 .ok_or("Scoped SetValue lacks a native-bound exact AutomationId.")?;
-            if !g.scope.exact_controls.iter().any(|id|id==control)||
+            if (!g.scope.exact_controls.is_empty()&&
+                !g.scope.exact_controls.iter().any(|id|id==control))||
+               (g.scope.exact_controls.is_empty()&&
+                !g.scope.tools.iter().any(|t|t=="ui_click"))||
                 action.native_root.is_none(){
                 return Err("Scoped ValuePattern edit is outside owner-reviewed control.".into());
             }
@@ -317,6 +385,23 @@ impl Store {
             if g.read_root.as_ref().is_some_and(|prior|prior!=root){
                 g.paused=true;
                 return Err("UIA application process generation changed before editing.".into());
+            }
+            if g.read_root.is_none(){g.read_root=Some(root.clone());}
+        }
+        if g.scope.tools.iter().any(|t|t=="ui_click")&&risk==Risk::UiMutation {
+            let root=action.native_root.as_ref()
+                .ok_or("Scoped UIA mutation has no Rust OS process identity.")?;
+            if g.read_root.as_ref().is_some_and(|old|old!=root){
+                g.paused=true;
+                return Err("Premiere window/process changed; task authority paused.".into());
+            }
+            if g.read_root.is_none(){g.read_root=Some(root.clone());}
+        }
+        if action.tool=="inspect_screen" {
+            let root=action.native_root.as_ref()
+                .ok_or("Vision missing native screenshot process identity.")?;
+            if g.read_root.as_ref().is_some_and(|old|old!=root){
+                g.paused=true;return Err("Vision targets another window or process.".into());
             }
             if g.read_root.is_none(){g.read_root=Some(root.clone());}
         }
@@ -341,7 +426,8 @@ impl Store {
         g.observed_ids.insert(action.action_id.clone());
         g.confirmed_value_edit=false;
         g.actions+=1; // unknown or failed dispatch still consumes the action
-        g.pending=Some(Pending{id:action.action_id.clone(),tool:action.tool.clone()});
+        g.pending=Some(Pending{id:action.action_id.clone(),tool:action.tool.clone(),
+            control_id:action.control_id.clone()});
         Ok(())
     }
     /// A Tauri executor adapter calls this only after the existing Rust
@@ -379,7 +465,7 @@ impl Store {
             if !row.is_object()||
                row.get("VerifiedValue").and_then(Value::as_bool)!=Some(true)||
                row.get("AutomationId").and_then(Value::as_str)!=
-                   grant.scope.exact_controls.first().map(String::as_str){
+                   pending.control_id.as_deref(){
                 grant.paused=true;
                 return Err("Scoped UIA edit has no verified exact-control value readback.".into());
             }
@@ -424,7 +510,7 @@ impl Store {
                 g.paused=true;
                 return Err("Scoped ValuePattern success requires Rust-verified OS readback.".into());
             }
-            g.awaiting_readback=g.scope.exact_controls.first().cloned();
+            g.awaiting_readback=g.pending.as_ref().and_then(|p|p.control_id.clone());
             g.confirmed_readback=false;
         }else if outcome==Outcome::AuditedSuccess&&tool=="ui_find"&&
             g.awaiting_readback.is_some(){
@@ -595,6 +681,35 @@ mod tests {
         assert!(s.reserve_ai(&task,&grant,&id(),Some(40_001),103).is_err());
         s.reserve_ai(&task,&grant,&id(),Some(40_000),104).unwrap();
         assert!(s.reserve_ai(&task,&grant,&id(),Some(1),105).is_err());
+    }
+    #[test]
+    fn one_premiere_approval_admits_ten_sequential_native_actions(){
+        let mut o=scope();o.applications=vec!["Adobe Premiere Pro".into()];
+        o.exact_controls.clear();o.exact_files.clear();
+        o.tools=vec!["ui_click".into(),"ui_find".into(),"inspect_screen".into(),
+            "premiere_context".into(),"premiere_bridge_status".into()];
+        o.risks=vec![Risk::ReadOnly,Risk::UiMutation];
+        o.max_actions=24;
+        let task=o.task_id.clone();let mut s=Store::default();
+        let permit=s.issue(o,100).unwrap();
+        for step in 0..10 {
+            let mut a=action(&task,"ui_click","Adobe Premiere Pro",None);
+            a.control_id=Some(format!("Control{step}"));
+            a.native_root=Some(NativeReadRoot{hwnd:42,pid:24,start_ticks:"8675309".into()});
+            s.reserve_prepared(&permit,&a,101+step*2).unwrap();
+            s.record_audit(&task,&permit,&a.action_id,&a.tool,
+                Outcome::AuditedSuccess,102+step*2).unwrap();
+            assert!(s.reserve_prepared(&permit,&a,123).is_err());
+        }
+        let mut different=action(&task,"ui_click","Adobe Premiere Pro",None);
+        different.native_root=Some(NativeReadRoot{
+            hwnd:43,pid:24,start_ticks:"8675309".into()});
+        assert!(s.reserve_prepared(&permit,&different,125).is_err());
+        assert!(s.reserve_prepared(&permit,&action(&task,"pointer_click",
+            "Adobe Premiere Pro",None),126).is_err());
+        s.revoke(&task);
+        assert!(s.reserve_prepared(&permit,&different,127).is_err());
+        assert!(!s.can_resume_without_owner(&task));
     }
     fn journal(action:&PreparedAction,phase:&str,success:Option<bool>,now:u64)
         ->crate::native_worker_job::NativeJob{
