@@ -699,7 +699,7 @@ mod tests {
             s.reserve_prepared(&permit,&a,101+step*2).unwrap();
             s.record_audit(&task,&permit,&a.action_id,&a.tool,
                 Outcome::AuditedSuccess,102+step*2).unwrap();
-            assert!(s.reserve_prepared(&permit,&a,123).is_err());
+            assert!(s.reserve_prepared(&permit,&a,102+step*2).is_err());
         }
         let mut different=action(&task,"ui_click","Adobe Premiere Pro",None);
         different.native_root=Some(NativeReadRoot{
